@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBank apt repository</title>
+<style>
+  :root{--bg:#0e0f13;--panel:#171922;--line:#2a2d3a;--text:#e8e6df;--dim:#9a9788;--gold:#d8b45a}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 16px 64px}
+  h1{color:var(--gold);font-weight:600;font-size:1.7rem;margin:0 0 .3rem}
+  h2{font-size:1.05rem;margin:2rem 0 .6rem;font-weight:600}
+  p,li{color:var(--text)} .dim{color:var(--dim)}
+  a{color:var(--gold)}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.9rem 1rem;overflow-x:auto;
+      font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>☉ FreeBank</h1>
+  <p class="dim">The apt repository for the FreeBank desktop app (Ubuntu 22.04 or newer, and Debian 12 or newer, on x86-64).</p>
+
+  <h2>Install</h2>
+<pre>sudo wget -qO /usr/share/keyrings/freebank-archive-keyring.gpg https://apt.ecxfreebank.com/freebank-archive-keyring.gpg \
+&amp;&amp; echo "deb [signed-by=/usr/share/keyrings/freebank-archive-keyring.gpg] https://apt.ecxfreebank.com stable main" \
+  | sudo tee /etc/apt/sources.list.d/freebank.list \
+&amp;&amp; sudo apt update &amp;&amp; sudo apt install freebank</pre>
+  <p>Then open <b>FreeBank</b> from your applications. Updates arrive with your normal system updates.</p>
+
+  <h2>What it needs</h2>
+  <p>FreeBank runs beside an eCash beta full node and its enforcer: on this computer (the easiest way is
+  <a href="https://releases.drivechain.info">BitWindow</a> in full-node mode on eCash beta), or on another machine
+  on your private network. The app finds them, then installs and runs its own FreeBank node.</p>
+
+  <h2>Signing key</h2>
+  <p class="dim">Packages are signed with this key. Its fingerprint is</p>
+  <pre>@FINGERPRINT@</pre>
+
+  <h2>Other downloads</h2>
+  <p>A standalone <code>.deb</code>, an AppImage and the macOS app are on the
+  <a href="https://github.com/mbdrivechains/freebank-app/releases">releases page</a>.
+  The source is at <a href="https://github.com/mbdrivechains/freebank-app">github.com/mbdrivechains/freebank-app</a>.</p>
+</div>
+</body>
+</html>

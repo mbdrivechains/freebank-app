@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FreeBank",
+  "version": "0.1.0",
+  "identifier": "com.ecxfreebank.freebank",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "FreeBank",
+        "width": 440,
+        "height": 820,
+        "minWidth": 360,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
+    "homepage": "https://github.com/mbdrivechains/freebank-app",
+    "publisher": "The FreeBank developers",
+    "copyright": "Copyright (c) 2026 The FreeBank developers",
+    "license": "MIT",
+    "licenseFile": "../LICENSE",
+    "category": "Finance",
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

@@ -1,0 +1,197 @@
+name: release
+
+# A tag vX.Y.Z builds the app for Linux and macOS, publishes a GitHub Release with the files and their
+# checksums, and adds the Linux package to the apt repository that GitHub Pages serves at
+# https://apt.ecxfreebank.com (branch gh-pages).
+#
+# Secrets, in the environment "apt-signing" (deployments allowed from v* tags only):
+#   APT_GPG_PRIVATE_KEY  the armored secret key that signs the apt repository
+#   APT_GPG_FINGERPRINT  its fingerprint
+# Pages: source "GitHub Actions", custom domain apt.ecxfreebank.com. The site's files are kept on the
+# gh-pages branch (so every published version stays in the pool) and deployed by the pages job.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Check the tag matches the app version
+        run: |
+          app=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          crate=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          [ "$app" = "$pkg" ] && [ "$app" = "$crate" ] || { echo "versions differ: tauri $app, npm $pkg, cargo $crate"; exit 1; }
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            [ "${GITHUB_REF_NAME}" = "v$app" ] || { echo "tag ${GITHUB_REF_NAME} does not match app version $app"; exit 1; }
+          fi
+          echo "version=$app" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    # The oldest supported Ubuntu keeps the package installable on 22.04 and newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libxdo-dev libssl-dev build-essential file
+      - run: npm ci
+      - run: npx tauri build --bundles deb,appimage
+      - name: Collect
+        run: |
+          mkdir -p out
+          scripts/deb-finalize.sh src-tauri/target/release/bundle/deb/*.deb out
+          cp src-tauri/target/release/bundle/appimage/*.AppImage "out/FreeBank_${{ needs.version.outputs.version }}_amd64.AppImage"
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      # Ad-hoc signed only (bundle.macOS.signingIdentity "-"), not notarised: the first launch needs
+      # System Settings > Privacy & Security > Open Anyway.
+      - run: npx tauri build --bundles app,dmg
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp src-tauri/target/release/bundle/dmg/*.dmg "out/FreeBank_${{ needs.version.outputs.version }}_aarch64.dmg"
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, linux, macos]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS
+          cat > notes.md <<'EOF'
+          **Ubuntu / Debian:** install from the apt repository (updates come with your system updates):
+          see https://apt.ecxfreebank.com, or download the `.deb` below and run `sudo apt install ./freebank_*.deb`.
+
+          **Other Linux:** the AppImage below (`chmod +x` it, then run it).
+
+          **macOS (Apple Silicon):** open the `.dmg` and drag FreeBank to Applications. This build is not notarised
+          yet, so the first time macOS will refuse to open it: go to **System Settings → Privacy & Security** and
+          choose **Open Anyway**.
+
+          FreeBank runs beside an eCash beta full node and its enforcer. BitWindow in full-node mode is the easiest way
+          to have both. Check files against `SHA256SUMS`.
+          EOF
+          files=$(ls | grep -v '^notes.md$')
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber $files
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "FreeBank app $TAG" --notes-file notes.md $files
+          fi
+
+  apt:
+    needs: [version, linux]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: apt-signing
+    # One writer of gh-pages at a time.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the published site (gh-pages)
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git fetch origin gh-pages
+            git worktree add site origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages site
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: out
+      - name: Import the signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+      - name: Build and sign the repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_GPG_FINGERPRINT }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y apt-utils
+          scripts/build-apt-repo.sh site out/freebank_*.deb
+      - name: Publish to gh-pages
+        run: |
+          cd site
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "apt: freebank ${{ needs.version.outputs.version }}"
+          git push origin HEAD:gh-pages
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  pages:
+    needs: apt
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
