@@ -5,11 +5,14 @@
 pub mod commands;
 pub mod detect;
 pub mod install;
+pub mod obliterate;
 pub mod process;
+pub mod release_key;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,7 +30,7 @@ pub const DEFAULT_P2P_PORT: u16 = 8455;
 /// Marks a datadir this app set up, so it is never moved aside.
 pub const DATADIR_MARK: &str = ".freebank-node";
 /// What "Delete chain data" removes from the datadir. Houses, bills and pools live under blocks/.
-/// wallet.dat, freebank.conf and the eCash block-hash cache (mainblockhash.dat) stay.
+/// The wallet (wallet.dat or wallets/), freebank.conf and the eCash block-hash cache stay.
 pub const CHAIN_DATA: &[&str] = &["blocks", "chainstate", "indexes", "bmm.dat", "mempool.dat"];
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -69,6 +72,9 @@ pub struct Settings {
     /// Release tag this app installed and runs, e.g. v0.2.15
     pub installed_tag: Option<String>,
     pub grpcurl: Option<String>,
+    /// The data folder the app created when it installed (it was missing, empty or only
+    /// leftovers). "Obliterate" ticks the node's folder for you only when it is this one.
+    pub datadir_created: Option<String>,
 }
 
 impl Default for Settings {
@@ -81,6 +87,7 @@ impl Default for Settings {
             p2p_port: DEFAULT_P2P_PORT,
             installed_tag: None,
             grpcurl: None,
+            datadir_created: None,
         }
     }
 }
@@ -95,6 +102,8 @@ pub struct NodeManager {
     pub child: tokio::sync::Mutex<Option<tokio::process::Child>>,
     pub last_exit: std::sync::Mutex<Option<String>>,
     pub install: Arc<std::sync::Mutex<install::InstallProgress>>,
+    /// The install task, so "Cancel" can stop a download without waiting for it.
+    pub install_task: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     pub update: Arc<std::sync::Mutex<install::InstallProgress>>,
     /// Set while the node is being stopped, restarted or swapped, so the Node tab can say so
     /// instead of waiting on the node.
@@ -104,6 +113,12 @@ pub struct NodeManager {
     latest: std::sync::Mutex<Option<(Instant, Result<String, String>)>>,
     /// freebankd -version per release tag: ("v0.2.15", "843ccae").
     versions: std::sync::Mutex<HashMap<String, (String, Option<String>)>>,
+    /// Set once "Obliterate" has removed the app's own folder: nothing is written to disk after.
+    pub obliterated: AtomicBool,
+    /// What "Obliterate" leaves for the app's exit, because the screen still uses it.
+    pub at_exit: std::sync::Mutex<obliterate::AtExit>,
+    /// Wallet backups made with "Back up wallet first" since the app started.
+    pub backups: std::sync::Mutex<Vec<String>>,
 }
 
 /// Holds `NodeManager::activity` for one long operation; clears it when dropped.
@@ -133,12 +148,24 @@ impl NodeManager {
             child: tokio::sync::Mutex::new(None),
             last_exit: std::sync::Mutex::new(None),
             install: Arc::new(std::sync::Mutex::new(Default::default())),
+            install_task: std::sync::Mutex::new(None),
             update: Arc::new(std::sync::Mutex::new(Default::default())),
             activity: std::sync::Mutex::new(None),
             explorer_tip: std::sync::Mutex::new(None),
             latest: std::sync::Mutex::new(None),
             versions: std::sync::Mutex::new(HashMap::new()),
+            obliterated: AtomicBool::new(false),
+            at_exit: std::sync::Mutex::new(Default::default()),
+            backups: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Refuse anything that would write to disk once "Obliterate" has run.
+    pub fn still_here(&self) -> Result<(), String> {
+        if self.obliterated.load(Ordering::SeqCst) {
+            return Err("FreeBank has been removed from this computer. Close the app to finish.".into());
+        }
+        Ok(())
     }
 
     /// Claim the node for one operation ("Stopping FreeBank…"). Fails if another is under way.
@@ -180,7 +207,11 @@ impl NodeManager {
         Some(v)
     }
 
+    /// Write settings.json. Once "Obliterate" has run this does nothing, so the file stays gone.
     pub async fn save_settings(&self, s: Settings) -> Result<(), String> {
+        if self.obliterated.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         std::fs::create_dir_all(&self.app_dir).map_err(|e| e.to_string())?;
         let json = serde_json::to_vec_pretty(&s).map_err(|e| e.to_string())?;
         std::fs::write(self.app_dir.join("settings.json"), json).map_err(|e| e.to_string())?;
@@ -194,6 +225,12 @@ impl NodeManager {
 
     pub fn freebankd(&self, tag: &str) -> PathBuf {
         self.release_dir(tag).join("freebank/bin/freebankd")
+    }
+
+    /// Can the app start its node? It needs the freebankd it installed and the node's data folder:
+    /// freebankd won't create that folder (setup does), so without it first run sets FreeBank up again.
+    pub fn can_start(&self, s: &Settings) -> bool {
+        s.installed_tag.as_deref().is_some_and(|t| self.freebankd(t).is_file()) && Path::new(&s.datadir).is_dir()
     }
 
     /// The explorer's tip height, cached for 15 s so polling screens don't hammer it.
@@ -249,6 +286,58 @@ pub fn parse_version_line(line: &str) -> Option<(String, Option<String>)> {
 /// The N of a C++ release tag v0.2.N.
 pub fn patch(tag: &str) -> Option<u32> {
     tag.strip_prefix("v0.2.")?.parse().ok()
+}
+
+/// The wallets in a datadir, wherever freebankd (Core 0.16) may have put them: wallet.dat and named
+/// wallets (-wallet=<name>, a file each) go in wallets/ when that folder exists, else in the datadir.
+/// freebankd makes wallets/ only when it creates the datadir itself; this app makes the folder
+/// first, so its nodes keep wallet.dat at the top. wallets/<name>/wallet.dat, as later Core
+/// versions lay it out, counts too. Both places are looked at, default wallets first.
+pub fn wallet_files(datadir: &Path) -> Vec<PathBuf> {
+    let wallets = datadir.join("wallets");
+    let mut found: Vec<PathBuf> = [wallets.join("wallet.dat"), datadir.join("wallet.dat")]
+        .into_iter()
+        .filter(|p| p.is_file())
+        .collect();
+    for (dir, subfolders) in [(wallets.as_path(), true), (datadir, false)] {
+        let mut named: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != "wallet.dat")
+            .filter_map(|e| {
+                let p = e.path();
+                if p.is_dir() {
+                    // blocks/, chainstate/ and the like hold no wallets; only wallets/<name>/ can.
+                    let w = p.join("wallet.dat");
+                    (subfolders && w.is_file()).then_some(w)
+                } else {
+                    is_bdb_file(&p).then_some(p)
+                }
+            })
+            .collect();
+        named.sort();
+        found.extend(named);
+    }
+    found
+}
+
+/// Is this a Berkeley DB btree file (what a wallet is)? The same test as Core's IsBerkeleyBtree:
+/// at least one 4 KiB page, with the btree magic 0x00053162 at byte 12.
+fn is_bdb_file(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !f.metadata().map(|m| m.is_file() && m.len() >= 4096).unwrap_or(false) {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    if f.read_exact(&mut head).is_err() {
+        return false;
+    }
+    let magic = u32::from_le_bytes([head[12], head[13], head[14], head[15]]);
+    magic == 0x0005_3162 || magic == 0x6231_0500
 }
 
 /// Remove `target` (a file, folder or link) only if it lies strictly inside `root`.
@@ -309,6 +398,58 @@ mod tests {
         assert_eq!(patch("v0.2.15"), Some(15));
         assert_eq!(patch("v0.3.5"), None);
         assert!(patch("v0.2.16") > patch("v0.2.9"));
+    }
+
+    #[test]
+    fn wallets_found() {
+        let d = std::env::temp_dir().join(format!("fbwallet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // A Berkeley DB page with the btree magic at byte 12, as a wallet starts.
+        let mut bdb = vec![0u8; 4096];
+        bdb[12..16].copy_from_slice(&0x0005_3162u32.to_le_bytes());
+
+        assert!(wallet_files(&d).is_empty());
+        assert!(wallet_files(&d.join("missing")).is_empty());
+
+        // A folder this app set up: wallet.dat at the top, named wallets beside it.
+        std::fs::write(d.join("wallet.dat"), b"w").unwrap();
+        std::fs::write(d.join("savings"), &bdb).unwrap();
+        std::fs::write(d.join("peers.dat"), vec![0u8; 5000]).unwrap();
+        std::fs::create_dir_all(d.join("blocks")).unwrap();
+        std::fs::write(d.join("blocks/wallet.dat"), b"w").unwrap();
+        assert_eq!(wallet_files(&d), vec![d.join("wallet.dat"), d.join("savings")]);
+
+        // A folder freebankd made itself has wallets/, and its wallets are there.
+        let w = d.join("wallets");
+        std::fs::create_dir_all(w.join("database")).unwrap();
+        std::fs::write(w.join("db.log"), b"").unwrap();
+        std::fs::write(w.join(".walletlock"), b"").unwrap();
+        std::fs::write(w.join("database/log.0000000001"), &bdb[..100]).unwrap();
+        assert_eq!(wallet_files(&d), vec![d.join("wallet.dat"), d.join("savings")]);
+        std::fs::write(w.join("wallet.dat"), b"w").unwrap();
+        std::fs::write(w.join("spending"), &bdb).unwrap();
+        std::fs::write(w.join("short"), &bdb[..100]).unwrap();
+        std::fs::create_dir_all(w.join("house")).unwrap();
+        std::fs::write(w.join("house/wallet.dat"), b"w").unwrap();
+        std::fs::create_dir_all(w.join("empty")).unwrap();
+        assert_eq!(
+            wallet_files(&d),
+            vec![
+                w.join("wallet.dat"),
+                d.join("wallet.dat"),
+                w.join("house/wallet.dat"),
+                w.join("spending"),
+                d.join("savings"),
+            ]
+        );
+        // Only wallets/wallet.dat: the usual fresh folder.
+        std::fs::remove_file(d.join("wallet.dat")).unwrap();
+        std::fs::remove_file(d.join("savings")).unwrap();
+        std::fs::remove_file(w.join("spending")).unwrap();
+        std::fs::remove_dir_all(w.join("house")).unwrap();
+        assert_eq!(wallet_files(&d), vec![w.join("wallet.dat")]);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

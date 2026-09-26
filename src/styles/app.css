@@ -207,6 +207,16 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* A focus ring for keyboard focus only, never for a click */
+button:focus {
+  outline: none;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 2px;
+}
+
 /* Error messages */
 .error {
   background: rgba(229, 116, 106, 0.08);
@@ -544,6 +554,12 @@ button.secondary {
   margin-bottom: 0;
 }
 
+/* Back links sit at the top left of a setup step, not stretched across it. */
+.setup .back-link {
+  align-self: flex-start;
+  margin-bottom: -4px;
+}
+
 .hero {
   text-align: center;
   padding: 18px 6px 4px;
@@ -765,7 +781,6 @@ button.wide {
   margin-top: 4px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11.5px;
-  word-break: break-all;
 }
 
 .soft-error {
@@ -909,6 +924,18 @@ button.wide {
   font-size: 12.5px;
   font-weight: 400;
   color: var(--text-secondary);
+}
+
+/* The download's label with its megabytes on the same line, so the bar below keeps its place */
+.stage-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.stage-line .stage-note {
+  font-variant-numeric: tabular-nums;
 }
 
 .spinner {
@@ -1191,6 +1218,13 @@ button.wide {
   margin-top: 8px;
 }
 
+.cancelled-note {
+  font-size: 13px;
+  color: var(--text-color);
+  text-align: center;
+  margin-top: 10px;
+}
+
 /* Header: block pill and the settings gear */
 .head-right {
   display: flex;
@@ -1369,7 +1403,6 @@ button.gear.active {
   margin: 4px 0;
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11.5px;
-  word-break: break-all;
   color: var(--text-color);
 }
 
@@ -1380,7 +1413,163 @@ button.gear.active {
 
 .card.removed p {
   font-size: 14px;
+  line-height: 1.5;
   color: var(--text-secondary);
+  margin-top: 12px;
+}
+
+.card.removed h2 + p {
+  margin-top: 0;
+}
+
+/* Paths read left to right and wrap after a slash (PathText), not mid-name */
+.path-part {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.card.removed .facts div {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card.removed .facts dd {
+  text-align: left;
+  word-break: normal;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-color);
+}
+
+.card.removed .gone-step {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-inset);
+}
+
+.card.removed .gone-step p {
+  margin-top: 0;
+  color: var(--text-color);
+}
+
+.card.removed .gone-step .gone-path {
+  margin-top: 4px;
+}
+
+.card.removed .gone-path {
+  font-size: 12px;
+  color: var(--text-color);
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Obliterate: the red button, and the list of what goes */
+button.danger {
+  background: var(--error-color);
+  color: #1f0907;
+}
+
+button.secondary.danger-text {
+  color: var(--error-color);
+  border-color: rgba(229, 116, 106, 0.4);
+}
+
+button.secondary.danger-text:not(:disabled):hover {
+  border-color: var(--error-color);
+}
+
+.wipe-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wipe-list label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.wipe-list label.off {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.wipe-list input {
+  margin-top: 3px;
+  flex: none;
+  accent-color: var(--error-color);
+}
+
+.wipe-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wipe-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-color);
+}
+
+.wipe-size {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.wipe-note {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wallet-warn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(229, 116, 106, 0.35);
+  background: rgba(229, 116, 106, 0.08);
+  color: #e9b3ad;
+}
+
+.wallet-warn strong {
+  color: var(--error-color);
+}
+
+.wallet-warn.kept,
+.wallet-warn.calm {
+  border-color: var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.wallet-warn.calm strong {
+  color: var(--text-color);
+}
+
+.wallet-warn button {
+  align-self: flex-start;
+  font-size: 13px;
+  padding: 7px 14px;
+}
+
+.type-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 /* Footer on every screen */

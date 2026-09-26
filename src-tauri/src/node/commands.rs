@@ -1,11 +1,11 @@
 //! Tauri commands for the first-run flow and the Node tab.
 
-use super::{conf_tag, default_datadir, detect, install, platform, process, NodeManager, Settings};
+use super::{conf_tag, default_datadir, detect, install, obliterate, platform, process, NodeManager, Settings};
 use crate::rpc::FreeBankClient;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
 
 type Mgr = Arc<NodeManager>;
@@ -18,7 +18,8 @@ pub struct SetupInfo {
     pub suggested_tag: String,
     /// The name already in freebank.conf, if any.
     pub current_tag: Option<String>,
-    /// freebankd is installed by this app and present on disk.
+    /// freebankd is installed by this app and present on disk, and the node's data folder is there.
+    /// Without the folder (removed by "Obliterate" or by hand) setup runs again and makes it.
     pub installed: bool,
     pub default_datadir: String,
     pub app_version: String,
@@ -27,11 +28,7 @@ pub struct SetupInfo {
 #[tauri::command]
 pub async fn setup_info(mgr: State<'_, Mgr>) -> Result<SetupInfo, String> {
     let settings = mgr.settings.lock().await.clone();
-    let installed = settings
-        .installed_tag
-        .as_deref()
-        .map(|t| mgr.freebankd(t).is_file())
-        .unwrap_or(false);
+    let installed = mgr.can_start(&settings);
     Ok(SetupInfo {
         current_tag: conf_tag(Path::new(&settings.datadir)),
         settings,
@@ -98,6 +95,17 @@ pub fn validate_tag(tag: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn install_start(mgr: State<'_, Mgr>, tag: String, move_aside: bool) -> Result<(), String> {
     install::validate_tag(&tag)?;
+    // An install under way (a second click, or the screen reloaded) keeps its task, so "Cancel"
+    // can still stop it.
+    if mgr.install.lock().unwrap().running {
+        return Ok(());
+    }
+    // A cancelled install may not have noticed yet; let it finish stopping first.
+    let old = mgr.install_task.lock().unwrap().take();
+    if let Some(task) = old {
+        task.abort();
+        let _ = task.await;
+    }
     {
         let mut p = mgr.install.lock().unwrap();
         if p.running {
@@ -109,7 +117,32 @@ pub async fn install_start(mgr: State<'_, Mgr>, tag: String, move_aside: bool) -
             ..Default::default()
         };
     }
-    tauri::async_runtime::spawn(install::run(mgr.inner().clone(), tag, move_aside));
+    // Held while the task starts, so a "Cancel" right now finds it to stop.
+    let mut slot = mgr.install_task.lock().unwrap();
+    *slot = Some(tauri::async_runtime::spawn(install::run(mgr.inner().clone(), tag, move_aside)));
+    Ok(())
+}
+
+/// "Cancel" on the install screen. Allowed while the install is still fetching (release, signature,
+/// download, verify): from unpacking on it writes files and settings, and it finishes in moments anyway.
+#[tauri::command]
+pub fn install_cancel(mgr: State<'_, Mgr>) -> Result<(), String> {
+    {
+        let mut p = mgr.install.lock().unwrap();
+        if !p.running {
+            return Ok(());
+        }
+        if !install::cancellable(&p.stage) {
+            return Err("It's too late to cancel: FreeBank is being set up and will be ready in a moment.".into());
+        }
+        // The task checks this before it writes anything, and stops there.
+        p.cancelled = true;
+        p.running = false;
+    }
+    if let Some(task) = mgr.install_task.lock().unwrap().as_ref() {
+        task.abort();
+    }
+    let _ = std::fs::remove_dir_all(mgr.app_dir.join("tmp"));
     Ok(())
 }
 
@@ -215,6 +248,109 @@ pub async fn remove_programs(mgr: State<'_, Mgr>) -> Result<process::Removed, St
 #[tauri::command]
 pub async fn delete_chain_data(mgr: State<'_, Mgr>) -> Result<(), String> {
     process::delete_chain_data(&mgr).await
+}
+
+/// Where "Obliterate" looks: Tauri's paths for this app, and the settings on file.
+async fn obliterate_places(app: &AppHandle, mgr: &NodeManager) -> obliterate::Places {
+    let s = mgr.settings.lock().await.clone();
+    let path = app.path();
+    let local_data = path.app_local_data_dir().ok();
+    obliterate::Places {
+        home: path.home_dir().unwrap_or_else(|_| super::home()),
+        app_dir: mgr.app_dir.clone(),
+        // WebKitGTK keeps the screen's data (mediakeys/, storage/) in the app's own folder.
+        screen_uses_app_dir: cfg!(target_os = "linux") && local_data.as_deref() == Some(mgr.app_dir.as_path()),
+        // A developer's scratch folder may hold other work: only FreeBank's own files in it go.
+        app_dir_shared: std::env::var_os("FREEBANK_APP_DIR").is_some(),
+        datadir: PathBuf::from(&s.datadir),
+        datadir_created: s.datadir_created.map(PathBuf::from),
+        caches: screen_caches(app),
+        keep: mgr.backups.lock().unwrap().iter().map(PathBuf::from).collect(),
+    }
+}
+
+/// The folders the screen (the system webview) writes to. With FREEBANK_APP_DIR a developer's
+/// scratch app shares them with the installed app, so then they are left alone.
+fn screen_caches(app: &AppHandle) -> Vec<obliterate::Cache> {
+    if std::env::var_os("FREEBANK_APP_DIR").is_some() {
+        return Vec::new();
+    }
+    let path = app.path();
+    let named = |id, p: Option<PathBuf>| {
+        p.map(|path| obliterate::Cache {
+            id,
+            path,
+            program_named: false,
+        })
+    };
+    let mut caches = vec![
+        named("cache", path.app_cache_dir().ok()),
+        named("local-data", path.app_local_data_dir().ok()),
+    ];
+    // WebKitGTK names its cache and HSTS list after the program: ~/.cache/freebank and
+    // ~/.local/share/freebank. Such a folder is listed only if it holds nothing but WebKit's files.
+    #[cfg(target_os = "linux")]
+    if let Some(program) = std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_owned())) {
+        for (id, dir) in [("webkit-cache", path.cache_dir().ok()), ("webkit-data", path.data_dir().ok())] {
+            caches.push(dir.map(|d| obliterate::Cache {
+                id,
+                path: d.join(&program),
+                program_named: true,
+            }));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(home) = path.home_dir() {
+        let id = &app.config().identifier;
+        let lib = home.join("Library");
+        caches.extend([
+            named("webkit", Some(lib.join("WebKit").join(id))),
+            named("caches", Some(lib.join("Caches").join(id))),
+            named("http-storage", Some(lib.join("HTTPStorages").join(id))),
+            named("cookies", Some(lib.join("HTTPStorages").join(format!("{}.binarycookies", id)))),
+            named("saved-state", Some(lib.join("Saved Application State").join(format!("{}.savedState", id)))),
+        ]);
+    }
+    caches.into_iter().flatten().collect()
+}
+
+/// What "Obliterate" would remove, with the wallet's balance.
+#[tauri::command]
+pub async fn obliterate_plan(app: AppHandle, mgr: State<'_, Mgr>) -> Result<obliterate::Plan, String> {
+    let places = obliterate_places(&app, &mgr).await;
+    obliterate::plan(&mgr, places).await
+}
+
+/// "Back up wallet first": into Documents, or the home folder if there is no Documents folder.
+#[tauri::command]
+pub async fn wallet_backup(app: AppHandle, mgr: State<'_, Mgr>) -> Result<Vec<String>, String> {
+    let path = app.path();
+    let folder = path
+        .document_dir()
+        .ok()
+        .filter(|d| d.is_dir())
+        .or_else(|| path.home_dir().ok())
+        .ok_or("FreeBank couldn't find your Documents folder or your home folder.")?;
+    obliterate::backup_wallet(&mgr, &folder).await
+}
+
+/// "Obliterate": remove the ticked items. Only items of a fresh plan are acted on, never paths; the
+/// path each tick carries must match its item's, so nothing goes that the screen didn't show.
+#[tauri::command]
+pub async fn obliterate(
+    app: AppHandle,
+    mgr: State<'_, Mgr>,
+    ticks: Vec<obliterate::Tick>,
+) -> Result<obliterate::Outcome, String> {
+    let places = obliterate_places(&app, &mgr).await;
+    obliterate::run(&mgr, places, ticks).await
+}
+
+/// "Close FreeBank" on the last screen. Exiting runs lib.rs's exit handler, which stops the node
+/// and deletes what "Obliterate" left for then.
+#[tauri::command]
+pub fn app_quit(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]

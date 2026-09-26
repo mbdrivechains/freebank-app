@@ -38,6 +38,7 @@ pub fn run() {
             node::commands::validate_tag,
             node::commands::install_start,
             node::commands::install_progress,
+            node::commands::install_cancel,
             node::commands::node_start,
             node::commands::node_stop,
             node::commands::node_progress,
@@ -50,15 +51,21 @@ pub fn run() {
             node::commands::update_progress,
             node::commands::remove_programs,
             node::commands::delete_chain_data,
+            node::commands::obliterate_plan,
+            node::commands::wallet_backup,
+            node::commands::obliterate,
+            node::commands::app_quit,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
     app.run(|handle, event| {
         // The node this app started goes down with it; a node someone else started is left alone.
+        // Then what "Obliterate" left for exit goes: the screen used it until now.
         if let tauri::RunEvent::Exit = event {
             let mgr = handle.state::<Arc<NodeManager>>().inner().clone();
             let _ = tauri::async_runtime::block_on(node::process::stop(&mgr));
+            node::obliterate::wipe_at_exit(&mgr);
         }
     });
 }

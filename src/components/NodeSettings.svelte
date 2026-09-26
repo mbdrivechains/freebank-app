@@ -1,11 +1,25 @@
 <script lang="ts">
   // Settings for the node on this computer: its connection (Advanced, with Test connection), and
-  // the two deliberate actions, "Delete chain data" and "Remove FreeBank". Each asks first.
+  // three deliberate actions, each of which asks first: "Delete chain data", "Remove FreeBank", and
+  // "Obliterate: remove everything". Obliterate lists what would go (worked out by the app, with
+  // sizes; the node's folder is ticked only if FreeBank created it), shows the wallet's balance,
+  // offers a backup, and wants OBLITERATE typed before its button works. Each tick goes back with
+  // the path it showed, and the connection can't be changed while the list is open.
   import { createEventDispatcher, onMount } from "svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
-  import { node, type NodeStatus, type Removed, type SetupInfo } from "../lib/node";
+  import PathText from "./PathText.svelte";
+  import { BASE_TICKER } from "../lib/brand";
+  import {
+    node,
+    type NodeStatus,
+    type ObliteratePlan,
+    type Obliterated,
+    type Removed,
+    type SetupInfo,
+    type WipeItem,
+  } from "../lib/node";
 
-  const dispatch = createEventDispatcher<{ removed: Removed }>();
+  const dispatch = createEventDispatcher<{ removed: Removed; obliterated: Obliterated }>();
 
   let info: SetupInfo | null = null;
   let st: NodeStatus | null = null;
@@ -21,14 +35,18 @@
   }
   onMount(load);
 
-  $: external = !!st && !st.managed && st.state !== "down" && st.state !== "busy";
-  $: lockedReason = st?.managed
-    ? "Stop the node on the Node tab to change these."
-    : external
-      ? "A FreeBank node started by another program is running; stop it there to change these."
-      : "";
+  let confirm: "wipe" | "remove" | "obliterate" | null = null;
 
-  let confirm: "wipe" | "remove" | null = null;
+  $: external = !!st && !st.managed && st.state !== "down" && st.state !== "busy";
+  // While the Obliterate list is open, the data folder it names must stay the one shown.
+  $: lockedReason =
+    confirm === "obliterate"
+      ? "Close the Obliterate list below to change these."
+      : st?.managed
+        ? "Stop the node on the Node tab to change these."
+        : external
+          ? "A FreeBank node started by another program is running; stop it there to change these."
+          : "";
   let busy = false;
   let error = "";
   let done = "";
@@ -58,6 +76,113 @@
       error = String(e);
     }
     busy = false;
+  }
+
+  // Obliterate. The app works out the list; the screen sends back the ticked ids, each with the
+  // path it showed. Ticks are kept per line and path, so a line that comes back naming another
+  // folder starts as the app suggests.
+  let plan: ObliteratePlan | null = null;
+  let ticked: Record<string, boolean> = {};
+  const key = (i: WipeItem) => `${i.id}\n${i.path}`;
+  let typed = "";
+  let backingUp = false;
+  let backupError = "";
+
+  async function loadPlan(fresh: boolean) {
+    try {
+      const p = await node.obliteratePlan();
+      // Keep what the user ticked; anything new starts as the app suggests.
+      ticked = Object.fromEntries(
+        p.items.map((i) => {
+          const k = key(i);
+          const keep = !fresh && k in ticked;
+          return [k, i.allowed && (keep ? ticked[k] : i.checked)];
+        }),
+      );
+      plan = p;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function openObliterate() {
+    confirm = "obliterate";
+    error = "";
+    done = "";
+    typed = "";
+    backupError = "";
+    plan = null;
+    loadPlan(true);
+  }
+
+  $: chosen = plan ? plan.items.filter((i) => i.allowed && ticked[key(i)]) : [];
+  // Wallets live in the node's folder and in folders setup moved aside.
+  $: walletCount = plan ? plan.items.reduce((n, i) => n + i.wallets.length, 0) : 0;
+  $: nodeWalletGoes = chosen.some((i) => i.kind === "node" && i.wallets.length > 0);
+  $: asideWalletGoes = chosen.some((i) => i.kind === "aside" && i.wallets.length > 0);
+  $: walletGoes = nodeWalletGoes || asideWalletGoes;
+  // The node says the wallet holds nothing, not even coins still on their way.
+  $: nodeEmpty = nodeWalletGoes && plan?.balance === 0 && !plan?.pending;
+  $: backedUp = !!plan && plan.backups.length > 0;
+  // Nothing at stake: the wallet that goes is empty and no other wallet goes with it. The box is
+  // then plain, not red, and backing up is offered without urging.
+  $: calm = walletGoes && nodeEmpty && !asideWalletGoes;
+  $: walletHeading =
+    nodeWalletGoes && asideWalletGoes
+      ? "Your wallet will be deleted, and so will the old one in the folder setup moved aside."
+      : nodeEmpty
+        ? "Your wallet is empty. It will be deleted."
+        : nodeWalletGoes
+          ? "Your wallet will be deleted."
+          : "The old wallet in the folder setup moved aside will be deleted.";
+  // Once a backup is made, the backup is what the box says instead.
+  $: lossWarning = backedUp
+    ? ""
+    : nodeEmpty
+      ? asideWalletGoes
+        ? "Without a backup, any coins in the old one are gone for good."
+        : ""
+      : nodeWalletGoes && plan?.balance !== null
+        ? "Without a backup, those coins are gone for good."
+        : `Without a backup, any coins in ${nodeWalletGoes && asideWalletGoes ? "them" : "it"} are gone for good.`;
+
+  async function backup() {
+    backingUp = true;
+    backupError = "";
+    try {
+      await node.walletBackup();
+      await loadPlan(false);
+    } catch (e) {
+      backupError = String(e);
+    }
+    backingUp = false;
+  }
+
+  async function obliterate() {
+    busy = true;
+    error = "";
+    try {
+      const r = await node.obliterate(chosen.map((i) => ({ id: i.id, path: i.path })));
+      confirm = null;
+      dispatch("obliterated", r);
+    } catch (e) {
+      error = String(e);
+      loadPlan(false);
+    }
+    busy = false;
+  }
+
+  // 1536 -> "1.5 KB"
+  function size(n: number): string {
+    if (n < 1024) return `${n} bytes`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n / 1024;
+    let u = 0;
+    while (v >= 1024 && u < units.length - 1) {
+      v /= 1024;
+      u++;
+    }
+    return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[u]}`;
   }
 </script>
 
@@ -96,7 +221,7 @@
       <div class="confirm-box">
         <p>
           This stops your node and deletes <code>blocks</code>, <code>chainstate</code> and <code>indexes</code> in
-          <span class="path">{st.datadir}</span>
+          <span class="path"><PathText path={st.datadir} /></span>
           Your wallet (<code>wallet.dat</code>) and <code>freebank.conf</code> stay. Your node then starts again and re-syncs,
           which takes a while.
         </p>
@@ -120,13 +245,100 @@
       <div class="confirm-box">
         <p>
           This stops your node and removes the FreeBank node program and grpcurl from the app's own folder.
-          Nothing in <span class="path">{st.datadir}</span> is touched, so your wallet and settings stay.
+          Nothing in <span class="path"><PathText path={st.datadir} /></span> is touched, so your wallet and settings stay.
           You can install FreeBank again at any time.
         </p>
         <div class="row-actions">
           <button on:click={remove} disabled={busy}>{busy ? "Removing…" : "Remove"}</button>
           <button class="secondary" on:click={() => (confirm = null)} disabled={busy}>Cancel</button>
         </div>
+      </div>
+    {/if}
+
+    <div class="maint">
+      <div class="maint-text">
+        <strong>Obliterate: remove everything</strong>
+        <span class="muted small">Removes everything FreeBank put on this computer, your wallet included. It can't be undone.</span>
+      </div>
+      <button class="secondary danger-text" on:click={openObliterate} disabled={busy || confirm === "obliterate"}>Obliterate…</button>
+    </div>
+    {#if confirm === "obliterate"}
+      <div class="confirm-box">
+        {#if !plan}
+          {#if !error}<p>Looking at what FreeBank put on this computer…</p>{/if}
+          <div class="row-actions">
+            <button class="secondary" on:click={() => (confirm = null)}>Cancel</button>
+          </div>
+        {:else}
+          <p>
+            This stops your node and deletes everything ticked below, for good. The eCash node, the enforcer and
+            BitWindow are not touched.
+          </p>
+          <ul class="wipe-list">
+            {#each plan.items as item (item.id)}
+              <li>
+                <label class:off={!item.allowed}>
+                  <input type="checkbox" bind:checked={ticked[key(item)]} disabled={!item.allowed || busy} />
+                  <span class="wipe-text">
+                    <span class="wipe-head"><strong>{item.label}</strong><span class="wipe-size">{size(item.size)}</span></span>
+                    <span class="path"><PathText path={item.path} /></span>
+                    {#if item.note}<span class="wipe-note">{item.note}</span>{/if}
+                  </span>
+                </label>
+              </li>
+            {:else}
+              <li>FreeBank has nothing left on this computer.</li>
+            {/each}
+          </ul>
+
+          {#if walletCount}
+            <div class="wallet-warn" class:kept={!walletGoes} class:calm>
+              {#if walletGoes}
+                <strong>{walletHeading}</strong>
+                {#if nodeEmpty}
+                  {#if asideWalletGoes}<span>Your wallet is empty.{lossWarning ? ` ${lossWarning}` : ""}</span>{/if}
+                {:else if nodeWalletGoes && plan.balance !== null}
+                  <span>
+                    Your wallet holds {plan.balance.toFixed(8)} {BASE_TICKER}{plan.pending ? `, ${plan.pending.toFixed(8)} of it not spendable yet` : ""}.{lossWarning ? ` ${lossWarning}` : ""}
+                  </span>
+                {:else if lossWarning || (nodeWalletGoes && plan.balance_note)}
+                  <span>
+                    {[lossWarning, nodeWalletGoes ? plan.balance_note : ""].filter(Boolean).join(" ")}
+                  </span>
+                {/if}
+              {:else}
+                <span>{walletCount > 1 ? "Every wallet stays" : "Your wallet stays"}: nothing ticked holds one.</span>
+              {/if}
+              {#each plan.backups as saved}
+                <span>Backed up to <span class="path"><PathText path={saved} /></span></span>
+              {/each}
+              <button class="secondary" on:click={backup} disabled={backingUp || busy}>
+                {backingUp
+                  ? "Backing up…"
+                  : backedUp
+                    ? "Back up again"
+                    : `Back up ${walletCount > 1 ? "wallets" : "wallet"}${walletGoes && !calm ? " first" : ""}`}
+              </button>
+              {#if backupError}<span class="soft-error">{backupError}</span>{/if}
+            </div>
+          {/if}
+
+          {#if plan.blocked}
+            <p class="hint">{plan.blocked} <button class="link-btn" on:click={() => loadPlan(false)}>Check again</button></p>
+          {/if}
+          <label class="type-confirm">
+            <span>Type <code>OBLITERATE</code> to confirm</span>
+            <input type="text" bind:value={typed} autocomplete="off" autocapitalize="off" spellcheck="false" disabled={busy} />
+          </label>
+          <div class="row-actions">
+            <button
+              class="danger"
+              on:click={obliterate}
+              disabled={busy || typed !== "OBLITERATE" || chosen.length === 0 || !!plan.blocked}
+            >{busy ? "Removing…" : "Obliterate"}</button>
+            <button class="secondary" on:click={() => (confirm = null)} disabled={busy}>Cancel</button>
+          </div>
+        {/if}
       </div>
     {/if}
 

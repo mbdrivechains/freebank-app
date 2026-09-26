@@ -143,8 +143,9 @@
   // Update
   const UPDATE_STAGES: [string, string][] = [
     ["release", "Find the newest release"],
+    ["signature", "Check its signature"],
     ["download", "Download"],
-    ["verify", "Check it against SHA256SUMS"],
+    ["verify", "Check it against the signed checksums"],
     ["unpack", "Unpack"],
     ["stop", "Stop the node"],
     ["start", "Start the new version"],
@@ -332,7 +333,10 @@
       <button class="wide" on:click={startUpdate} disabled={external || st.state === "busy"}>
         Update node to {$update.latest}
       </button>
-      <p class="fine">Downloads it from GitHub, checks it against its published checksums, then restarts your node.</p>
+      <p class="fine">
+        Downloads it from GitHub, checks it was signed with the FreeBank release key and matches its checksums, then
+        restarts your node.
+      </p>
     {:else if st.release && !upd?.running}
       <div class="update-row">
         <span class="muted small">

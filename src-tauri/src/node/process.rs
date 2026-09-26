@@ -9,12 +9,17 @@ use std::time::Duration;
 
 /// Start freebankd with the settings on file. Errors are written for the screen.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
+    mgr.still_here()?;
     let mut child = mgr.child.lock().await;
     if let Some(c) = child.as_mut() {
         if c.try_wait().ok().flatten().is_none() {
             return Ok(());
         }
     }
+    // A new start: why an earlier node stopped no longer applies. Cleared before the checks below,
+    // so a start that fails here isn't reported as that old exit. (Only `reap` sets it, under the
+    // child lock held here.)
+    *mgr.last_exit.lock().unwrap() = None;
     let s = mgr.settings.lock().await.clone();
     let tag = s.installed_tag.clone().ok_or("FreeBank isn't installed yet.")?;
     let bin = mgr.freebankd(&tag);
@@ -74,7 +79,6 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Couldn't start {}: {}", bin.display(), e))?;
     *child = Some(c);
-    *mgr.last_exit.lock().unwrap() = None;
     Ok(())
 }
 
@@ -380,7 +384,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
 }
 
 /// Is a node the app didn't start answering on our port?
-async fn someone_elses_node(mgr: &NodeManager) -> bool {
+pub(crate) async fn someone_elses_node(mgr: &NodeManager) -> bool {
     if child_alive(mgr).await {
         return false;
     }
@@ -391,6 +395,7 @@ async fn someone_elses_node(mgr: &NodeManager) -> bool {
 /// Change the name on your blocks: rewrite `coinbasetag=` and restart the node if the app runs it.
 /// Returns "restarted", "external" (another program runs the node) or "saved" (not running).
 pub async fn set_tag(mgr: &NodeManager, tag: &str) -> Result<&'static str, String> {
+    mgr.still_here()?;
     install::validate_tag(tag)?;
     let s = mgr.settings.lock().await.clone();
     install::write_conf(Path::new(&s.datadir), tag)?;
@@ -415,12 +420,14 @@ pub async fn stop_managed(mgr: &NodeManager) -> Result<(), String> {
 #[derive(Debug, Serialize)]
 pub struct Removed {
     pub datadir: String,
-    pub wallet: Option<String>,
+    /// The wallets left in the data folder (usually one).
+    pub wallets: Vec<String>,
 }
 
 /// "Remove FreeBank": stop the app's node and delete what the app downloaded (releases, grpcurl).
 /// Only paths inside the app's own data folder are touched; the node's data folder and wallet stay.
 pub async fn remove_programs(mgr: &NodeManager) -> Result<Removed, String> {
+    mgr.still_here()?;
     let _busy = mgr.busy("Removing FreeBank's programs…")?;
     stop(mgr).await?;
     for name in ["releases", "tools", "tmp"] {
@@ -432,17 +439,20 @@ pub async fn remove_programs(mgr: &NodeManager) -> Result<Removed, String> {
         s.grpcurl = None;
     }
     mgr.save_settings(s.clone()).await?;
-    let wallet = Path::new(&s.datadir).join("wallet.dat");
     Ok(Removed {
-        datadir: s.datadir.clone(),
-        wallet: wallet.is_file().then(|| wallet.to_string_lossy().into_owned()),
+        wallets: super::wallet_files(Path::new(&s.datadir))
+            .iter()
+            .map(|w| w.to_string_lossy().into_owned())
+            .collect(),
+        datadir: s.datadir,
     })
 }
 
 /// "Delete chain data": stop the app's node, remove the blocks, chain state and indexes (FreeBank's
-/// houses, bills and pools live under blocks/), keep wallet.dat and freebank.conf, then start again
+/// houses, bills and pools live under blocks/), keep the wallet and freebank.conf, then start again
 /// so it re-syncs from its peers.
 pub async fn delete_chain_data(mgr: &NodeManager) -> Result<(), String> {
+    mgr.still_here()?;
     if someone_elses_node(mgr).await {
         return Err("This node was started by another program. Stop it there first.".into());
     }
@@ -470,4 +480,27 @@ pub async fn delete_chain_data(mgr: &NodeManager) -> Result<(), String> {
         start(mgr).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_start_drops_the_old_exit() {
+        let d = std::env::temp_dir().join(format!("fbstart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        // Settings of its own, so nothing points at a real data folder.
+        let s = super::super::Settings { datadir: d.join("node").to_string_lossy().into_owned(), ..Default::default() };
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("settings.json"), serde_json::to_vec(&s).unwrap()).unwrap();
+        let mgr = NodeManager::new(d.clone());
+        // An earlier node stopped during warm-up; the next start fails before anything runs.
+        *mgr.last_exit.lock().unwrap() = Some("FreeBank stopped (exit status: 1).".into());
+        let err = start(&mgr).await.unwrap_err();
+        assert!(err.contains("isn't installed"), "{}", err);
+        // What the screen's poll reads as `exited`: nothing, so it keeps the new reason.
+        assert_eq!(reap(&mgr, &d.join("node")).await, (false, None));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }

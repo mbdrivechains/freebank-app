@@ -11,6 +11,8 @@ export interface Settings {
   p2p_port: number;
   installed_tag: string | null;
   grpcurl: string | null;
+  /** The data folder the app created when it installed, if it did. */
+  datadir_created: string | null;
 }
 
 export interface SetupInfo {
@@ -57,6 +59,7 @@ export interface InstallProgress {
   total: number | null;
   note: string | null;
   error: string | null;
+  cancelled: boolean;
 }
 
 export interface NodeProgress {
@@ -120,7 +123,60 @@ export interface UpdateInfo {
 
 export interface Removed {
   datadir: string;
-  wallet: string | null;
+  wallets: string[];
+}
+
+/** One line of the Obliterate list. The screen sends back each ticked id with the path it showed;
+ * the app acts only on its own fresh list, and refuses a tick whose item now names another path. */
+export interface WipeItem {
+  id: string;
+  kind: "app" | "node" | "aside" | "cache";
+  label: string;
+  path: string;
+  size: number;
+  /** Ticked when the list opens. */
+  checked: boolean;
+  /** Can be ticked at all. */
+  allowed: boolean;
+  note: string;
+  /** The wallets in it (the node's folder and folders setup moved aside). */
+  wallets: string[];
+}
+
+export interface WipeTick {
+  id: string;
+  path: string;
+}
+
+export interface ObliteratePlan {
+  items: WipeItem[];
+  wallets: string[];
+  /** Everything the node's wallet holds, spendable or not yet. */
+  balance: number | null;
+  /** How much of balance isn't spendable yet (unconfirmed or newly mined), when any. */
+  pending: number | null;
+  balance_note: string | null;
+  backups: string[];
+  /** Why it can't run right now. */
+  blocked: string | null;
+}
+
+/** How to remove the app itself: "deb" (sudo apt remove freebank), "appimage" (delete the file at
+ * path), "mac" (drag it to the Trash) or "other" (delete the program at path). */
+export interface RemoveApp {
+  kind: "deb" | "appimage" | "mac" | "other";
+  path: string | null;
+}
+
+export interface Obliterated {
+  removed: string[];
+  /** Deleted when the app closes. */
+  at_exit: string[];
+  /** On the list but not ticked. */
+  kept: string[];
+  backups: string[];
+  app_removed: boolean;
+  app: RemoveApp;
 }
 
 /** "restarted" | "external" (another program runs the node) | "saved" (the node isn't running) */
@@ -181,6 +237,7 @@ export const node = {
   installStart: (tag: string, moveAside: boolean) =>
     tauriInvoke("install_start", { tag, moveAside }) as Promise<void>,
   installProgress: () => tauriInvoke("install_progress") as Promise<InstallProgress>,
+  installCancel: () => tauriInvoke("install_cancel") as Promise<void>,
   start: () => tauriInvoke("node_start") as Promise<void>,
   stop: () => tauriInvoke("node_stop") as Promise<void>,
   progress: () => tauriInvoke("node_progress") as Promise<NodeProgress>,
@@ -193,4 +250,8 @@ export const node = {
   updateProgress: () => tauriInvoke("update_progress") as Promise<InstallProgress>,
   removePrograms: () => tauriInvoke("remove_programs") as Promise<Removed>,
   deleteChainData: () => tauriInvoke("delete_chain_data") as Promise<void>,
+  obliteratePlan: () => tauriInvoke("obliterate_plan") as Promise<ObliteratePlan>,
+  walletBackup: () => tauriInvoke("wallet_backup") as Promise<string[]>,
+  obliterate: (ticks: WipeTick[]) => tauriInvoke("obliterate", { ticks }) as Promise<Obliterated>,
+  quit: () => tauriInvoke("app_quit") as Promise<void>,
 };

@@ -1,6 +1,6 @@
 [package]
 name = "freebank"
-version = "0.1.0"
+version = "0.1.1"
 description = "FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)"
 authors = ["The FreeBank developers"]
 license = "MIT"
@@ -26,6 +26,8 @@ hex = "0.4"
 flate2 = "1"
 tar = "0.4"
 rand = "0.8"
+# The release signature: SHA256SUMS.sig (OpenSSH, ed25519) against the pinned release key
+ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519"] }
 
 
 [target.'cfg(unix)'.dependencies]

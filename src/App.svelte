@@ -14,7 +14,8 @@
   import Setup from "./components/Setup.svelte";
   import NodeStatus from "./components/NodeStatus.svelte";
   import NodeSettings from "./components/NodeSettings.svelte";
-  import { checkForUpdate, update, versions, type Removed } from "./lib/node";
+  import PathText from "./components/PathText.svelte";
+  import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
 
   // Detect PWA/browser mode
   const isPWA = api.isPWA();
@@ -50,6 +51,25 @@
     localNode = false;
     update.set(null);
     versions.update((v) => (v ? { ...v, node: null, commit: null } : v));
+  }
+
+  // After "Obliterate": say it's done and how to remove the app itself, then close.
+  let gone: Obliterated | null = null;
+  let closing = false;
+  function onObliterated(e: CustomEvent<Obliterated>) {
+    gone = e.detail;
+    connected = false;
+    localNode = false;
+    update.set(null);
+    versions.set(null);
+  }
+  async function closeApp() {
+    closing = true;
+    try {
+      await node.quit();
+    } catch {
+      closing = false;
+    }
   }
 
   // Errors in plain words: a node that is starting or stopped isn't a failure of this screen.
@@ -600,13 +620,43 @@
     </div>
   {/if}
 
-  {#if removed}
+  {#if gone}
+    <div class="card removed">
+      <h2>{gone.app_removed ? "FreeBank is removed" : "Removed"}</h2>
+      <p>
+        Everything you ticked is gone{gone.at_exit.length ? ", except the app's window cache, which is removed when FreeBank closes" : ""}.
+      </p>
+      {#if gone.backups.length || gone.kept.length}
+        <dl class="facts">
+          {#each gone.backups as saved}<div><dt>Wallet backup</dt><dd class="mono"><PathText path={saved} /></dd></div>{/each}
+          {#each gone.kept as kept}<div><dt>Left in place</dt><dd class="mono"><PathText path={kept} /></dd></div>{/each}
+        </dl>
+      {/if}
+      {#if gone.app_removed}
+        <p>FreeBank can't remove the app itself while it runs. Once it has closed:</p>
+        <div class="gone-step">
+          {#if gone.app.kind === "deb"}
+            <p>Run <code>sudo apt remove freebank</code> in a terminal.</p>
+          {:else if gone.app.kind === "appimage"}
+            <p>Delete the AppImage file:</p>
+            <p class="mono gone-path"><PathText path={gone.app.path ?? ""} /></p>
+          {:else if gone.app.kind === "mac"}
+            <p>Drag FreeBank from Applications to the Trash.</p>
+          {:else}
+            <p>Delete the FreeBank program{gone.app.path ? ":" : "."}</p>
+            {#if gone.app.path}<p class="mono gone-path"><PathText path={gone.app.path} /></p>{/if}
+          {/if}
+        </div>
+      {/if}
+      <button class="wide" on:click={closeApp} disabled={closing}>{closing ? "Closing…" : "Close FreeBank"}</button>
+    </div>
+  {:else if removed}
     <div class="card removed">
       <h2>FreeBank's programs are removed</h2>
       <p>Your node's data folder and wallet are kept:</p>
       <dl class="facts">
-        <div><dt>Data folder</dt><dd class="mono">{removed.datadir}</dd></div>
-        {#if removed.wallet}<div><dt>Wallet</dt><dd class="mono">{removed.wallet}</dd></div>{/if}
+        <div><dt>Data folder</dt><dd class="mono"><PathText path={removed.datadir} /></dd></div>
+        {#each removed.wallets as wallet}<div><dt>Wallet</dt><dd class="mono"><PathText path={wallet} /></dd></div>{/each}
       </dl>
       <p class="hint">Install FreeBank again whenever you like, and it picks up the same wallet. The app itself stays installed; remove it like any other app if you wish.</p>
       <button class="wide" on:click={() => (removed = null)}>Done</button>
@@ -1196,7 +1246,7 @@
     {:else if currentView === "settings"}
       <!-- Settings -->
       {#if localNode}
-        <NodeSettings on:removed={onRemoved} />
+        <NodeSettings on:removed={onRemoved} on:obliterated={onObliterated} />
       {:else}
         <div class="card">
           <h2>Settings</h2>

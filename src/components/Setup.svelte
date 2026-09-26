@@ -1,9 +1,12 @@
 <script lang="ts">
   // First run: find the eCash beta stack, then connect to a running FreeBank node, or install
-  // and start one. Dispatches "ready" once the wallet can talk to the node, and "manual" when the
-  // user would rather connect to a node elsewhere.
+  // and start one. Dispatches "ready" once the wallet can talk to the node. ("manual", for a node
+  // elsewhere, is not offered for now: operator, 2026-09-26; see distribution/todo/remote-node.md.) Each step after the first can go back one: the
+  // install screen to the eCash node, a download can be cancelled, and a node this screen started
+  // can be stopped.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
+  import PathText from "./PathText.svelte";
   import {
     node,
     openUrl,
@@ -20,7 +23,8 @@
 
   const dispatch = createEventDispatcher<{ ready: void; manual: void }>();
 
-  type Screen = "checking" | "unsupported" | "missing" | "locked" | "install" | "installing" | "syncing";
+  // "stack": the eCash node and enforcer, found or not.
+  type Screen = "checking" | "unsupported" | "stack" | "locked" | "install" | "installing" | "syncing";
   let screen: Screen = "checking";
   let info: SetupInfo | null = null;
   let stack: StackCheck | null = null;
@@ -41,19 +45,45 @@
   let install: InstallProgress | null = null;
   let prog: NodeProgress | null = null;
   let startError = "";
+  // Set when this screen started the node, so going back may stop it. A node that was already
+  // starting when the app opened is left alone.
+  let startedHere = false;
+  let stopping = false;
+  let backError = "";
+  let cancelling = false;
+  let cancelError = "";
+  // Said on the install screen after "Cancel".
+  let cancelledNote = "";
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pollGen = 0;
 
   const STAGES: [string, string][] = [
     ["release", "Find the newest release"],
+    ["signature", "Check its signature"],
     ["download", "Download"],
-    ["verify", "Check it against SHA256SUMS"],
+    ["verify", "Check it against the signed checksums"],
     ["unpack", "Unpack"],
     ["grpcurl", "Get grpcurl"],
     ["config", "Save your name"],
     ["start", "Start FreeBank"],
   ];
   $: stageIndex = install ? STAGES.findIndex(([id]) => id === install!.stage) : -1;
+  // The stages the backend lets "Cancel" stop (install::cancellable): nothing is written yet.
+  const CANCELLABLE = ["release", "signature", "download", "verify"];
+  $: canCancel = !install || (install.running && CANCELLABLE.includes(install.stage));
+  // While Cancel shows, the download's bar keeps its place (empty before, full after), so Cancel
+  // never moves under the pointer.
+  const DOWNLOAD = STAGES.findIndex(([id]) => id === "download");
+  $: downloadPct =
+    stageIndex > DOWNLOAD ? 100 : stageIndex === DOWNLOAD && install?.total ? (install.bytes / install.total) * 100 : 0;
+
+  // A double-click's second click lands on whatever replaced the button: Install and Cancel can
+  // share a spot. Only the first click counts (a key press has detail 0).
+  function firstClick(fn: () => void) {
+    return (e: MouseEvent) => {
+      if (e.detail <= 1) fn();
+    };
+  }
 
   // One request at a time: the next poll is scheduled only after this one returns, so a busy
   // node (the RPC stalls while it verifies blocks) never gets a pile of queued calls.
@@ -73,10 +103,13 @@
   }
   onDestroy(stopPolling);
 
-  async function check() {
+  // auto: once the eCash node and enforcer are found, go straight on to installing or starting
+  // FreeBank. Off when the user came back to look at them.
+  async function check(auto = true) {
     checking = true;
     stopPolling();
     startError = "";
+    backError = "";
     try {
       info = await node.setupInfo();
       versions.update((v) => v ?? { app: info!.app_version, node: null, commit: null });
@@ -87,25 +120,52 @@
       }
       const probe = await node.probe();
       if (probe.state === "up") return finish();
-      if (probe.state === "warming") return watchNode();
+      if (probe.state === "warming") {
+        startedHere = false;
+        return watchNode();
+      }
       if (probe.state === "locked") {
         lockedMessage = probe.message;
         screen = "locked";
         return;
       }
       stack = await node.stackCheck();
-      if (!stack.found) {
-        screen = "missing";
-      } else if (info.installed) {
-        await startNode();
+      if (!stack.found || !auto) {
+        screen = "stack";
       } else {
-        datadir = await node.datadirCheck();
-        moveAside = false;
-        screen = "install";
+        await proceed();
       }
     } catch (e) {
       startError = String(e);
-      screen = "missing";
+      screen = "stack";
+    } finally {
+      checking = false;
+    }
+  }
+
+  async function proceed() {
+    if (info?.installed) {
+      await startNode();
+    } else {
+      await showInstall();
+    }
+  }
+
+  async function showInstall() {
+    datadir = await node.datadirCheck();
+    moveAside = false;
+    cancelledNote = "";
+    screen = "install";
+  }
+
+  // "Continue" on the eCash node screen, and "Back" after a failed install.
+  async function goOn(step: () => Promise<void>) {
+    checking = true;
+    startError = "";
+    try {
+      await step();
+    } catch (e) {
+      startError = String(e);
     } finally {
       checking = false;
     }
@@ -119,6 +179,7 @@
 
   async function startNode() {
     startError = "";
+    startedHere = true;
     try {
       await node.start();
     } catch (e) {
@@ -153,21 +214,63 @@
   async function startInstall() {
     if (problem) return;
     startError = "";
+    cancelledNote = "";
     try {
       await node.installStart(tag, moveAside);
     } catch (e) {
       startError = String(e);
       return;
     }
+    install = null;
+    cancelError = "";
+    startedHere = true;
     screen = "installing";
     poll(async () => {
       install = await node.installProgress();
       if (install.error) {
+        // A refused cancel promised it would be ready in a moment; the error says otherwise.
+        cancelError = "";
         stopPolling();
       } else if (install.done) {
         watchNode();
       }
     }, 500);
+  }
+
+  async function cancelInstall() {
+    cancelling = true;
+    cancelError = "";
+    try {
+      await node.installCancel();
+    } catch (e) {
+      // Too late: it is past the download and finishes by itself.
+      cancelError = String(e);
+      return;
+    } finally {
+      cancelling = false;
+    }
+    stopPolling();
+    install = null;
+    await goOn(showInstall);
+    cancelledNote = "Install cancelled. Nothing was installed.";
+  }
+
+  // Back from "Starting FreeBank": stop the node this screen started, then show the eCash node.
+  async function stopAndGoBack() {
+    stopping = true;
+    backError = "";
+    stopPolling();
+    try {
+      await node.stop();
+    } catch (e) {
+      backError = String(e);
+      stopping = false;
+      watchNode();
+      return;
+    }
+    stopping = false;
+    startedHere = false;
+    await check(false);
   }
 
   function mb(n: number): string {
@@ -198,32 +301,41 @@
       <h2>Not available on this computer yet</h2>
       <p class="lede">{info?.platform_error}</p>
     </div>
-    <button class="link-btn centered" on:click={() => dispatch("manual")}>Connect to a FreeBank node elsewhere</button>
 
-  {:else if screen === "missing"}
-    <div class="hero">
-      <div class="mark" aria-hidden="true">☉</div>
-      <h2>FreeBank needs eCash beta</h2>
-      <p class="lede">
-        FreeBank runs alongside an <strong>eCash beta full node</strong> and its <strong>enforcer</strong>.
-        This computer doesn't have them running yet.
-      </p>
-    </div>
-
-    <div class="card steps">
-      <h3>The easiest way</h3>
-      <ol>
-        <li>Install <strong>BitWindow</strong>.</li>
-        <li>Choose full-node mode on <strong>eCash beta</strong> and let it sync.</li>
-        <li>Come back here and press <em>Check again</em>.</li>
-      </ol>
-      <div class="row-actions">
-        <button on:click={() => openUrl(BITWINDOW_URL)}>Get BitWindow</button>
-        <button class="secondary" on:click={check} disabled={checking}>
-          {checking ? "Checking…" : "Check again"}
-        </button>
+  {:else if screen === "stack"}
+    {#if stack?.found}
+      <div class="hero left">
+        <h2>eCash beta node</h2>
+        <p class="lede">
+          FreeBank will use this eCash beta node and its enforcer. To use different ones, change them under
+          Advanced below.
+        </p>
       </div>
-    </div>
+    {:else}
+      <div class="hero">
+        <div class="mark" aria-hidden="true">☉</div>
+        <h2>FreeBank needs eCash beta</h2>
+        <p class="lede">
+          FreeBank runs alongside an <strong>eCash beta full node</strong> and its <strong>enforcer</strong>.
+          This computer doesn't have them running yet.
+        </p>
+      </div>
+
+      <div class="card steps">
+        <h3>The easiest way</h3>
+        <ol>
+          <li>Install <strong>BitWindow</strong>.</li>
+          <li>Choose full-node mode on <strong>eCash beta</strong> and let it sync.</li>
+          <li>Come back here and press <em>Check again</em>.</li>
+        </ol>
+        <div class="row-actions">
+          <button on:click={() => openUrl(BITWINDOW_URL)}>Get BitWindow</button>
+          <button class="secondary" on:click={() => check()} disabled={checking}>
+            {checking ? "Checking…" : "Check again"}
+          </button>
+        </div>
+      </div>
+    {/if}
 
     {#if stack}
       <div class="checklist">
@@ -239,28 +351,34 @@
         </div>
       </div>
     {/if}
+    {#if stack?.found}
+      <div class="row-actions">
+        <button on:click={() => goOn(proceed)} disabled={checking}>
+          {checking ? "One moment…" : "Continue"}
+        </button>
+      </div>
+    {/if}
     {#if startError}<p class="soft-error">{startError}</p>{/if}
 
     {#if info}
-      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} on:saved={check} />
+      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} open={!!stack?.found} on:saved={() => check()} />
     {/if}
-    <button class="link-btn centered" on:click={() => dispatch("manual")}>Connect to a FreeBank node elsewhere</button>
 
   {:else if screen === "locked"}
     <div class="hero">
       <h2>A FreeBank node is already running</h2>
       <p class="lede">{lockedMessage}</p>
-      <p class="lede">Point FreeBank at that node's data folder under Advanced, or connect to it by hand.</p>
+      <p class="lede">Point FreeBank at that node's data folder under Advanced, or stop that node and check again.</p>
     </div>
     <div class="row-actions">
-      <button class="secondary" on:click={check} disabled={checking}>Check again</button>
-      <button class="secondary" on:click={() => dispatch("manual")}>Connect by hand</button>
+      <button class="secondary" on:click={() => check()} disabled={checking}>Check again</button>
     </div>
     {#if info}
-      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} open on:saved={check} />
+      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} open on:saved={() => check()} />
     {/if}
 
   {:else if screen === "install"}
+    <button class="link-btn back-link" on:click={() => (screen = "stack")}>← Back</button>
     <div class="hero left">
       <h2>Set up FreeBank</h2>
       <p class="lede">FreeBank found an eCash beta node and its enforcer. It can now install its own node alongside them.</p>
@@ -298,23 +416,27 @@
           <input type="checkbox" bind:checked={moveAside} />
           <span>
             {datadir.message}{datadir.has_wallet ? " (It includes a wallet.dat.)" : ""}
-            <span class="path">Move to {datadir.away}</span>
+            <span class="path">Move to <PathText path={datadir.away} /></span>
           </span>
         </label>
       {:else if datadir && datadir.message}
         <p class="hint">{datadir.message}</p>
       {/if}
 
-      <button class="wide" on:click={startInstall} disabled={!!installBlocked}>
+      <button class="wide" on:click={firstClick(startInstall)} disabled={!!installBlocked}>
         Install FreeBank
       </button>
       {#if installBlocked}<p class="blocked-why">{installBlocked}</p>{/if}
-      <p class="fine">Downloads the newest FreeBank release from GitHub and checks it against its published checksums.</p>
+      {#if cancelledNote}<p class="cancelled-note">{cancelledNote}</p>{/if}
+      <p class="fine">
+        Downloads the newest FreeBank release from GitHub and checks it was signed with the FreeBank release key and
+        matches its checksums.
+      </p>
     </div>
     {#if startError}<p class="soft-error">{startError}</p>{/if}
 
     {#if info}
-      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} on:saved={check} />
+      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} on:saved={() => check()} />
     {/if}
 
   {:else if screen === "installing"}
@@ -331,13 +453,20 @@
               {#if state === "done"}✓{:else if state === "failed"}!{:else if state === "active"}<span class="spinner"></span>{/if}
             </span>
             <span class="stage-text">
-              {label}
-              {#if state === "active" && id === "download" && install}
-                <span class="stage-note">{mb(install.bytes)}{install.total ? ` of ${mb(install.total)}` : ""} MB</span>
-                {#if install.total}
-                  <span class="bar"><span class="bar-fill" style="width:{(install.bytes / install.total) * 100}%"></span></span>
-                {/if}
-              {:else if (state === "active" || state === "done") && install?.note && i === stageIndex}
+              {#if id === "download" && canCancel}
+                <span class="stage-line">
+                  {label}
+                  {#if state === "active" && install}
+                    <span class="stage-note">{mb(install.bytes)}{install.total ? ` of ${mb(install.total)}` : ""} MB</span>
+                  {/if}
+                </span>
+                <span class="bar">
+                  <span class="bar-fill" class:indeterminate={state === "active" && !install?.total} style="width:{state === 'active' && !install?.total ? 100 : downloadPct}%"></span>
+                </span>
+              {:else}
+                {label}
+              {/if}
+              {#if (state === "active" || state === "done") && install?.note && i === stageIndex && id !== "download"}
                 <span class="stage-note">{install.note}</span>
               {/if}
             </span>
@@ -349,11 +478,24 @@
       <p class="soft-error">{install.error}</p>
       <div class="row-actions">
         <button on:click={startInstall}>Try again</button>
-        <button class="secondary" on:click={check}>Back</button>
+        <button class="secondary" on:click={() => goOn(showInstall)}>Back</button>
+      </div>
+    {:else if canCancel}
+      <div class="row-actions">
+        <button class="secondary" on:click={firstClick(cancelInstall)} disabled={cancelling}>
+          {cancelling ? "Cancelling…" : "Cancel"}
+        </button>
       </div>
     {/if}
+    {#if cancelError}<p class="soft-error">{cancelError}</p>{/if}
 
   {:else if screen === "syncing"}
+    {#if startedHere || startError}
+      <button class="link-btn back-link" on:click={stopAndGoBack} disabled={stopping}>
+        {stopping ? "Stopping FreeBank…" : prog?.exited || !startedHere ? "← Back" : "← Stop FreeBank and go back"}
+      </button>
+    {/if}
+    {#if backError}<p class="soft-error">{backError}</p>{/if}
     <div class="hero left">
       <h2>{prog?.rpc.state === "up" ? "Catching up" : "Starting FreeBank"}</h2>
       <p class="lede">
@@ -393,10 +535,9 @@
       <p class="soft-error">{startError}</p>
       <div class="row-actions">
         <button on:click={startNode}>Start again</button>
-        <button class="secondary" on:click={check}>Back</button>
       </div>
       {#if info}
-        <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} on:saved={check} />
+        <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} on:saved={() => check()} />
       {/if}
     {/if}
   {/if}

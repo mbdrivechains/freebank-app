@@ -1,8 +1,11 @@
-//! Installing freebankd: pick the newest C++ release, download and verify it against SHA256SUMS,
-//! unpack it into the app's data folder, find or fetch grpcurl, and write freebank.conf.
+//! Installing freebankd: pick the newest C++ release, check that its SHA256SUMS carries a good
+//! signature from FreeBank's release key (SHA256SUMS.sig, pinned key in release_key.rs; releases
+//! before v0.2.16 have none and are refused) before anything else is downloaded, download it and
+//! check it against its line there, unpack it into the app's data folder, find or fetch grpcurl,
+//! and write freebank.conf. Update takes the same path.
 
 use super::{
-    detect, home, platform, NodeManager, DATADIR_MARK, GRPCURL_VERSION, RELEASES_URL,
+    detect, home, platform, release_key, NodeManager, DATADIR_MARK, GRPCURL_VERSION, RELEASES_URL,
     RELEASE_DOWNLOAD, SEED_TAG,
 };
 use rand::Rng;
@@ -14,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// What the install screen shows. Stages run in order:
-/// release, download, verify, unpack, grpcurl, config, start.
+/// release, signature, download, verify, unpack, grpcurl, config, start.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct InstallProgress {
     pub running: bool,
@@ -26,6 +29,25 @@ pub struct InstallProgress {
     /// A short line under the current stage ("using BitWindow's grpcurl").
     pub note: Option<String>,
     pub error: Option<String>,
+    /// Set by "Cancel"; the install stops before it writes anything.
+    pub cancelled: bool,
+}
+
+/// The stages "Cancel" can stop: nothing has been written yet (bar the download in tmp/).
+pub fn cancellable(stage: &str) -> bool {
+    matches!(stage, "release" | "signature" | "download" | "verify")
+}
+
+/// Move on to `stage`, unless the install was cancelled. Checked and set under one lock, so a
+/// cancel either lands before the stage starts or is refused.
+fn enter(p: &Arc<std::sync::Mutex<InstallProgress>>, stage: &str) -> Result<(), String> {
+    let mut s = p.lock().unwrap();
+    if s.cancelled {
+        return Err("Cancelled.".into());
+    }
+    s.stage = stage.into();
+    s.note = None;
+    Ok(())
 }
 
 const TAG_ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
@@ -131,6 +153,33 @@ async fn download_text(http: &reqwest::Client, url: &str) -> Result<String, Stri
         .map_err(|e| e.to_string())
 }
 
+/// A small file from a release, whole and byte for byte. Ok(None) when the release has no such file.
+async fn download_bytes(http: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>, String> {
+    let failed = |e: reqwest::Error| format!("Download failed: {} ({})", url, e);
+    let resp = http
+        .get(url)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(failed)?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let body = resp.error_for_status().map_err(failed)?.bytes().await.map_err(failed)?;
+    Ok(Some(body.to_vec()))
+}
+
+/// SHA256SUMS as text, once its signature checks out: the very bytes that were verified.
+/// `sig` is None when the release has no SHA256SUMS.sig (v0.2.15 and older).
+fn signed_sums<'a>(tag: &str, sums: &'a [u8], sig: Option<&[u8]>) -> Result<&'a str, String> {
+    let sig = sig.ok_or_else(|| format!("FreeBank {} isn't signed, so it wasn't installed.", tag))?;
+    release_key::verify_sums(sums, sig).map_err(|why| {
+        format!("The release's signature didn't check out, so nothing was installed ({}).", why)
+    })?;
+    std::str::from_utf8(sums)
+        .map_err(|_| "The release's checksums file isn't plain text, so nothing was installed.".into())
+}
+
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();
@@ -225,34 +274,45 @@ async fn fetch_grpcurl(http: &reqwest::Client, app_dir: &Path, tmp: &Path) -> Re
     Ok(dest)
 }
 
-/// Download `tag` for this machine, check it against SHA256SUMS and unpack it into
-/// releases/<tag>/. Skipped when that release is already there and runs.
-async fn fetch_release(
-    mgr: &NodeManager,
-    tag: &str,
-    p: &Arc<std::sync::Mutex<InstallProgress>>,
-    tmp: &Path,
-) -> Result<(), String> {
-    let (triplet, _) = platform()?;
+/// Written into releases/<tag>/ once its archive has passed the signature and hash checks; it holds
+/// the archive's SHA-256. Only a release with it is reused. One unpacked any other way (by an
+/// earlier build of the app that didn't check signatures) is downloaded and checked again.
+const VERIFIED: &str = ".verified";
+
+/// Is releases/<tag> one this code checked, and does it run? A copy without the marker is never
+/// run, not even for -version.
+fn already_verified(mgr: &NodeManager, tag: &str) -> bool {
     let bin = mgr.freebankd(tag);
-    if bin.is_file() && runs(&bin) {
-        set(p, |s| {
-            s.stage = "unpack".into();
-            s.note = Some(format!("FreeBank {} is already downloaded.", tag));
-        });
-        return Ok(());
-    }
-    let version = tag.trim_start_matches('v');
-    let asset = format!("freebank-{}-{}.tar.gz", version, triplet);
-    let base = format!("{}/{}", RELEASE_DOWNLOAD, tag);
-    let archive = tmp.join(&asset);
+    mgr.release_dir(tag).join(VERIFIED).is_file() && bin.is_file() && runs(&bin)
+}
+
+/// Stages signature, download, verify: check SHA256SUMS's signature and find `asset` in it, and
+/// only then download `asset` from `base` into `archive` and check it against that line. An
+/// unsigned or badly signed release costs no download. Returns the archive's SHA-256.
+async fn fetch_checked(
+    http: &reqwest::Client,
+    base: &str,
+    tag: &str,
+    asset: &str,
+    archive: &Path,
+    p: &Arc<std::sync::Mutex<InstallProgress>>,
+) -> Result<String, String> {
+    set(p, |s| {
+        s.stage = "signature".into();
+        s.note = None;
+    });
+    let sums = download_bytes(http, &format!("{}/SHA256SUMS", base)).await?;
+    let sig = download_bytes(http, &format!("{}/SHA256SUMS.sig", base)).await?;
+    let sums = sums.ok_or_else(|| format!("FreeBank {} has no checksums file, so it wasn't installed.", tag))?;
+    let sums = signed_sums(tag, &sums, sig.as_deref())?;
+    let want = listed_hash(sums, asset).ok_or(format!("{} isn't in the release's signed checksums.", asset))?;
 
     set(p, |s| {
         s.stage = "download".into();
-        s.note = Some(asset.clone());
+        s.note = Some(asset.to_string());
     });
     let prog = p.clone();
-    download(&mgr.http, &format!("{}/{}", base, asset), &archive, move |got, total| {
+    download(http, &format!("{}/{}", base, asset), archive, move |got, total| {
         set(&prog, |s| {
             s.bytes = got;
             s.total = total;
@@ -264,17 +324,39 @@ async fn fetch_release(
         s.stage = "verify".into();
         s.note = None;
     });
-    let sums = download_text(&mgr.http, &format!("{}/SHA256SUMS", base)).await?;
-    let want = listed_hash(&sums, &asset).ok_or(format!("{} is not listed in SHA256SUMS.", asset))?;
-    let got = sha256_file(&archive)?;
+    let got = sha256_file(archive)?;
     if want != got {
         return Err(format!(
-            "The download didn't match SHA256SUMS, so nothing was installed. Please try again. (want {}, got {})",
+            "The download didn't match its signed checksums, so nothing was installed. Please try again. (expected {}, got {})",
             want, got
         ));
     }
+    Ok(got)
+}
 
-    set(p, |s| s.stage = "unpack".into());
+/// Download `tag` for this machine, check SHA256SUMS's signature and the download against it,
+/// and unpack it into releases/<tag>/. Skipped when this code already did that and it runs.
+/// This is the only way a freebankd gets into releases/, for install and Update alike.
+async fn fetch_release(
+    mgr: &NodeManager,
+    tag: &str,
+    p: &Arc<std::sync::Mutex<InstallProgress>>,
+    tmp: &Path,
+) -> Result<(), String> {
+    let (triplet, _) = platform()?;
+    let bin = mgr.freebankd(tag);
+    if already_verified(mgr, tag) {
+        enter(p, "unpack")?;
+        set(p, |s| s.note = Some(format!("FreeBank {} is already downloaded.", tag)));
+        return Ok(());
+    }
+    let version = tag.trim_start_matches('v');
+    let asset = format!("freebank-{}-{}.tar.gz", version, triplet);
+    let base = format!("{}/{}", RELEASE_DOWNLOAD, tag);
+    let archive = tmp.join(&asset);
+    let got = fetch_checked(&mgr.http, &base, tag, &asset, &archive, p).await?;
+
+    enter(p, "unpack")?;
     let rel = mgr.release_dir(tag);
     let _ = std::fs::remove_dir_all(&rel);
     std::fs::create_dir_all(&rel).map_err(|e| e.to_string())?;
@@ -286,11 +368,12 @@ async fn fetch_release(
     if !runs(&bin) {
         return Err("freebankd doesn't run on this machine.".into());
     }
+    std::fs::write(rel.join(VERIFIED), format!("{}\n", got)).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Update, run as a background task; the Node tab polls `mgr.update`.
-/// Stages: release, download, verify, unpack, stop, start. The old release folder is kept.
+/// Stages: release, signature, download, verify, unpack, stop, start. The old release folder is kept.
 pub async fn run_update(mgr: Arc<NodeManager>) {
     let p = mgr.update.clone();
     let result = update(&mgr).await;
@@ -298,6 +381,7 @@ pub async fn run_update(mgr: Arc<NodeManager>) {
         s.running = false;
         match result {
             Ok(()) => s.done = true,
+            Err(_) if s.cancelled => {}
             Err(e) => s.error = Some(e),
         }
     });
@@ -305,6 +389,7 @@ pub async fn run_update(mgr: Arc<NodeManager>) {
 
 async fn update(mgr: &Arc<NodeManager>) -> Result<(), String> {
     let p = mgr.update.clone();
+    mgr.still_here()?;
     let old = mgr
         .settings
         .lock()
@@ -398,6 +483,7 @@ pub async fn run(mgr: Arc<NodeManager>, tag_name: String, move_aside: bool) {
 
 async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Result<(), String> {
     let p = mgr.install.clone();
+    mgr.still_here()?;
     platform()?;
     validate_tag(tag_name)?;
     let settings = mgr.settings.lock().await.clone();
@@ -405,13 +491,11 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
 
     // Settle the data folder before anything is downloaded, so a refusal costs nothing.
     let dd = detect::check_datadir(&datadir);
-    if dd.kind == "other" {
-        if !move_aside {
-            return Err(dd.message);
-        }
-        let away = dd.away.clone().unwrap_or_default();
-        std::fs::rename(&datadir, &away)
-            .map_err(|e| format!("Couldn't move {} aside: {}", datadir.display(), e))?;
+    // Missing, empty or only leftovers, or moved aside at the config stage: this install creates
+    // the folder, and it is recorded so "Obliterate" may remove it. A folder in use stays unrecorded.
+    let creates_datadir = dd.kind != "ours";
+    if dd.kind == "other" && !move_aside {
+        return Err(dd.message);
     }
 
     set(&p, |s| s.stage = "release".into());
@@ -442,12 +526,22 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
         s.stage = "config".into();
         s.note = None;
     });
+    // Moved aside only now, past the last point "Cancel" can stop the install (unpack), so a
+    // cancel or a failed download never leaves the folder moved.
+    if dd.kind == "other" {
+        let away = dd.away.clone().unwrap_or_default();
+        std::fs::rename(&datadir, &away)
+            .map_err(|e| format!("Couldn't move {} aside: {}", datadir.display(), e))?;
+    }
     std::fs::create_dir_all(&datadir).map_err(|e| e.to_string())?;
     std::fs::write(datadir.join(DATADIR_MARK), b"").map_err(|e| e.to_string())?;
     write_conf(&datadir, tag_name)?;
     let mut s2 = mgr.settings.lock().await.clone();
     s2.installed_tag = Some(tag.clone());
     s2.grpcurl = Some(grpcurl.to_string_lossy().into_owned());
+    if creates_datadir {
+        s2.datadir_created = Some(settings.datadir.clone());
+    }
     mgr.save_settings(s2).await?;
     let _ = std::fs::remove_dir_all(&tmp);
 
@@ -481,6 +575,154 @@ mod tests {
         assert_eq!(listed_hash(s, "freebank-0.2.15-x86_64-linux-gnu.tar.gz").as_deref(), Some("abc123"));
         assert_eq!(listed_hash(s, "other.tar.gz").as_deref(), Some("def"));
         assert_eq!(listed_hash(s, "missing"), None);
+    }
+
+    #[test]
+    fn sums_must_be_signed() {
+        let sums = include_bytes!("../../testdata/v0.2.16/SHA256SUMS");
+        let sig = include_bytes!("../../testdata/v0.2.16/SHA256SUMS.sig");
+        let other = include_bytes!("../../testdata/other-key/SHA256SUMS.sig");
+
+        let text = signed_sums("v0.2.16", sums, Some(sig)).unwrap();
+        assert_eq!(
+            listed_hash(text, "freebank-0.2.16-x86_64-linux-gnu.tar.gz").as_deref(),
+            Some("b19da93fcf2ea3195e90ea441acbdd16f669f43fdecc225721ddc48d152ee253")
+        );
+
+        assert_eq!(
+            signed_sums("v0.2.15", sums, None).unwrap_err(),
+            "FreeBank v0.2.15 isn't signed, so it wasn't installed."
+        );
+        let bad = signed_sums("v0.2.16", sums, Some(other)).unwrap_err();
+        assert!(bad.starts_with("The release's signature didn't check out, so nothing was installed"), "{}", bad);
+        let mut changed = sums.to_vec();
+        changed[0] = if changed[0] == b'0' { b'1' } else { b'0' };
+        assert!(signed_sums("v0.2.16", &changed, Some(sig)).is_err());
+    }
+
+    /// A local stand-in for a release's download folder: serves `files` by path (404 for anything
+    /// else) and records every path asked for. One request per connection.
+    fn serve(files: Vec<(String, Vec<u8>)>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { return };
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut first = String::new();
+                if reader.read_line(&mut first).is_err() {
+                    continue;
+                }
+                let mut header = String::new();
+                while reader.read_line(&mut header).map(|n| n > 2).unwrap_or(false) {
+                    header.clear();
+                }
+                let path = first.split_whitespace().nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push(path.clone());
+                let (status, body) = match files.iter().find(|(p, _)| *p == path) {
+                    Some((_, b)) => ("200 OK", b.clone()),
+                    None => ("404 Not Found", Vec::new()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    status,
+                    body.len()
+                );
+                let _ = conn.write_all(head.as_bytes()).and_then(|_| conn.write_all(&body));
+            }
+        });
+        (url, asked)
+    }
+
+    /// fetch_checked against a release with the given SHA256SUMS.sig (None: the release has none)
+    /// and archive bytes. Returns the result, the stage it stopped in, and the paths it asked for.
+    async fn fetch_from(sig: Option<&[u8]>, asset: &str, archive: &[u8]) -> (Result<String, String>, String, Vec<String>) {
+        let sums = include_bytes!("../../testdata/v0.2.16/SHA256SUMS");
+        let mut files = vec![
+            ("/v0.2.16/SHA256SUMS".to_string(), sums.to_vec()),
+            (format!("/v0.2.16/{}", asset), archive.to_vec()),
+        ];
+        if let Some(sig) = sig {
+            files.push(("/v0.2.16/SHA256SUMS.sig".to_string(), sig.to_vec()));
+        }
+        let (url, asked) = serve(files);
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let d = std::env::temp_dir().join(format!("fbfetch-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = Arc::new(std::sync::Mutex::new(InstallProgress::default()));
+        let base = format!("{}/v0.2.16", url);
+        let r = fetch_checked(&http, &base, "v0.2.16", asset, &d.join(asset), &p).await;
+        std::fs::remove_dir_all(&d).unwrap();
+        let stage = p.lock().unwrap().stage.clone();
+        let asked = asked.lock().unwrap().clone();
+        (r, stage, asked)
+    }
+
+    #[tokio::test]
+    async fn signature_checked_before_the_download() {
+        let asset = "freebank-0.2.16-x86_64-linux-gnu.tar.gz";
+        let archive_path = format!("/v0.2.16/{}", asset);
+        let sig = include_bytes!("../../testdata/v0.2.16/SHA256SUMS.sig");
+        let other = include_bytes!("../../testdata/other-key/SHA256SUMS.sig");
+
+        // No SHA256SUMS.sig: refused in the signature stage, and the archive is never asked for.
+        let (r, stage, asked) = fetch_from(None, asset, b"archive").await;
+        assert_eq!(r.unwrap_err(), "FreeBank v0.2.16 isn't signed, so it wasn't installed.");
+        assert_eq!(stage, "signature");
+        assert!(!asked.contains(&archive_path), "{:?}", asked);
+
+        // Signed with another key: the same.
+        let (r, stage, asked) = fetch_from(Some(other), asset, b"archive").await;
+        let e = r.unwrap_err();
+        assert!(e.starts_with("The release's signature didn't check out"), "{}", e);
+        assert_eq!(stage, "signature");
+        assert!(!asked.contains(&archive_path), "{:?}", asked);
+
+        // Well signed, but this build isn't on the list: nothing downloaded either.
+        let (r, _, asked) = fetch_from(Some(sig), "freebank-0.2.16-riscv64-linux-gnu.tar.gz", b"archive").await;
+        assert!(r.unwrap_err().contains("isn't in the release's signed checksums"));
+        assert!(!asked.iter().any(|a| a.ends_with(".tar.gz")), "{:?}", asked);
+
+        // Well signed: the archive is downloaded after the signature files, then checked against it.
+        let (r, stage, asked) = fetch_from(Some(sig), asset, b"not the release").await;
+        let e = r.unwrap_err();
+        assert!(
+            e.starts_with("The download didn't match its signed checksums, so nothing was installed. Please try again."),
+            "{}",
+            e
+        );
+        assert_eq!(stage, "verify");
+        assert_eq!(asked, ["/v0.2.16/SHA256SUMS", "/v0.2.16/SHA256SUMS.sig", archive_path.as_str()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_checked_releases_are_reused() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fbverified-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mgr = NodeManager::new(d.clone());
+        assert!(!already_verified(&mgr, "v0.2.16"));
+
+        // A freebankd that runs, unpacked by something other than this code (no marker): never reused.
+        let bin = mgr.freebankd("v0.2.16");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!already_verified(&mgr, "v0.2.16"));
+
+        // With the marker fetch_release writes after the checks, it is.
+        std::fs::write(mgr.release_dir("v0.2.16").join(VERIFIED), "b19da93f\n").unwrap();
+        assert!(already_verified(&mgr, "v0.2.16"));
+        // Marked but gone or broken: downloaded again.
+        std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(!already_verified(&mgr, "v0.2.16"));
+        std::fs::remove_file(&bin).unwrap();
+        assert!(!already_verified(&mgr, "v0.2.16"));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

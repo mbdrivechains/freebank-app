@@ -190,7 +190,7 @@ pub fn check_datadir(datadir: &Path) -> DatadirCheck {
                 .collect()
         })
         .unwrap_or_default();
-    let has_wallet = datadir.join("wallet.dat").exists();
+    let has_wallet = !super::wallet_files(datadir).is_empty();
     let mk = |kind, message: String, away| DatadirCheck {
         kind,
         message,
@@ -435,17 +435,23 @@ mod tests {
         std::fs::write(d.join("peers.dat"), b"x").unwrap();
         std::fs::create_dir_all(d.join("blocks/index")).unwrap();
         std::fs::create_dir_all(d.join("wallets")).unwrap();
-        assert_eq!(check_datadir(&d).kind, "new");
+        let c = check_datadir(&d);
+        assert_eq!(c.kind, "new");
+        assert!(!c.has_wallet);
 
         // A wallet anywhere, a block file, or an unknown file makes it real data.
         std::fs::write(d.join("wallets/wallet.dat"), b"w").unwrap();
-        assert_eq!(check_datadir(&d).kind, "other");
+        let c = check_datadir(&d);
+        assert_eq!(c.kind, "other");
+        assert!(c.has_wallet);
         std::fs::remove_file(d.join("wallets/wallet.dat")).unwrap();
         std::fs::write(d.join("blocks/blk00000.dat"), b"b").unwrap();
         assert_eq!(check_datadir(&d).kind, "other");
         std::fs::remove_file(d.join("blocks/blk00000.dat")).unwrap();
         std::fs::write(d.join("wallet.dat"), b"w").unwrap();
-        assert_eq!(check_datadir(&d).kind, "other");
+        let c = check_datadir(&d);
+        assert_eq!(c.kind, "other");
+        assert!(c.has_wallet);
         std::fs::remove_file(d.join("wallet.dat")).unwrap();
         std::fs::write(d.join("mainblockhash.dat"), b"m").unwrap();
         assert_eq!(check_datadir(&d).kind, "other");
