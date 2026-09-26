@@ -1,0 +1,21 @@
+Acquire-By-Hash: yes
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sat, 26 Sep 2026 10:41:01 +0000
+Description: FreeBank desktop app
+Label: FreeBank
+Origin: FreeBank
+Suite: stable
+MD5Sum:
+ d1aa73b20e1ad4490de67449a533108f              884 main/binary-amd64/Packages
+ ab13d85885f8513e5b53b4040e316591              593 main/binary-amd64/Packages.gz
+SHA1:
+ a19ddf7f1f6b5713229ea87734d9b9b6d2c1978c              884 main/binary-amd64/Packages
+ 030caaa5598a3cbc833095e7823c559d54e45c26              593 main/binary-amd64/Packages.gz
+SHA256:
+ 5c90371f49bbec4a1126dfaecd5840933c0432ac5aa9f9370a1430b438b4e86c              884 main/binary-amd64/Packages
+ 806603d5935121de97e3ec1f169698f8508fc237fe6a97044558bc15ec423b20              593 main/binary-amd64/Packages.gz
+SHA512:
+ 95e4249aa17da0369ab046fb7d3359cd0ad2c410f989490e80178b513e7e40eeccc41344f8e2bb4305963c078ed81cc6921477d2aa08931156a868df96e5c776              884 main/binary-amd64/Packages
+ 222fccfbdc491d07a25fdb267a2c6022e1302c5296fbbbc9dd66ae0af55be3bb65047654063c595c56647cba297074b6cac0a65fe7feb1f2561cd0127f8e604f              593 main/binary-amd64/Packages.gz
