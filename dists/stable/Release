@@ -2,20 +2,20 @@ Acquire-By-Hash: yes
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sat, 26 Sep 2026 10:41:01 +0000
+Date: Sat, 26 Sep 2026 23:38:40 +0000
 Description: FreeBank desktop app
 Label: FreeBank
 Origin: FreeBank
 Suite: stable
 MD5Sum:
- d1aa73b20e1ad4490de67449a533108f              884 main/binary-amd64/Packages
- ab13d85885f8513e5b53b4040e316591              593 main/binary-amd64/Packages.gz
+ 3ff701c4c3070fb0872bf15355d8ad2e             1768 main/binary-amd64/Packages
+ 744ff4b4f78f0794b84267ed51abd55c              800 main/binary-amd64/Packages.gz
 SHA1:
- a19ddf7f1f6b5713229ea87734d9b9b6d2c1978c              884 main/binary-amd64/Packages
- 030caaa5598a3cbc833095e7823c559d54e45c26              593 main/binary-amd64/Packages.gz
+ 0821548892f501860ad8fadd5c245d813ad6ca5a             1768 main/binary-amd64/Packages
+ 37c99028a949e49329312ff8d61dd2bd35de3421              800 main/binary-amd64/Packages.gz
 SHA256:
- 5c90371f49bbec4a1126dfaecd5840933c0432ac5aa9f9370a1430b438b4e86c              884 main/binary-amd64/Packages
- 806603d5935121de97e3ec1f169698f8508fc237fe6a97044558bc15ec423b20              593 main/binary-amd64/Packages.gz
+ 47886d7a3d92b533b16943da180ab14fb6aabae7fc47cce544e2debd21b163ca             1768 main/binary-amd64/Packages
+ 6e9cc38ccf43e96be79ac584e377466d074c8fe92e79e776fb1ff332213cf77a              800 main/binary-amd64/Packages.gz
 SHA512:
- 95e4249aa17da0369ab046fb7d3359cd0ad2c410f989490e80178b513e7e40eeccc41344f8e2bb4305963c078ed81cc6921477d2aa08931156a868df96e5c776              884 main/binary-amd64/Packages
- 222fccfbdc491d07a25fdb267a2c6022e1302c5296fbbbc9dd66ae0af55be3bb65047654063c595c56647cba297074b6cac0a65fe7feb1f2561cd0127f8e604f              593 main/binary-amd64/Packages.gz
+ f3cbbe140f0d5cfbc433c87c7d58357a5969d4223e70659b695e80dd830c4f668e7d40a23eb98ab7543e2f92c30237c35faaff518e9df1aff243bfb8dc2b2c81             1768 main/binary-amd64/Packages
+ 4c3300c769bf7f0fd92cc9c77ee803ceed81e07f4d9ee63b8df42bd48e386d6b9d202b7ff18377dcc209898107e9cd946a2b78a9709e0a9127d1516bdd34f3b9              800 main/binary-amd64/Packages.gz
