@@ -119,8 +119,8 @@ jobs:
           cd out
           sha256sum * > SHA256SUMS
           cat > notes.md <<'EOF'
-          **Ubuntu / Debian:** install from the apt repository (updates come with your system updates):
-          see https://apt.ecxfreebank.com, or download the `.deb` below and run `sudo apt install ./freebank_*.deb`.
+          **Ubuntu 22.04+ / Debian 12+:** download the `.deb` below and double-click it
+          (or `sudo apt install ./freebank_*.deb`).
 
           **Other Linux:** the AppImage below (`chmod +x` it, then run it).
 

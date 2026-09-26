@@ -6,25 +6,15 @@ shows its blocks and peers, and is its wallet.
 
 ## Install
 
-**Ubuntu 22.04+ / Debian 12+** from the apt repository (updates arrive with your system updates):
+Download from the [releases page](https://github.com/mbdrivechains/freebank-app/releases/latest):
 
-```bash
-sudo wget -qO /usr/share/keyrings/freebank-archive-keyring.gpg https://apt.ecxfreebank.com/freebank-archive-keyring.gpg \
-&& echo "deb [signed-by=/usr/share/keyrings/freebank-archive-keyring.gpg] https://apt.ecxfreebank.com stable main" \
-  | sudo tee /etc/apt/sources.list.d/freebank.list \
-&& sudo apt update && sudo apt install freebank
-```
+- **Ubuntu 22.04+ / Debian 12+:** `freebank_<version>_amd64.deb`. Double-click it and the software installer does the
+  rest (or `sudo apt install ./freebank_<version>_amd64.deb`).
+- **Other Linux:** the `.AppImage`. Make it executable (`chmod +x`), then run it.
+- **macOS (Apple Silicon):** the `.dmg`. Drag FreeBank to Applications. This build is not notarised yet, so the first
+  time macOS will refuse to open it: go to **System Settings → Privacy & Security** and choose **Open Anyway**.
 
-**Other Linux:** the AppImage, and **macOS (Apple Silicon):** the `.dmg`, both on the
-[releases page](https://github.com/mbdrivechains/freebank-app/releases). The macOS build is not signed yet,
-so the first time macOS will refuse to open it: go to **System Settings → Privacy & Security** and
-choose **Open Anyway**. Every release lists `SHA256SUMS`.
-
-![FreeBank](doc/wallet-preview.png)
-
-Built with [Tauri](https://tauri.app) (Rust backend + Svelte frontend). The same web
-frontend doubles as an installable **PWA**, so the wallet runs as a desktop app, a
-direct-download binary, or a web page.
+Every release lists `SHA256SUMS` to check the files against.
 
 ## Model: node-custodial, remote-controlled
 
@@ -92,8 +82,7 @@ npx tauri build        # -> src-tauri/target/release/bundle/  (always via the ta
 ```
 
 Releases are built by `.github/workflows/release.yml` on a `vX.Y.Z` tag: Linux (`.deb`, AppImage) on
-Ubuntu 22.04, macOS on Apple Silicon, a GitHub Release with checksums, and the signed apt repository on
-the `gh-pages` branch (served at https://apt.ecxfreebank.com).
+Ubuntu 22.04, macOS on Apple Silicon, and a GitHub Release with checksums.
 
 ## Connect to a node
 
