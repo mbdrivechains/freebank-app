@@ -1,0 +1,174 @@
+{
+  "name": "FreeBank phone relay protocol v1 interop vectors",
+  "spec": "distribution/relay/PROTOCOL.md",
+  "generator": "distribution/phone/scripts/make-vectors.mjs (Node WebCrypto; reproducible)",
+  "notes": [
+    "Encoding: b64u = base64url, no padding (RFC 4648 section 5). All byte strings below are b64u unless the field says hex or plaintext.",
+    "Keys: P-256. Private keys are JWK {kty:\"EC\",crv:\"P-256\",x,y,d}; d is the 32-byte big-endian scalar = SHA-256(ASCII scalar_label). \"pub\" is uncompressed SEC1: 0x04 || X(32) || Y(32) = 65 bytes.",
+    "ECDH output: the 32-byte big-endian X coordinate of the shared point (WebCrypto deriveBits(256); p256 crate SharedSecret::raw_secret_bytes()). No hashing of the shared secret.",
+    "room = first 22 characters of b64u(SHA-256(D_pub 65 bytes)).",
+    "Pairing link: the fragment is #pair=b64u(UTF-8 JSON {v,relay,room,d,c}); the JSON key order shown is what the generator used but a reader must not depend on it.",
+    "Pairing key: k = HKDF-SHA256(ikm = ECDH(E, D) 32 bytes, salt = C (16 raw bytes), info = ASCII \"fb-pair-v1\", L = 32).",
+    "Pairing ciphertext: AES-256-GCM(key k, nonce 12 random bytes, no AAD) over the UTF-8 JSON {\"p\":b64u(P_pub),\"name\":...}; ct = ciphertext || 16-byte tag (WebCrypto and aes-gcm crate layout). The nonce travels in the frame field \"n\".",
+    "Session: dh1 = ECDH(eP, eD), dh2 = ECDH(eP, D), dh3 = ECDH(P, eD) (desktop: ECDH(eD, eP), ECDH(D, eP), ECDH(eD, P)); ikm = dh1 || dh2 || dh3 (96 bytes).",
+    "th = SHA-256(ASCII \"fb-kk-v1\" (8 bytes, no terminator) || P_pub || D_pub || eP_pub || eD_pub), each pub 65 bytes; 268 bytes hashed.",
+    "okm = HKDF-SHA256(ikm, salt = th (32 bytes), info = ASCII \"fb-session-v1\", L = 64); k_pd = okm[0..32] (phone to desktop), k_dp = okm[32..64] (desktop to phone).",
+    "Session nonce: 12-byte big-endian counter per direction, starting at 0 (counter 0 = 12 zero bytes, counter 1 = 00..00 01). Each direction has its own counter. No AAD.",
+    "Session ciphertext: AES-256-GCM(ciphertext || 16-byte tag), sent as {\"t\":\"m\",\"ct\":b64u}. Plaintext is the UTF-8 JSON request/reply exactly as listed (compare after JSON parse, not byte-for-byte, when you produce your own).",
+    "Comparison code (pair.sas): h = SHA-256(ASCII \"fb-pair-sas-v1\" (14 bytes) || D_pub || P_pub || E_pub (65 bytes each) || C (16 bytes)), 225 bytes hashed; code = the first 4 bytes of h read as a big-endian unsigned integer, modulo 1,000,000, written as 6 digits with leading zeros; shown as two groups of three (\"042 917\").",
+    "Host proof (proof): ECDSA P-256 with SHA-256 over ASCII \"fb-relay-proof-v1\" (17 bytes) || n (the 32 raw challenge bytes), 49 bytes signed; sig = r || s, 64 bytes (the WebCrypto layout). The vector's sig is the RFC 6979 deterministic signature (the p256 crate's SigningKey::sign); any valid signature is accepted, and a signature over the bare n is refused."
+  ],
+  "keys": {
+    "D": {
+      "scalar_label": "fb-vector-D",
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "AzlqJOpIW-bF0HjkZ46NmRbSMv0N8CQ9dAsylZwT6PU",
+        "y": "Ew5QRmBKf_jeJp7SMbwfw1u0Hf_RhvYA70F1ufbTtL0",
+        "d": "E676m2E2KLVZpOR1KDm2av8mWAqC9YzwYyMAyVZIfMs"
+      },
+      "pub": "BAM5aiTqSFvmxdB45GeOjZkW0jL9DfAkPXQLMpWcE-j1Ew5QRmBKf_jeJp7SMbwfw1u0Hf_RhvYA70F1ufbTtL0"
+    },
+    "P": {
+      "scalar_label": "fb-vector-P",
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "Q5wor5kbYxFrezBngLgDJWii6M9NJpo7igC4bCYAB1o",
+        "y": "Ogk2A75nD1wOJXNvVIGw9PXLqk6fKgkImWn9NetElcM",
+        "d": "LdDxbL-C7-j67i2sfeeSNRG-pNnaV4soqzm-nEAS_uI"
+      },
+      "pub": "BEOcKK-ZG2MRa3swZ4C4AyVooujPTSaaO4oAuGwmAAdaOgk2A75nD1wOJXNvVIGw9PXLqk6fKgkImWn9NetElcM"
+    },
+    "E": {
+      "scalar_label": "fb-vector-E",
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "LT4Dy_iBiBLZN9d6DwUd1hGUcTUKuLdKhCLdKllV11I",
+        "y": "hNZHdhH-2Qi8SLKzTMUG_iuUS0fWDt25jBzMkL_LIMc",
+        "d": "JwAJsTHLRmMokK5WT1poB0lBP7nSeI5CvwrTtQn2Jww"
+      },
+      "pub": "BC0-A8v4gYgS2TfXeg8FHdYRlHE1Cri3SoQi3SpZVddShNZHdhH-2Qi8SLKzTMUG_iuUS0fWDt25jBzMkL_LIMc"
+    },
+    "eP": {
+      "scalar_label": "fb-vector-eP",
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "a7aDg6ddkRpK3if-yArI4cc3_a_Aun1A76suCA51o8g",
+        "y": "eDGyOPKBr1DK1M8hDlsQGpsxmFVwqy_z66s111nY66g",
+        "d": "_pprCAl8fzxHag7QPrqWzopUdky3YjWku6GZwRIlpNk"
+      },
+      "pub": "BGu2g4OnXZEaSt4n_sgKyOHHN_2vwLp9QO-rLggOdaPIeDGyOPKBr1DK1M8hDlsQGpsxmFVwqy_z66s111nY66g"
+    },
+    "eD": {
+      "scalar_label": "fb-vector-eD",
+      "jwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "vN3XQVdOUMUpmkXefjUiWZaxgO16XsIauRj9-5nknXI",
+        "y": "EdIgIji5GZT3X8-GMXSgtxcYLTOVvATKkUY7rVAgt60",
+        "d": "imqMwYEEBzW6sa3sOOqX2yjEkmiSYQ2zn88i7V7_SUs"
+      },
+      "pub": "BLzd10FXTlDFKZpF3n41IlmWsYDtel7CGrkY_fuZ5J1yEdIgIji5GZT3X8-GMXSgtxcYLTOVvATKkUY7rVAgt60"
+    }
+  },
+  "room": {
+    "d_pub": "BAM5aiTqSFvmxdB45GeOjZkW0jL9DfAkPXQLMpWcE-j1Ew5QRmBKf_jeJp7SMbwfw1u0Hf_RhvYA70F1ufbTtL0",
+    "room": "vMYsGMxaeMMgtPyKPLolqU"
+  },
+  "pairing_link": {
+    "json": "{\"v\":1,\"relay\":\"wss://relay.example/ws\",\"room\":\"vMYsGMxaeMMgtPyKPLolqU\",\"d\":\"BAM5aiTqSFvmxdB45GeOjZkW0jL9DfAkPXQLMpWcE-j1Ew5QRmBKf_jeJp7SMbwfw1u0Hf_RhvYA70F1ufbTtL0\",\"c\":\"wMHCw8TFxsfIycrLzM3Ozw\"}",
+    "url": "https://relay.example/#pair=eyJ2IjoxLCJyZWxheSI6IndzczovL3JlbGF5LmV4YW1wbGUvd3MiLCJyb29tIjoidk1Zc0dNeGFlTU1ndFB5S1BMb2xxVSIsImQiOiJCQU01YWlUcVNGdm14ZEI0NUdlT2paa1cwakw5RGZBa1BYUUxNcFdjRS1qMUV3NVFSbUJLZl9qZUpwN1NNYndmdzF1MEhmX1JodllBNzBGMXVmYlR0TDAiLCJjIjoid01IQ3c4VEZ4c2ZJeWNyTHpNM096dyJ9"
+  },
+  "pair": {
+    "c": "wMHCw8TFxsfIycrLzM3Ozw",
+    "c_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf",
+    "ecdh": "jqDSM2eThYlpvEZB-ZZENjT9zc5_Xp3WTfGoxmm3qRo",
+    "k": "dnvpH3YvNQQT2n6lJ0fdbxrfiiY8YJALOKq_EIbz1rU",
+    "nonce": "AAECAwQFBgcICQoL",
+    "plaintext": "{\"p\":\"BEOcKK-ZG2MRa3swZ4C4AyVooujPTSaaO4oAuGwmAAdaOgk2A75nD1wOJXNvVIGw9PXLqk6fKgkImWn9NetElcM\",\"name\":\"iPhone\"}",
+    "ct": "tWy3PiDHxX6e5Xn6PrizzhDuXUjFx-6LMtw6xoj9dpGHAUcBeCFpfJquXKEXyHDlPgQq9OvK_eazv_rWKOAS7L7f-QHOXJBGKIBXNuVJmJG3AZ-K8v7IyjiBcJEA0aEAex2A3UE1l3AjyhZzA9-Ob9gV56fjtGnLOZyIQ95u0g",
+    "frame": {
+      "t": "pair",
+      "e": "BC0-A8v4gYgS2TfXeg8FHdYRlHE1Cri3SoQi3SpZVddShNZHdhH-2Qi8SLKzTMUG_iuUS0fWDt25jBzMkL_LIMc",
+      "ct": "tWy3PiDHxX6e5Xn6PrizzhDuXUjFx-6LMtw6xoj9dpGHAUcBeCFpfJquXKEXyHDlPgQq9OvK_eazv_rWKOAS7L7f-QHOXJBGKIBXNuVJmJG3AZ-K8v7IyjiBcJEA0aEAex2A3UE1l3AjyhZzA9-Ob9gV56fjtGnLOZyIQ95u0g",
+      "n": "AAECAwQFBgcICQoL"
+    },
+    "sas": {
+      "h_hex": "821a4951f70919e819b25e3f09f639c0b09b5680c9beb27acad3363f1ad1fa9a",
+      "u32": 2182760785,
+      "code": "760785",
+      "display": "760 785"
+    }
+  },
+  "session": {
+    "hello": {
+      "t": "hello",
+      "p": "BEOcKK-ZG2MRa3swZ4C4AyVooujPTSaaO4oAuGwmAAdaOgk2A75nD1wOJXNvVIGw9PXLqk6fKgkImWn9NetElcM",
+      "e": "BGu2g4OnXZEaSt4n_sgKyOHHN_2vwLp9QO-rLggOdaPIeDGyOPKBr1DK1M8hDlsQGpsxmFVwqy_z66s111nY66g"
+    },
+    "hello_ok": {
+      "t": "hello-ok",
+      "e": "BLzd10FXTlDFKZpF3n41IlmWsYDtel7CGrkY_fuZ5J1yEdIgIji5GZT3X8-GMXSgtxcYLTOVvATKkUY7rVAgt60"
+    },
+    "dh1": "cgbjWFT6Vjg_NBHPyjSNP2uWq0H6xJ0kGke_SHwhkvU",
+    "dh2": "-sej05ldhE4MkCoqqAMQ2K2MwLqJjMA63Swd6d24fv8",
+    "dh3": "Q1qSjdzCPbFbIABcxg6_mGC9EOm1zduoGCZwnMsx8bg",
+    "ikm": "cgbjWFT6Vjg_NBHPyjSNP2uWq0H6xJ0kGke_SHwhkvX6x6PTmV2ETgyQKiqoAxDYrYzAuomMwDrdLB3p3bh-_0Nako3cwj2xWyAAXMYOv5hgvRDptc3bqBgmcJzLMfG4",
+    "th": "EFDDfQwWA9Gr7Vfbkhqccd2sW4NAPcWjPiC5umQ7yss",
+    "k_pd": "Lg2xTW7sT4hVXCuAW0029oa-xLcKxsyRgtzxIEnmmLs",
+    "k_dp": "LLNCEYc7QVIHHf8yJEojiKtDKs2mTrlVYnXEgAUkO0g",
+    "phone_to_desktop": [
+      {
+        "counter": 0,
+        "nonce": "AAAAAAAAAAAAAAAA",
+        "plaintext": "{\"id\":1,\"m\":\"balance\",\"a\":{}}",
+        "ct": "WX1BpEZFsXC0kkQuuLkSwzqzBniC0eIKCIwHeeFDJspfnkZTP3Hv0NKLveSr",
+        "frame": {
+          "t": "m",
+          "ct": "WX1BpEZFsXC0kkQuuLkSwzqzBniC0eIKCIwHeeFDJspfnkZTP3Hv0NKLveSr"
+        }
+      },
+      {
+        "counter": 1,
+        "nonce": "AAAAAAAAAAAAAAAB",
+        "plaintext": "{\"id\":2,\"m\":\"send\",\"a\":{\"address\":\"XexampleAddr\",\"amount\":0.05}}",
+        "ct": "eilZImhRUA23GWiQYtFfa7A6M-l4iRK6qZBK9PSH5Mq28GbDMmAFc3yycee1FSROy2akxy7q9OJcyvTDsM1qax1TQnR_80S3B_LcyFaLi6w",
+        "frame": {
+          "t": "m",
+          "ct": "eilZImhRUA23GWiQYtFfa7A6M-l4iRK6qZBK9PSH5Mq28GbDMmAFc3yycee1FSROy2akxy7q9OJcyvTDsM1qax1TQnR_80S3B_LcyFaLi6w"
+        }
+      }
+    ],
+    "desktop_to_phone": [
+      {
+        "counter": 0,
+        "nonce": "AAAAAAAAAAAAAAAA",
+        "plaintext": "{\"id\":1,\"ok\":{\"confirmed\":1.5,\"pending\":0}}",
+        "ct": "PAD8mPj5-Eopumu4oOxmuDsQi9-uYBh0Rg9TqPRJ0NnpGtf-mHhfXrz0zLGEd1W0Ai7Ax9-Xn9utrHY",
+        "frame": {
+          "t": "m",
+          "ct": "PAD8mPj5-Eopumu4oOxmuDsQi9-uYBh0Rg9TqPRJ0NnpGtf-mHhfXrz0zLGEd1W0Ai7Ax9-Xn9utrHY"
+        }
+      }
+    ]
+  },
+  "proof": {
+    "context": "fb-relay-proof-v1",
+    "n": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+    "n_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "challenge_frame": {
+      "t": "challenge",
+      "n": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
+    },
+    "msg_hex": "66622d72656c61792d70726f6f662d7631a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "sig": "I5ppehCLwTErYvYPzttCmUWOOh3aAbVSeuRBdnFERiyFq0UvNNhqKqNgUU7EtUYWmsi2nNVIEfDxCs2awO6AnQ",
+    "frame": {
+      "t": "proof",
+      "sig": "I5ppehCLwTErYvYPzttCmUWOOh3aAbVSeuRBdnFERiyFq0UvNNhqKqNgUU7EtUYWmsi2nNVIEfDxCs2awO6AnQ"
+    }
+  }
+}

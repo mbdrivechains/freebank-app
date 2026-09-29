@@ -1,6 +1,6 @@
 [package]
 name = "freebank"
-version = "0.1.1"
+version = "0.2.0"
 description = "FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)"
 authors = ["The FreeBank developers"]
 license = "MIT"
@@ -28,6 +28,23 @@ tar = "0.4"
 rand = "0.8"
 # The release signature: SHA256SUMS.sig (OpenSSH, ed25519) against the pinned release key
 ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519"] }
+# v0.2.0 wallet: the app seed (24 BIP39 words; the FreeBank HD seed from them by BIP85), kept encrypted
+# with the wallet passphrase (Argon2id, then XChaCha20-Poly1305) in <app data>/wallet/seed.enc
+bip39 = { version = "2.2", features = ["zeroize"] }
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+argon2 = { version = "0.5", features = ["zeroize"] }
+chacha20poly1305 = "0.10"
+# (zeroize, which the wallet code also uses, is listed with the phone relay's crates below)
+# The phone relay (relay/PROTOCOL.md in freebank-distribution): P-256 ECDH + ECDSA, HKDF, AES-GCM,
+# and the outbound WebSocket to the relay
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+url = "2"
+# The wallet passphrase for phone sends lives only in memory and is wiped when it is let go
+zeroize = "1"
 
 
 [target.'cfg(unix)'.dependencies]

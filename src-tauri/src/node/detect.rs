@@ -267,7 +267,7 @@ fn nearly_empty(datadir: &Path) -> bool {
 }
 
 /// 970387 -> "970,387"
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     let d = n.to_string();
     let mut out = String::new();
     for (i, c) in d.chars().enumerate() {

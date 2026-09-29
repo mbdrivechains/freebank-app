@@ -1,15 +1,20 @@
 <script lang="ts">
   // The Node tab: height against the explorer, peers in and out, the name on your blocks (and
-  // changing it), Stop/Start for the node the app runs, versions, and Update.
+  // changing it), Stop/Start for the node the app runs, versions, and Update. A node the app left
+  // running when it last closed says since when; a release installed before the app checked
+  // signatures isn't started, and is downloaded and checked again from here.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import PathText from "./PathText.svelte";
   import {
     checkForUpdate,
+    megabytes,
     node,
     openUrl,
     randomTag,
     tagProblem,
     update,
     versions,
+    when,
     type InstallProgress,
     type NodeStatus,
   } from "../lib/node";
@@ -140,7 +145,7 @@
     load();
   }
 
-  // Update
+  // Update, and "Download it again" for a release installed before the app checked signatures
   const UPDATE_STAGES: [string, string][] = [
     ["release", "Find the newest release"],
     ["signature", "Check its signature"],
@@ -150,11 +155,21 @@
     ["stop", "Stop the node"],
     ["start", "Start the new version"],
   ];
+  const REFETCH_STAGES: [string, string][] = [
+    ["release", "Find the release"],
+    ["signature", "Check its signature"],
+    ["download", "Download"],
+    ["verify", "Check it against the signed checksums"],
+    ["unpack", "Unpack"],
+  ];
   let upd: InstallProgress | null = null;
   let updTimer: ReturnType<typeof setTimeout> | null = null;
   let checking = false;
-  $: updIndex = upd ? UPDATE_STAGES.findIndex(([id]) => id === upd!.stage) : -1;
+  $: stages = upd?.what === "refetch" ? REFETCH_STAGES : UPDATE_STAGES;
+  $: updIndex = upd ? stages.findIndex(([id]) => id === upd!.stage) : -1;
   $: showUpd = !!upd && (upd.running || upd.done || !!upd.error);
+  // v0.2.16 was the first signed release: an older one can't be checked, only updated.
+  $: signedRelease = !!st?.release && Number(st.release.replace(/^v0\.2\./, "")) >= 16;
 
   async function watchUpdate(started: boolean) {
     try {
@@ -180,13 +195,20 @@
     }
     watchUpdate(true);
   }
+  async function startRefetch() {
+    actError = "";
+    try {
+      await node.refetchStart();
+    } catch (e) {
+      actError = String(e);
+      return;
+    }
+    watchUpdate(true);
+  }
   async function recheck() {
     checking = true;
     await checkForUpdate(true);
     checking = false;
-  }
-  function mb(n: number): string {
-    return (n / 1e6).toFixed(1);
   }
 </script>
 
@@ -213,6 +235,9 @@
       </div>
       {#if !editing}<span class="pill" class:pill-ok={inSync}>{pill}</span>{/if}
     </div>
+    {#if st.adopted && st.background_since}
+      <p class="hint bg-note">Running in the background since {when(st.background_since)}.</p>
+    {/if}
     {#if editing}
       {#if tagErr}
         <p class="field-problem">{tagErr}</p>
@@ -261,14 +286,27 @@
       <div class="node-quiet-state">
         <span>
           {#if st.installed}
-            FreeBank is stopped. Your wallet and data are kept; start it when you're ready.
+            FreeBank is stopped. Your wallet and data are kept{st.unverified ? "." : "; start it when you're ready."}
           {:else}
             No FreeBank node is running on this computer.
           {/if}
         </span>
       </div>
       {#if st.exited}<p class="log-line">{st.exited}</p>{/if}
-      {#if st.installed}
+      {#if st.installed && st.unverified}
+        <p class="hint">
+          FreeBank {st.release} on this computer was installed by an earlier version of the app, before it checked release
+          signatures, so it won't be started.
+          {signedRelease ? "Download it again: FreeBank checks its signature first." : "It is too old to check: update to the newest release."}
+        </p>
+        {#if !upd?.running}
+          {#if signedRelease}
+            <button class="wide" on:click={startRefetch}>Download {st.release} again and check it</button>
+          {:else}
+            <button class="wide" on:click={startUpdate}>Update to the newest release</button>
+          {/if}
+        {/if}
+      {:else if st.installed}
         <button class="wide" on:click={startNode} disabled={acting}>{acting ? "Starting…" : "Start FreeBank"}</button>
       {/if}
     {:else}
@@ -300,7 +338,7 @@
 
     {#if showUpd && upd}
       <ul class="stages upd-stages">
-        {#each UPDATE_STAGES as [id, label], i}
+        {#each stages as [id, label], i}
           {@const state = upd.error && i === updIndex ? "failed" : i < updIndex || upd.done ? "done" : i === updIndex ? "active" : "todo"}
           <li class="stage {state}">
             <span class="stage-icon">
@@ -309,7 +347,7 @@
             <span class="stage-text">
               {label}{id === "start" && upd.tag ? ` ${upd.tag}` : ""}
               {#if state === "active" && id === "download"}
-                <span class="stage-note">{mb(upd.bytes)}{upd.total ? ` of ${mb(upd.total)}` : ""} MB</span>
+                <span class="stage-note">{megabytes(upd.bytes, upd.total)}</span>
                 {#if upd.total}
                   <span class="bar"><span class="bar-fill" style="width:{(upd.bytes / upd.total) * 100}%"></span></span>
                 {/if}
@@ -322,7 +360,11 @@
       </ul>
       {#if upd.error}<p class="soft-error">{upd.error}</p>{/if}
       {#if upd.done && !upd.running}
-        <p class="hint ok-note">Updated to {upd.tag}. The previous release stays on disk in case you need it.</p>
+        {#if upd.what === "refetch"}
+          <p class="hint ok-note">FreeBank {upd.tag} is checked. Start it when you're ready.</p>
+        {:else}
+          <p class="hint ok-note">Updated to {upd.tag}. The previous release stays on disk in case you need it.</p>
+        {/if}
       {/if}
     {/if}
 
@@ -379,13 +421,17 @@
 
   <div class="card quiet">
     <dl class="facts">
-      <div><dt>Data folder</dt><dd class="mono">{st.datadir}</dd></div>
+      <div><dt>Data folder</dt><dd class="mono path-dd"><PathText path={st.datadir} /></dd></div>
       <div><dt>eCash node</dt><dd class="mono">{st.rest}</dd></div>
       <div><dt>Enforcer</dt><dd class="mono">{st.enforcer}</dd></div>
       <div>
         <dt>Started by</dt>
-        <dd>
-          {#if st.managed}
+        <dd class="text-dd">
+          {#if st.managed && st.adopted}
+            this app, before it last closed; {st.keeps_running ? "it keeps running when you close the app" : "it stops when you quit"}
+          {:else if st.managed && st.keeps_running}
+            this app; it keeps running when you close the app
+          {:else if st.managed}
             this app; it stops when you quit
           {:else if external}
             another program
@@ -401,3 +447,19 @@
     {/if}
   </div>
 {/if}
+
+<style>
+  /* A path wraps after a slash (PathText), never mid-name */
+  .path-dd {
+    word-break: normal;
+    overflow-wrap: anywhere;
+  }
+  /* Words wrap whole here (the facts' default breaks anywhere, for addresses) */
+  .text-dd {
+    word-break: normal;
+    overflow-wrap: break-word;
+  }
+  .bg-note {
+    margin: 2px 0 14px;
+  }
+</style>

@@ -10,12 +10,35 @@
     type ConnMode,
   } from "./lib/brand";
   import BalanceCard from "./components/BalanceCard.svelte";
-  import TransactionItem from "./components/TransactionItem.svelte";
   import Setup from "./components/Setup.svelte";
   import NodeStatus from "./components/NodeStatus.svelte";
   import NodeSettings from "./components/NodeSettings.svelte";
   import PathText from "./components/PathText.svelte";
+  import PhoneSettings from "./components/PhoneSettings.svelte";
+  import PhoneAlerts from "./components/PhoneAlerts.svelte";
+  import QuitNotice from "./components/QuitNotice.svelte";
+  import UnlockPrompt from "./components/UnlockPrompt.svelte";
+  import Notice from "./components/Notice.svelte";
+  import SendPanel from "./components/SendPanel.svelte";
+  import SendReceipt from "./components/SendReceipt.svelte";
+  import HomeTransactions from "./components/HomeTransactions.svelte";
+  // v0.2.0 wallet: the passphrase-first flow over every screen, the Home banner, Settings > Wallet
+  import WalletGate from "./components/WalletGate.svelte";
+  import WalletBanner from "./components/WalletBanner.svelte";
+  import WalletSettings from "./components/WalletSettings.svelte";
+  import { holdAddresses } from "./lib/walletSeed";
   import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
+  import { ECX_PROBLEM, fmtEcx, parseEcx } from "./lib/amount";
+  import { nice } from "./lib/errors";
+  import { creditOpen, gates, loadGates } from "./lib/gates";
+  import { cancelUnlock, submitUnlock, unlockRequest, withUnlock } from "./lib/wallet";
+  import { clearReceipts, dismissReceipt, receipts, showReceipt } from "./lib/receipts";
+  // v0.2.0 panels: the Security card and Home's red items, the Deposit panel, the Receive QR code
+  import SecuritySettings from "./components/SecuritySettings.svelte";
+  import SecurityAlerts from "./components/SecurityAlerts.svelte";
+  import DepositPanel from "./components/DepositPanel.svelte";
+  import QrCode from "./components/QrCode.svelte";
+  import { runSecurityCheck } from "./lib/security";
 
   // Detect PWA/browser mode
   const isPWA = api.isPWA();
@@ -34,6 +57,9 @@
   // older remote-control screen (a node elsewhere, e.g. over Tailscale).
   let manualConnect = false;
   let localNode = false;
+  // The gear works during setup too: Settings (and Obliterate) for someone stuck there.
+  let setupSettings = false;
+  $: onSetup = !connected && !isPWA && !manualConnect && !gone && !removed;
 
   async function onSetupReady() {
     localNode = true;
@@ -49,6 +75,8 @@
     removed = e.detail;
     connected = false;
     localNode = false;
+    gates.set(null);
+    clearReceipts();
     update.set(null);
     versions.update((v) => (v ? { ...v, node: null, commit: null } : v));
   }
@@ -60,6 +88,8 @@
     gone = e.detail;
     connected = false;
     localNode = false;
+    gates.set(null);
+    clearReceipts();
     update.set(null);
     versions.set(null);
   }
@@ -72,17 +102,11 @@
     }
   }
 
-  // Errors in plain words: a node that is starting or stopped isn't a failure of this screen.
-  function nice(e: unknown): string {
-    const m = String(e).replace(/^Error: /, "");
-    if (/Loading|Verifying|Rewinding|warm|still starting|-28/i.test(m)) {
-      return "Your node is still starting. This screen fills in once it's ready.";
-    }
-    if (/Request failed|error sending request|Connection refused|RPC not configured|busy; try again/i.test(m)) {
-      return "Your FreeBank node isn't answering. It may be stopped or still starting; the Node tab shows which.";
-    }
-    return m.replace(/^RPC error: /, "");
-  }
+  // Notes, houses, pools and bills show only while the node reports the credit gate open
+  // (lib/gates.ts). If it closes, or isn't known yet, a credit screen falls back to Home.
+  const CREDIT_VIEWS = ["notes", "houses", "pools", "bills"];
+  $: if (!$creditOpen && CREDIT_VIEWS.includes(currentView)) currentView = "home";
+
   const NEED_COINS = "You need FreeBank coins first: deposit ECX from BitWindow.";
 
   // Connection form (Model A: remote-control your own custodial node)
@@ -111,14 +135,15 @@
     return "custom";
   }
 
-  // Send form
-  let sendAddress = "";
-  let sendAmount = "";
-  let sending = false;
-
   // Receive
   let receiveAddress = "";
   let generatingAddress = false;
+  // Addresses (Receive, Deposit) show only once the wallet has its passphrase: setting one replaces the
+  // wallet's seed. v0.2.0 wallet: a new wallet's address screens wait until it is protected
+  // ($holdAddresses, lib/walletSeed.ts); an older wallet's show, and its Home banner asks for the passphrase.
+  $: canShowAddresses = !$holdAddresses;
+  // The security checks run when the app connects, and again on each visit to Home.
+  $: if (connected) runSecurityCheck();
 
   // Notes (M1)
   let notes: NoteHolding[] = [];
@@ -133,41 +158,17 @@
     o: "Open", s: "Stressed", d: "Suspended", i: "Insolvent", w: "Wound down",
   };
 
-  function fmtUnits(u: number): string {
-    return `${u.toLocaleString()} units · ${(u / 1e8).toFixed(8)} ${BASE_TICKER}`;
+  // An address in a receipt's headline; the full one goes in its "To" row.
+  function short(a: string): string {
+    return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;
   }
 
-  // Launch-scale gram rate (display-only). 0 = unknown; sats_per_gram, so grams = sats / gramRate.
-  let gramRate = 0;
-
-  // Fetch the gram rate once after connect (hoisted out of loadNotes so every tab has it).
-  async function loadGramRate() {
-    try {
-      const r = await api.getGramRate();
-      gramRate = r.sats_per_gram || 0;
-    } catch {
-      gramRate = 0;
-    }
-  }
-
-  // Shared display helper: sats → "☉ N g" caption (empty when rate unknown). ECX → sats = ecx * 1e8.
-  function fmtG(sats: number): string {
-    return gramRate > 0 ? '☉ ' + (sats / gramRate).toFixed(6) + ' g' : '';
-  }
-
-  // Client-side gram → integer note units (units are sats). Guarded by callers for gramRate > 0.
-  function gramsToUnits(grams: number): number {
-    return Math.round(grams * gramRate);
-  }
-
-  // Gram-input toggles default to GRAMS once the rate is known (applied once, never clobbers the user).
-  let mintInGrams = false;
-  let actionInGrams = false;
-  let gramDefaultApplied = false;
-  $: if (gramRate > 0 && !gramDefaultApplied) {
-    mintInGrams = true;
-    actionInGrams = true;
-    gramDefaultApplied = true;
+  // Everything is shown and entered in ECX (D-2026-09-29-5 and -7: no grams until gold is switched
+  // on). Note units are base-native, 1 unit = 1 sat of ECX, so a note amount is an ECX amount, and
+  // this shows "= 50,000,000 units" under an ECX field once it holds a valid amount.
+  function unitsEcho(v: string | number): string {
+    const u = parseEcx(v);
+    return u === null ? "" : `= ${u.toLocaleString()} units`;
   }
 
   async function loadNotes() {
@@ -183,19 +184,15 @@
 
   async function doMint() {
     if (!mintHouseId || !mintUnits) return;
-    let units: number;
-    if (mintInGrams) {
-      if (!(gramRate > 0)) { error = "No gram rate — switch to units"; return; }
-      units = gramsToUnits(parseFloat(mintUnits));
-    } else {
-      units = parseInt(mintUnits);
-    }
-    if (!Number.isInteger(units) || units < 1) { error = "Amount must be at least 1 unit"; return; }
+    const units = parseEcx(mintUnits);
+    if (units === null) { error = ECX_PROBLEM; return; }
+    const houseId = parseInt(mintHouseId);
+    const amount = `${fmtEcx(units)} ${BASE_TICKER}`;
     actionBusy = true;
     error = "";
     try {
-      const txid = await api.mintNote(parseInt(mintHouseId), units);
-      alert(`Minted.\n\nTXID: ${txid}`);
+      const txid = await withUnlock(() => api.mintNote(houseId, units), { what: `mint ${amount} of notes` });
+      showReceipt({ txid, what: `Minted ${amount} of notes from House #${houseId}` });
       mintUnits = "";
       await loadNotes();
     } catch (e) {
@@ -212,27 +209,29 @@
 
   async function submitAction() {
     if (!action || !actionUnits) return;
-    let units: number;
-    if (actionInGrams) {
-      if (!(gramRate > 0)) { error = "No gram rate — switch to units"; return; }
-      units = gramsToUnits(parseFloat(actionUnits));
-    } else {
-      units = parseInt(actionUnits);
-    }
-    if (!Number.isInteger(units) || units < 1) { error = "Amount must be at least 1 unit"; return; }
+    const units = parseEcx(actionUnits);
+    if (units === null) { error = ECX_PROBLEM; return; }
+    const { type, houseId } = action;
+    const amount = `${fmtEcx(units)} ${BASE_TICKER}`;
     actionBusy = true;
     error = "";
     try {
-      let txid = "";
-      if (action.type === "send") {
-        if (!actionAddress) throw new Error("Recipient address required");
-        txid = await api.transferNote(action.houseId, units, actionAddress);
-      } else if (action.type === "redeem") {
-        txid = await api.redeemNote(action.houseId, units);
+      if (type === "send") {
+        const to = actionAddress.trim();
+        if (!to) throw new Error("Recipient address required");
+        const txid = await withUnlock(() => api.transferNote(houseId, units, to), { what: `send ${amount} of notes` });
+        showReceipt({
+          txid,
+          what: `Sent ${amount} of House #${houseId} notes to ${short(to)}`,
+          rows: [{ label: "To", value: to, mono: true }],
+        });
+      } else if (type === "redeem") {
+        const txid = await withUnlock(() => api.redeemNote(houseId, units), { what: `redeem ${amount} of notes` });
+        showReceipt({ txid, what: `Redeemed ${amount} of House #${houseId} notes` });
       } else {
-        txid = await api.demandNote(action.houseId, units);
+        const txid = await withUnlock(() => api.demandNote(houseId, units), { what: `lodge a demand on ${amount} of notes` });
+        showReceipt({ txid, what: `Lodged a demand on ${amount} of House #${houseId} notes` });
       }
-      alert(`${action.type} submitted.\n\nTXID: ${txid}`);
       action = null;
       await loadNotes();
     } catch (e) {
@@ -269,11 +268,15 @@
 
   async function doRegister() {
     if (!regName || !regEscrow) return;
+    const name = regName.trim();
+    const escrow = parseFloat(regEscrow);
     regBusy = true;
     error = "";
     try {
-      const txid = await api.registerHouse(regName.trim(), parseInt(regTier), parseFloat(regEscrow));
-      alert(`House chartered.\n\nTXID: ${txid}`);
+      const txid = await withUnlock(() => api.registerHouse(name, parseInt(regTier), escrow), {
+        what: "charter the house",
+      });
+      showReceipt({ txid, what: `Chartered the house "${name}" with ${escrow} ${BASE_TICKER} pledged` });
       regName = "";
       regEscrow = "";
       await loadHouses();
@@ -287,8 +290,8 @@
     regBusy = true;
     error = "";
     try {
-      const txid = await api.attestHouse(houseId);
-      alert(`Reserves attested.\n\nTXID: ${txid}`);
+      const txid = await withUnlock(() => api.attestHouse(houseId), { what: `attest House #${houseId}'s reserves` });
+      showReceipt({ txid, what: `Attested House #${houseId}'s reserves` });
       await loadHouses();
     } catch (e) {
       error = nice(e);
@@ -304,20 +307,26 @@
   let swapDir: "noteforbtx" | "btxfornote" = "noteforbtx";
   let poolAmountIn = "";
   let poolMinOut = "";
-  let poolAddNote = "";
-  let poolAddBtx = "";
+  let poolAddNoteEcx = "";
+  let poolAddEcx = "";
   let poolRemoveLp = "";
   let poolBusy = false;
   // Create pool
   let createPoolId = "";
-  let createNoteUnits = "";
-  let createBtxSats = "";
+  let createNoteEcx = "";
+  let createEcx = "";
   let createFeeBps = "30";
 
   function price(p: Pool): string {
-    // The node leaves the spot price out while a pool side is empty.
+    // The node leaves the spot price out while a pool side is empty. Both sides count in sats
+    // (1 note unit = 1 sat), so sats per unit is ECX paid per ECX of notes.
     if (p.spot_price_sats_x1e8 == null) return "no price yet";
-    return `${(p.spot_price_sats_x1e8 / 1e8).toFixed(8)} sats/unit`;
+    return `${(p.spot_price_sats_x1e8 / 1e8).toFixed(6)} ${BASE_TICKER} per ${BASE_TICKER} of notes`;
+  }
+
+  // An empty or zero "least out" is no limit; anything else must be a valid amount (null if not).
+  function minOut(v: string | number | null): number | null {
+    return v === "" || v === null || Number(v) === 0 ? 0 : parseEcx(v);
   }
 
   async function loadPools() {
@@ -336,33 +345,45 @@
     swapDir = "noteforbtx";
     poolAmountIn = "";
     poolMinOut = "";
-    poolAddNote = "";
-    poolAddBtx = "";
+    poolAddNoteEcx = "";
+    poolAddEcx = "";
     poolRemoveLp = "";
   }
 
   async function submitPoolAction() {
     if (!poolAction) return;
+    const { type, poolId } = poolAction;
     poolBusy = true;
     error = "";
     try {
-      let txid = "";
-      if (poolAction.type === "swap") {
-        if (!poolAmountIn) throw new Error("Amount in required");
-        txid = await api.swapNote(
-          poolAction.poolId,
-          swapDir,
-          parseInt(poolAmountIn),
-          poolMinOut ? parseInt(poolMinOut) : 0,
-        );
-      } else if (poolAction.type === "add") {
-        if (!poolAddNote || !poolAddBtx) throw new Error("Note units and ECX sats required");
-        txid = await api.addLiquidity(poolAction.poolId, parseInt(poolAddNote), parseInt(poolAddBtx));
+      if (type === "swap") {
+        const dir = swapDir;
+        const amountIn = parseEcx(poolAmountIn);
+        const least = minOut(poolMinOut);
+        if (amountIn === null || least === null) throw new Error(ECX_PROBLEM);
+        const txid = await withUnlock(() => api.swapNote(poolId, dir, amountIn, least), { what: "swap in the pool" });
+        const given = `${fmtEcx(amountIn)} ${BASE_TICKER}`;
+        showReceipt({
+          txid,
+          what: dir === "noteforbtx"
+            ? `Swapped ${given} of notes for ${BASE_TICKER} in Pool #${poolId}`
+            : `Swapped ${given} for notes in Pool #${poolId}`,
+        });
+      } else if (type === "add") {
+        const notes = parseEcx(poolAddNoteEcx);
+        const ecx = parseEcx(poolAddEcx);
+        if (notes === null || ecx === null) throw new Error(ECX_PROBLEM);
+        const txid = await withUnlock(() => api.addLiquidity(poolId, notes, ecx), { what: "add liquidity" });
+        showReceipt({
+          txid,
+          what: `Added ${fmtEcx(notes)} ${BASE_TICKER} of notes and ${fmtEcx(ecx)} ${BASE_TICKER} to Pool #${poolId}`,
+        });
       } else {
-        if (!poolRemoveLp) throw new Error("LP units required");
-        txid = await api.removeLiquidity(poolAction.poolId, parseInt(poolRemoveLp));
+        const lp = Number(poolRemoveLp);
+        if (!Number.isInteger(lp) || lp < 1) throw new Error("Enter how many LP units to burn.");
+        const txid = await withUnlock(() => api.removeLiquidity(poolId, lp), { what: "remove liquidity" });
+        showReceipt({ txid, what: `Removed ${lp.toLocaleString()} LP units from Pool #${poolId}` });
       }
-      alert(`${poolAction.type} submitted.\n\nTXID: ${txid}`);
       poolAction = null;
       await loadPools();
     } catch (e) {
@@ -372,19 +393,23 @@
   }
 
   async function doCreatePool() {
-    if (!createPoolId || !createNoteUnits || !createBtxSats) return;
+    if (!createPoolId || !createNoteEcx || !createEcx) return;
+    const notes = parseEcx(createNoteEcx);
+    const ecx = parseEcx(createEcx);
+    if (notes === null || ecx === null) { error = ECX_PROBLEM; return; }
+    const poolId = parseInt(createPoolId);
     poolBusy = true;
     error = "";
     try {
-      const txid = await api.createPool(
-        parseInt(createPoolId),
-        parseInt(createNoteUnits),
-        parseInt(createBtxSats),
-        parseInt(createFeeBps),
-      );
-      alert(`Pool created.\n\nTXID: ${txid}`);
-      createNoteUnits = "";
-      createBtxSats = "";
+      const txid = await withUnlock(() => api.createPool(poolId, notes, ecx, parseInt(createFeeBps)), {
+        what: "create the pool",
+      });
+      showReceipt({
+        txid,
+        what: `Created Pool #${poolId} with ${fmtEcx(notes)} ${BASE_TICKER} of notes and ${fmtEcx(ecx)} ${BASE_TICKER}`,
+      });
+      createNoteEcx = "";
+      createEcx = "";
       await loadPools();
     } catch (e) {
       error = nice(e);
@@ -432,14 +457,17 @@
       const now = blockchainInfo?.blocks ?? 0;
       const maturity = now + parseInt(billMatureIn || "1000");
       const bodyHex = toHex(billBody || "bill");
-      const txid = await api.issueBill(
-        bodyHex,
-        parseFloat(billAmount),
-        parseFloat(billEscrow),
-        maturity,
-        parseInt(billGrace || "1008"),
+      const amount = parseFloat(billAmount);
+      const escrow = parseFloat(billEscrow);
+      const txid = await withUnlock(
+        () => api.issueBill(bodyHex, amount, escrow, maturity, parseInt(billGrace || "1008")),
+        { what: "issue the bill" },
       );
-      alert(`Bill issued.\n\nTXID: ${txid}`);
+      showReceipt({
+        txid,
+        what: `Issued a bill for ${amount} ${BASE_TICKER}, bonded with ${escrow} ${BASE_TICKER}`,
+        rows: [{ label: "Matures at", value: `block ${maturity.toLocaleString()}` }],
+      });
       billBody = "";
       billAmount = "";
       billEscrow = "";
@@ -453,7 +481,7 @@
   async function getBillPubkey() {
     error = "";
     try {
-      newBillPubkey = await api.getNewBillPubkey();
+      newBillPubkey = await withUnlock(() => api.getNewBillPubkey(), { what: "make a new bill pubkey" });
     } catch (e) {
       error = nice(e);
     }
@@ -464,8 +492,10 @@
     billBusy = true;
     error = "";
     try {
-      const txid = await api.endorseBill(billAction.id, endorsePubkey.trim());
-      alert(`Bill endorsed.\n\nTXID: ${txid}`);
+      const id = billAction.id;
+      const to = endorsePubkey.trim();
+      const txid = await withUnlock(() => api.endorseBill(id, to), { what: `endorse Bill #${id}` });
+      showReceipt({ txid, what: `Endorsed Bill #${id}` });
       billAction = null;
       endorsePubkey = "";
       await loadBills();
@@ -479,8 +509,8 @@
     billBusy = true;
     error = "";
     try {
-      const txid = await api.retireBill(id);
-      alert(`Bill retired.\n\nTXID: ${txid}`);
+      const txid = await withUnlock(() => api.retireBill(id), { what: `retire Bill #${id}` });
+      showReceipt({ txid, what: `Retired Bill #${id}` });
       await loadBills();
     } catch (e) {
       error = nice(e);
@@ -492,8 +522,8 @@
     billBusy = true;
     error = "";
     try {
-      const txid = await api.claimBillEscrow(id);
-      alert(`Escrow claimed.\n\nTXID: ${txid}`);
+      const txid = await withUnlock(() => api.claimBillEscrow(id), { what: `claim Bill #${id}'s escrow` });
+      showReceipt({ txid, what: `Claimed Bill #${id}'s escrow` });
       await loadBills();
     } catch (e) {
       error = nice(e);
@@ -522,14 +552,14 @@
 
   async function refresh() {
     if (!connected) return;
+    // The gates can open at any block, so ask on every refresh (it never throws).
+    loadGates();
     try {
       [balance, transactions, blockchainInfo] = await Promise.all([
         api.getBalance(),
         api.getTransactions(20),
         api.getBlockchainInfo(),
       ]);
-      // Fetch the gram rate once here so every tab (Home/Houses/Pools/Bills/Notes) can display grams.
-      await loadGramRate();
     } catch (e) {
       error = nice(e);
     }
@@ -538,28 +568,11 @@
   async function generateAddress() {
     generatingAddress = true;
     try {
-      receiveAddress = await api.getNewAddress();
+      receiveAddress = await withUnlock(() => api.getNewAddress(), { what: "make a new address" });
     } catch (e) {
       error = nice(e);
     }
     generatingAddress = false;
-  }
-
-  async function send() {
-    if (!sendAddress || !sendAmount) return;
-    sending = true;
-    error = "";
-    try {
-      const txid = await api.sendTransaction(sendAddress, parseFloat(sendAmount));
-      alert(`Transaction sent!\n\nTXID: ${txid}`);
-      sendAddress = "";
-      sendAmount = "";
-      await refresh();
-      currentView = "home";
-    } catch (e) {
-      error = nice(e);
-    }
-    sending = false;
   }
 
   onMount(async () => {
@@ -585,6 +598,18 @@
 </script>
 
 <main>
+  {#if !isPWA}<PhoneAlerts />{/if}
+  {#if !isPWA}<QuitNotice />{/if}
+  {#if !isPWA}<WalletGate {connected} {localNode} />{/if}
+  {#if $unlockRequest}
+    <UnlockPrompt
+      what={$unlockRequest.what}
+      error={$unlockRequest.error}
+      busy={$unlockRequest.busy}
+      on:submit={(e) => submitUnlock(e.detail)}
+      on:cancel={cancelUnlock}
+    />
+  {/if}
   {#if isPWA && !warningDismissed}
     <div class="pwa-warning">
       <strong>Browser Mode</strong>
@@ -595,17 +620,20 @@
 
   <header>
     <h1><span class="brand-mark" aria-hidden="true">☉</span>{APP_NAME}</h1>
-    {#if connected}
+    {#if connected || onSetup}
       <div class="head-right">
         {#if blockchainInfo}
           <span class="network">{blockchainInfo.chain} · block {blockchainInfo.blocks.toLocaleString()}</span>
         {/if}
         <button
           class="gear"
-          class:active={currentView === "settings"}
+          class:active={onSetup ? setupSettings : currentView === "settings"}
           title="Settings"
           aria-label="Settings"
-          on:click={() => (currentView = currentView === "settings" ? (localNode ? "node" : "home") : "settings")}
+          on:click={() => {
+            if (onSetup) setupSettings = !setupSettings;
+            else currentView = currentView === "settings" ? (localNode ? "node" : "home") : "settings";
+          }}
         >
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -614,10 +642,7 @@
   </header>
 
   {#if error && !connected}
-    <div class="soft-error banner">
-      <span>{error}</span>
-      <button class="ghost dismiss" on:click={() => (error = "")} aria-label="Dismiss">×</button>
-    </div>
+    <Notice kind="error" message={error} on:dismiss={() => (error = "")} />
   {/if}
 
   {#if gone}
@@ -662,7 +687,13 @@
       <button class="wide" on:click={() => (removed = null)}>Done</button>
     </div>
   {:else if !connected && !isPWA && !manualConnect}
-    <Setup on:ready={onSetupReady} on:manual={() => (manualConnect = true)} />
+    <Setup
+      bind:settingsOpen={setupSettings}
+      on:ready={onSetupReady}
+      on:manual={() => (manualConnect = true)}
+      on:removed={onRemoved}
+      on:obliterated={onObliterated}
+    />
   {:else if !connected}
     <!-- Connection: Model A — remote-control your own custodial node -->
     {#if !isPWA}
@@ -728,18 +759,20 @@
       <button class:active={currentView === "home"} on:click={() => { currentView = "home"; error = ""; refresh(); }}>
         Home
       </button>
-      <button class:active={currentView === "notes"} on:click={() => { currentView = "notes"; loadNotes(); loadHouses(); }}>
-        Notes
-      </button>
-      <button class:active={currentView === "houses"} on:click={() => { currentView = "houses"; loadHouses(); }}>
-        Houses
-      </button>
-      <button class:active={currentView === "pools"} on:click={() => { currentView = "pools"; loadPools(); loadHouses(); }}>
-        Pools
-      </button>
-      <button class:active={currentView === "bills"} on:click={() => { currentView = "bills"; loadBills(); }}>
-        Bills
-      </button>
+      {#if $creditOpen}
+        <button class:active={currentView === "notes"} on:click={() => { currentView = "notes"; loadNotes(); loadHouses(); }}>
+          Notes
+        </button>
+        <button class:active={currentView === "houses"} on:click={() => { currentView = "houses"; loadHouses(); }}>
+          Houses
+        </button>
+        <button class:active={currentView === "pools"} on:click={() => { currentView = "pools"; loadPools(); loadHouses(); }}>
+          Pools
+        </button>
+        <button class:active={currentView === "bills"} on:click={() => { currentView = "bills"; loadBills(); }}>
+          Bills
+        </button>
+      {/if}
       <button class:active={currentView === "send"} on:click={() => (currentView = "send")}>
         Send
       </button>
@@ -749,31 +782,40 @@
     </nav>
 
     {#if error}
-      <div class="soft-error banner">
-        <span>{error}</span>
-        <button class="ghost dismiss" on:click={() => (error = "")} aria-label="Dismiss">×</button>
-      </div>
+      <Notice kind="error" message={error} on:dismiss={() => (error = "")} />
     {/if}
 
-    {#if currentView === "node"}
-      <NodeStatus on:height={(e) => { if (blockchainInfo) blockchainInfo = { ...blockchainInfo, blocks: e.detail }; }} />
-    {:else if currentView === "home"}
-      <!-- Home / Dashboard -->
-      <BalanceCard {balance} {gramRate} onRefresh={refresh} />
+    <!-- Receipts for what this session sent, newest first, on every tab until closed -->
+    <!-- Older ones fold to their headline; each new confirmation refreshes the balance, the list and the header -->
+    {#each $receipts as r, i (r.id)}
+      <SendReceipt
+        receiptId={r.id}
+        txid={r.txid}
+        what={r.what}
+        sentAt={r.sentAt}
+        rows={r.rows}
+        collapsed={i > 0}
+        on:close={() => dismissReceipt(r.id)}
+        on:status={(e) => e.detail.confirmations > 0 && refresh()}
+      />
+    {/each}
 
-      <div class="card">
-        <h3>Recent Transactions</h3>
-        {#if transactions.length === 0}
-          <p class="muted">No transactions yet.</p>
-          {#if balance === 0}<p class="hint">{NEED_COINS}</p>{/if}
-        {:else}
-          <div class="tx-list">
-            {#each transactions.slice(0, 10) as tx}
-              <TransactionItem {tx} />
-            {/each}
-          </div>
-        {/if}
-      </div>
+    {#if currentView === "node"}
+      <!-- The gates can't be read while the node warms up: ask again once it is up, until it has answered -->
+      <NodeStatus
+        on:height={(e) => {
+          if (blockchainInfo) blockchainInfo = { ...blockchainInfo, blocks: e.detail };
+          if ($gates === null) loadGates();
+        }}
+      />
+    {:else if currentView === "home"}
+      <WalletBanner />
+      <!-- Home / Dashboard -->
+      <SecurityAlerts on:open={() => (currentView = "settings")} />
+      <BalanceCard {balance} onRefresh={refresh} />
+      <DepositPanel {canShowAddresses} />
+
+      <HomeTransactions {transactions} {balance} needCoins={NEED_COINS} on:changed={refresh} />
     {:else if currentView === "notes"}
       <!-- Notes (M1): per-house credit notes — hold / send / redeem / demand -->
       <div class="card">
@@ -801,13 +843,11 @@
                   <span class="note-house">House #{n.house_id}</span>
                   <span class="badge badge-{n.house_status}">{STATUS_LABEL[n.house_status] ?? n.house_status}</span>
                 </div>
-                <div class="note-units">{fmtUnits(n.units)}</div>
+                <div class="note-units">{fmtEcx(n.units)} {BASE_TICKER}</div>
               </div>
-              {#if gramRate > 0}
-                <div class="hint">☉ {(n.units / gramRate).toFixed(6)} g <span class="muted">launch scale — not enforced</span></div>
-              {/if}
+              <div class="hint">{n.units.toLocaleString()} units</div>
               {#if n.demanded_units > 0}
-                <div class="note-demanded">{n.demanded_units.toLocaleString()} units under demand (accruing interest)</div>
+                <div class="note-demanded">{fmtEcx(n.demanded_units)} {BASE_TICKER} under demand (accruing interest)</div>
               {/if}
               <div class="note-actions">
                 <button on:click={() => startAction("send", n.house_id)}>Send</button>
@@ -816,16 +856,12 @@
               </div>
               {#if action && action.houseId === n.house_id}
                 <div class="note-form">
-                  <div class="conn-modes">
-                    <button type="button" class:active={actionInGrams} on:click={() => (actionInGrams = true)} disabled={!(gramRate > 0)}>Grams</button>
-                    <button type="button" class:active={!actionInGrams} on:click={() => (actionInGrams = false)}>Units</button>
-                  </div>
                   <label>
-                    {actionInGrams ? "Amount (grams ☉)" : "Units"}
-                    <input type="number" bind:value={actionUnits} placeholder={actionInGrams ? "grams" : "units"} step={actionInGrams ? "0.000001" : "1"} />
+                    Amount ({BASE_TICKER})
+                    <input type="number" bind:value={actionUnits} placeholder="0.00000000" step="0.00000001" min="0" />
                   </label>
-                  {#if actionInGrams && gramRate > 0 && actionUnits && !isNaN(parseFloat(actionUnits))}
-                    <p class="hint">= {gramsToUnits(parseFloat(actionUnits)).toLocaleString()} units</p>
+                  {#if unitsEcho(actionUnits)}
+                    <p class="hint">{unitsEcho(actionUnits)}</p>
                   {/if}
                   {#if action.type === "send"}
                     <label>
@@ -855,22 +891,18 @@
       {#if houses.length > 0}
       <div class="card">
         <h3>Mint notes</h3>
-        <p class="muted">Issue new notes from a house your node controls. Units are base-native (1 unit = 1 sat); enter in grams or units.</p>
+        <p class="muted">Issue new notes from a house your node controls. Enter the amount in {BASE_TICKER}: notes are base-native, 1 unit = 1 sat.</p>
         <div class="form">
           <label>
             House ID
             <input type="number" bind:value={mintHouseId} placeholder="e.g. 1" />
           </label>
-          <div class="conn-modes">
-            <button type="button" class:active={mintInGrams} on:click={() => (mintInGrams = true)} disabled={!(gramRate > 0)}>Grams</button>
-            <button type="button" class:active={!mintInGrams} on:click={() => (mintInGrams = false)}>Units</button>
-          </div>
           <label>
-            {mintInGrams ? "Amount (grams ☉)" : "Units"}
-            <input type="number" bind:value={mintUnits} placeholder={mintInGrams ? "grams" : "units"} step={mintInGrams ? "0.000001" : "1"} />
+            Amount ({BASE_TICKER})
+            <input type="number" bind:value={mintUnits} placeholder="0.00000000" step="0.00000001" min="0" />
           </label>
-          {#if mintInGrams && gramRate > 0 && mintUnits && !isNaN(parseFloat(mintUnits))}
-            <p class="hint">= {gramsToUnits(parseFloat(mintUnits)).toLocaleString()} units</p>
+          {#if unitsEcho(mintUnits)}
+            <p class="hint">{unitsEcho(mintUnits)}</p>
           {/if}
           <button on:click={doMint} disabled={actionBusy || !mintHouseId || !mintUnits}>
             {actionBusy ? "…" : "Mint"}
@@ -906,8 +938,8 @@
                 <div class="note-units">tier {h.tier} · λ{(h.lambdax10 / 10).toFixed(1)}</div>
               </div>
               <div class="house-stats">
-                <div><span class="stat-label">Reserve pledged</span> {h.activeescrow} ECX {#if gramRate > 0}<span class="muted">· {fmtG(h.activeescrow * 1e8)}</span>{/if}</div>
-                <div><span class="stat-label">Notes outstanding</span> {h.mintedunits.toLocaleString()} / {h.mintcapunits.toLocaleString()} cap {#if gramRate > 0}<span class="muted">· {fmtG(h.mintedunits)}</span>{/if}</div>
+                <div><span class="stat-label">Reserve pledged</span> {h.activeescrow} {BASE_TICKER}</div>
+                <div><span class="stat-label">Notes outstanding</span> {fmtEcx(h.mintedunits)} of {fmtEcx(h.mintcapunits)} {BASE_TICKER} cap</div>
                 {#if h.mintedunits > 0}
                   <div><span class="stat-label">Attested ratio</span> {pct(h.attestedratiobps)}</div>
                 {/if}
@@ -970,8 +1002,8 @@
               </div>
               <div class="house-stats">
                 <div><span class="stat-label">My share</span> {pct(lp.share_bps)} of {lp.lp_supply.toLocaleString()} LP</div>
-                <div><span class="stat-label">Underlying notes</span> {lp.my_note_units.toLocaleString()} units {#if gramRate > 0}<span class="muted">· {fmtG(lp.my_note_units)}</span>{/if}</div>
-                <div><span class="stat-label">Underlying {BASE_TICKER}</span> {lp.my_btx_sats.toLocaleString()} sats {#if gramRate > 0}<span class="muted">· {fmtG(lp.my_btx_sats)}</span>{/if}</div>
+                <div><span class="stat-label">Underlying notes</span> {fmtEcx(lp.my_note_units)} {BASE_TICKER}</div>
+                <div><span class="stat-label">Underlying {BASE_TICKER}</span> {fmtEcx(lp.my_btx_sats)} {BASE_TICKER}</div>
               </div>
             </div>
           {/each}
@@ -1008,8 +1040,8 @@
                 <div class="note-units">{price(p)}</div>
               </div>
               <div class="house-stats">
-                <div><span class="stat-label">Note reserve</span> {p.note_reserve.toLocaleString()} units {#if gramRate > 0}<span class="muted">· {fmtG(p.note_reserve)}</span>{/if}</div>
-                <div><span class="stat-label">{BASE_TICKER} reserve</span> {p.btx_reserve.toLocaleString()} sats {#if gramRate > 0}<span class="muted">· {fmtG(p.btx_reserve)}</span>{/if}</div>
+                <div><span class="stat-label">Note reserve</span> {fmtEcx(p.note_reserve)} {BASE_TICKER}</div>
+                <div><span class="stat-label">{BASE_TICKER} reserve</span> {fmtEcx(p.btx_reserve)} {BASE_TICKER}</div>
                 <div><span class="stat-label">LP supply</span> {p.lp_supply.toLocaleString()}</div>
               </div>
               <div class="note-actions">
@@ -1031,21 +1063,21 @@
                       >{BASE_TICKER} → Note</button>
                     </div>
                     <label>
-                      Amount in ({swapDir === "noteforbtx" ? "note units" : "sats"})
-                      <input type="number" bind:value={poolAmountIn} placeholder={swapDir === "noteforbtx" ? "units" : "sats"} />
+                      {swapDir === "noteforbtx" ? `Notes in (${BASE_TICKER})` : `${BASE_TICKER} in`}
+                      <input type="number" bind:value={poolAmountIn} placeholder="0.00000000" step="0.00000001" min="0" />
                     </label>
                     <label>
-                      Min out ({swapDir === "noteforbtx" ? "sats" : "note units"})
-                      <input type="number" bind:value={poolMinOut} placeholder="0 = no slippage limit" />
+                      {swapDir === "noteforbtx" ? `Least ${BASE_TICKER} out` : `Least notes out (${BASE_TICKER})`}
+                      <input type="number" bind:value={poolMinOut} placeholder="empty or 0 = no slippage limit" step="0.00000001" min="0" />
                     </label>
                   {:else if poolAction.type === "add"}
                     <label>
-                      Note units
-                      <input type="number" bind:value={poolAddNote} placeholder="units" />
+                      Notes ({BASE_TICKER})
+                      <input type="number" bind:value={poolAddNoteEcx} placeholder="0.00000000" step="0.00000001" min="0" />
                     </label>
                     <label>
-                      {BASE_TICKER} (sats)
-                      <input type="number" bind:value={poolAddBtx} placeholder="sats" />
+                      {BASE_TICKER}
+                      <input type="number" bind:value={poolAddEcx} placeholder="0.00000000" step="0.00000001" min="0" />
                     </label>
                     <p class="hint">Liquidity is deposited pro-rata to the pool's current ratio; excess is refunded.</p>
                   {:else}
@@ -1078,18 +1110,18 @@
             <input type="number" bind:value={createPoolId} placeholder="e.g. 1" />
           </label>
           <label>
-            Seed note units
-            <input type="number" bind:value={createNoteUnits} placeholder="units" />
+            Seed notes ({BASE_TICKER})
+            <input type="number" bind:value={createNoteEcx} placeholder="0.00000000" step="0.00000001" min="0" />
           </label>
           <label>
-            Seed {BASE_TICKER} (sats)
-            <input type="number" bind:value={createBtxSats} placeholder="sats" />
+            Seed {BASE_TICKER}
+            <input type="number" bind:value={createEcx} placeholder="0.00000000" step="0.00000001" min="0" />
           </label>
           <label>
             Fee (bps)
             <input type="number" bind:value={createFeeBps} placeholder="e.g. 30" />
           </label>
-          <button on:click={doCreatePool} disabled={poolBusy || !createPoolId || !createNoteUnits || !createBtxSats}>
+          <button on:click={doCreatePool} disabled={poolBusy || !createPoolId || !createNoteEcx || !createEcx}>
             {poolBusy ? "…" : "Create pool"}
           </button>
         </div>
@@ -1124,11 +1156,8 @@
                 </div>
                 <div class="note-units">{b.amount} {BASE_TICKER}</div>
               </div>
-              {#if gramRate > 0}
-                <div class="hint">{fmtG(b.amount * 1e8)} <span class="muted">launch scale — not enforced</span></div>
-              {/if}
               <div class="house-stats">
-                <div><span class="stat-label">Escrow bond</span> {b.escrow} {BASE_TICKER} {#if gramRate > 0}<span class="muted">· {fmtG(b.escrow * 1e8)}</span>{/if}</div>
+                <div><span class="stat-label">Escrow bond</span> {b.escrow} {BASE_TICKER}</div>
                 <div><span class="stat-label">Matures at</span> block {b.maturity_height} (+{b.grace_blocks} grace)</div>
                 {#if b.roles && b.roles.length}
                   <div><span class="stat-label">Your role</span> {b.roles.join(", ")}</div>
@@ -1201,32 +1230,15 @@
         </div>
       </div>
     {:else if currentView === "send"}
-      <!-- Send -->
-      <div class="card">
-        <h2>Send {BASE_TICKER}</h2>
-        <div class="form">
-          <label>
-            Address
-            <input type="text" bind:value={sendAddress} placeholder="X…" />
-          </label>
-          <label>
-            Amount ({BASE_TICKER})
-            <input
-              type="number"
-              bind:value={sendAmount}
-              placeholder="0.00"
-              step="0.00000001"
-            />
-          </label>
-          <button on:click={send} disabled={sending || !sendAddress || !sendAmount}>
-            {sending ? "Sending…" : "Send"}
-          </button>
-        </div>
-      </div>
+      <!-- Send: Max, a speed, the fee shown before Confirm; the receipt has Speed up -->
+      <SendPanel {balance} on:sent={() => { refresh(); currentView = "home"; }} />
     {:else if currentView === "receive"}
       <!-- Receive -->
       <div class="card">
         <h2>Receive {BASE_TICKER}</h2>
+        {#if !canShowAddresses}
+          <p class="hint">Your addresses show here once your wallet has a passphrase.</p>
+        {:else}
         {#if receiveAddress}
           <div class="address-display">
             <code>{receiveAddress}</code>
@@ -1234,19 +1246,21 @@
               Copy
             </button>
           </div>
-          <!-- QR code would go here -->
           <div class="qr-placeholder">
-            [QR Code]
+            <QrCode text={receiveAddress} size={200} />
           </div>
         {/if}
         <button on:click={generateAddress} disabled={generatingAddress}>
           {generatingAddress ? "Generating…" : "New Address"}
         </button>
+        {/if}
       </div>
     {:else if currentView === "settings"}
       <!-- Settings -->
       {#if localNode}
+        <WalletSettings />
         <NodeSettings on:removed={onRemoved} on:obliterated={onObliterated} />
+        <PhoneSettings />
       {:else}
         <div class="card">
           <h2>Settings</h2>
@@ -1256,11 +1270,13 @@
             <p>Blocks: {blockchainInfo.blocks}</p>
             <p>Difficulty: {blockchainInfo.difficulty.toExponential(2)}</p>
           {/if}
-          <button on:click={() => { connected = false; localNode = false; }}>
+          <button on:click={() => { connected = false; localNode = false; gates.set(null); clearReceipts(); }}>
             Disconnect
           </button>
         </div>
+        {#if !isPWA}<PhoneSettings />{/if}
       {/if}
+      {#if !isPWA}<SecuritySettings />{/if}
     {/if}
   {/if}
 

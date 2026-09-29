@@ -1,20 +1,31 @@
 //! Running freebankd as this app's child: start, stop (RPC `stop`, then SIGTERM), and the
 //! progress/status reads the screens poll. A node the app didn't start is only read, never stopped.
+//! A node the app started before it last closed, recognised again at launch (background.rs), is
+//! managed like its own child.
 
-use super::{conf_tag, detect, install, NodeManager, EXPLORER, PIN_HASH, PIN_HEIGHT};
+use super::background::{self, PidFile};
+use super::{conf_tag, detect, install, lock, NodeManager, EXPLORER, PIN_HASH, PIN_HEIGHT};
 use serde::Serialize;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-/// Start freebankd with the settings on file. Errors are written for the screen.
+/// Start freebankd with the settings on file. Errors are written for the screen. With "Keep
+/// FreeBank's node running after I close the app" on, the node starts in its own session, so it
+/// outlives the app; otherwise (on Linux) the kernel stops it if the app dies.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
     mgr.still_here()?;
+    // The node this app left running when it last closed is the one to use, if it still runs.
+    background::adopt_now(mgr).await;
     let mut child = mgr.child.lock().await;
     if let Some(c) = child.as_mut() {
         if c.try_wait().ok().flatten().is_none() {
             return Ok(());
         }
+    }
+    if background::adopted_running(mgr) {
+        return Ok(());
     }
     // A new start: why an earlier node stopped no longer applies. Cleared before the checks below,
     // so a start that fails here isn't reported as that old exit. (Only `reap` sets it, under the
@@ -25,6 +36,17 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
     let bin = mgr.freebankd(&tag);
     if !bin.is_file() {
         return Err(format!("{} is missing; please install again.", bin.display()));
+    }
+    if !mgr.verified(&tag) {
+        return Err(format!(
+            "FreeBank {} on this computer was installed before the app checked release signatures, so it \
+             wasn't started. Download it again on the Node tab, or install again.",
+            tag
+        ));
+    }
+    // Another node in this folder, on whatever port: freebankd would refuse to start beside it.
+    if let Some(u) = lock::in_use(Path::new(&s.datadir), &[]) {
+        return Err(format!("{} Stop it first, or choose another data folder under Advanced.", u.say()));
     }
     let grpcurl = install::find_grpcurl(&mgr.app_dir, s.grpcurl.as_deref())
         .map(|(p, _)| p)
@@ -67,30 +89,57 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);
-    // If the app dies without a clean exit, the kernel asks the node to shut down too.
-    #[cfg(target_os = "linux")]
+    let detach = s.keep_running;
+    #[cfg(unix)]
     unsafe {
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        cmd.pre_exec(move || {
+            if detach {
+                // Its own session: it outlives the app, and nothing sent to the app's terminal or
+                // process group reaches it.
+                libc::setsid();
+            } else {
+                // If the app dies without a clean exit, the kernel asks the node to shut down too.
+                #[cfg(target_os = "linux")]
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            }
             Ok(())
         });
     }
     let c = cmd
         .spawn()
         .map_err(|e| format!("Couldn't start {}: {}", bin.display(), e))?;
+    mgr.detached.store(detach, Ordering::SeqCst);
+    // So the next launch can recognise it, should it outlive the app (on purpose, or after a crash).
+    if let Some(pid) = c.id() {
+        let _ = background::write_pid(
+            mgr,
+            &PidFile {
+                pid,
+                datadir: s.datadir.clone(),
+                rpc_port: s.rpc_port,
+                tag,
+                started: background::now(),
+                detached: detach,
+                left: None,
+            },
+        );
+    }
     *child = Some(c);
     Ok(())
 }
 
 /// Stop the node this app started: RPC `stop`, else SIGTERM (the RPC refuses during warm-up),
-/// then wait for it to exit. Never SIGKILL: a hard kill risks the block index.
+/// then wait for it to exit. Never SIGKILL: a hard kill risks the block index. A node recognised
+/// from an earlier launch is stopped the same way (background::stop_adopted).
 pub async fn stop(mgr: &NodeManager) -> Result<(), String> {
     let mut guard = mgr.child.lock().await;
     let Some(child) = guard.as_mut() else {
-        return Ok(());
+        drop(guard);
+        return background::stop_adopted(mgr).await;
     };
     if child.try_wait().ok().flatten().is_some() {
         *guard = None;
+        background::remove_pid(mgr);
         return Ok(());
     }
     let s = mgr.settings.lock().await.clone();
@@ -111,10 +160,26 @@ pub async fn stop(mgr: &NodeManager) -> Result<(), String> {
     match tokio::time::timeout(Duration::from_secs(180), child.wait()).await {
         Ok(_) => {
             *guard = None;
+            background::remove_pid(mgr);
             Ok(())
         }
         Err(_) => Err("FreeBank is still shutting down; give it a minute.".into()),
     }
+}
+
+/// The process ids of the node the app manages now (its child, or one recognised from an earlier
+/// launch), for the lock checks: their locks are the app's own.
+pub async fn managed_pids(mgr: &NodeManager) -> Vec<u32> {
+    let mut pids = Vec::new();
+    if let Some(c) = mgr.child.lock().await.as_mut() {
+        if c.try_wait().ok().flatten().is_none() {
+            pids.extend(c.id());
+        }
+    }
+    if let Some(a) = mgr.adopted.lock().unwrap().as_ref() {
+        pids.push(a.pid);
+    }
+    pids
 }
 
 /// The last line of debug.log, without its timestamp, for the "warming up" screen.
@@ -134,10 +199,21 @@ fn last_log_line(datadir: &Path) -> Option<String> {
     Some(msg.chars().take(160).collect())
 }
 
-/// If our child has exited, forget it and say why (once; later polls read `last_exit`).
+/// If our child has exited, forget it and say why (once; later polls read `last_exit`). The same
+/// for a node recognised from an earlier launch, which has gone once it lets go of its data folder.
 async fn reap(mgr: &NodeManager, datadir: &Path) -> (bool, Option<String>) {
     let mut guard = mgr.child.lock().await;
     let Some(child) = guard.as_mut() else {
+        drop(guard);
+        if background::adopted_running(mgr) {
+            return (true, None);
+        }
+        if background::forget_adopted(mgr) {
+            let why = last_log_line(datadir).unwrap_or_default();
+            let msg = format!("FreeBank stopped. {}", why).trim().to_string();
+            *mgr.last_exit.lock().unwrap() = Some(msg.clone());
+            return (false, Some(msg));
+        }
         return (false, mgr.last_exit.lock().unwrap().clone());
     };
     match child.try_wait() {
@@ -146,6 +222,7 @@ async fn reap(mgr: &NodeManager, datadir: &Path) -> (bool, Option<String>) {
             let why = last_log_line(datadir).unwrap_or_default();
             let msg = format!("FreeBank stopped ({}). {}", status, why).trim().to_string();
             *guard = None;
+            background::remove_pid(mgr);
             *mgr.last_exit.lock().unwrap() = Some(msg.clone());
             (false, Some(msg))
         }
@@ -167,6 +244,7 @@ pub struct NodeProgress {
 pub async fn progress(mgr: &NodeManager) -> NodeProgress {
     let s = mgr.settings.lock().await.clone();
     let datadir = PathBuf::from(&s.datadir);
+    background::adopt(mgr).await;
     let (running, exited) = reap(mgr, &datadir).await;
     let rpc = detect::probe(&mgr.http, &s).await;
     let peers = if rpc.state == detect::RpcState::Up {
@@ -203,10 +281,23 @@ pub struct NodeStatus {
     pub state: detect::RpcState,
     pub activity: Option<String>,
     pub message: String,
-    /// The app started this node (and will stop it on quit).
+    /// The app started this node (now, or before it last closed) and manages it.
     pub managed: bool,
     /// The app has a freebankd it can start.
     pub installed: bool,
+    /// The installed freebankd was put there before the app checked release signatures, so it
+    /// won't be started until it is downloaded and checked again.
+    pub unverified: bool,
+    /// The node was started before the app last closed, and recognised again at this launch.
+    pub adopted: bool,
+    /// For such a node: since when it has run without the app (unix seconds; when the app closed
+    /// and left it, or when it started if the app didn't close cleanly).
+    pub background_since: Option<u64>,
+    /// "Keep FreeBank's node running after I close the app" is on.
+    pub keep_running: bool,
+    /// The node the app manages will keep running when the app closes (the setting is on, and it
+    /// can: see background::outlives_now).
+    pub keeps_running: bool,
     pub exited: Option<String>,
     pub log_line: Option<String>,
     pub version: String,
@@ -233,13 +324,21 @@ pub struct Versions {
     pub commit: Option<String>,
 }
 
-/// Is the node this app started still running?
+/// Is the node this app started still running? That covers a node it started before it last
+/// closed and has recognised again (background.rs).
 pub async fn child_alive(mgr: &NodeManager) -> bool {
-    let mut guard = mgr.child.lock().await;
-    guard
-        .as_mut()
-        .map(|c| c.try_wait().ok().flatten().is_none())
-        .unwrap_or(false)
+    background::adopt(mgr).await;
+    {
+        let mut guard = mgr.child.lock().await;
+        if guard
+            .as_mut()
+            .map(|c| c.try_wait().ok().flatten().is_none())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    background::adopted_running(mgr)
 }
 
 /// The running node's version: the installed release's own `-version` when the app started it,
@@ -303,6 +402,11 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
             .as_deref()
             .map(|t| mgr.freebankd(t).is_file())
             .unwrap_or(false),
+        unverified: mgr.unverified(&s).is_some(),
+        adopted: false,
+        background_since: None,
+        keep_running: s.keep_running,
+        keeps_running: false,
         exited: None,
         log_line: None,
         version: String::new(),
@@ -331,13 +435,23 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         st.log_line = last_log_line(&datadir);
         return Ok(st);
     }
+    background::adopt(mgr).await;
     let (managed, exited) = reap(mgr, &datadir).await;
     st.managed = managed;
     st.exited = exited;
+    if managed {
+        if let Some(a) = mgr.adopted.lock().unwrap().clone() {
+            st.adopted = true;
+            st.background_since = Some(a.left.unwrap_or(a.started));
+        }
+        st.keeps_running = s.keep_running && background::outlives_now(mgr);
+    }
     let probe = detect::probe(&mgr.http, &s).await;
-    // Our node is alive but hasn't opened its RPC port yet: it is starting, not stopped.
+    // Our node is alive but hasn't opened its RPC port yet: it is starting, not stopped. The same
+    // for a node another program runs in our folder (it holds the folder's lock).
     st.state = match probe.state {
         detect::RpcState::Down if managed => detect::RpcState::Warming,
+        detect::RpcState::Down if lock::in_use(&datadir, &[]).is_some() => detect::RpcState::Warming,
         other => other,
     };
     st.message = probe.message;
@@ -383,12 +497,16 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
     Ok(st)
 }
 
-/// Is a node the app didn't start answering on our port?
+/// Is a node the app didn't start answering on our port, or running in our data folder on another
+/// port (it holds the folder's lock)?
 pub(crate) async fn someone_elses_node(mgr: &NodeManager) -> bool {
     if child_alive(mgr).await {
         return false;
     }
     let s = mgr.settings.lock().await.clone();
+    if lock::in_use(Path::new(&s.datadir), &[]).is_some() {
+        return true;
+    }
     detect::probe(&mgr.http, &s).await.state != detect::RpcState::Down
 }
 
@@ -467,6 +585,10 @@ pub async fn delete_chain_data(mgr: &NodeManager) -> Result<(), String> {
     {
         let _busy = mgr.busy("Deleting chain data…")?;
         stop(mgr).await?;
+        // Nothing may be using the folder now, whatever port it answers on.
+        if let Some(u) = lock::in_use(&datadir, &[]) {
+            return Err(format!("{} Stop it first. Nothing was deleted.", u.say()));
+        }
         for name in super::CHAIN_DATA {
             super::remove_inside(&datadir, &datadir.join(name))?;
         }
@@ -501,6 +623,60 @@ mod tests {
         assert!(err.contains("isn't installed"), "{}", err);
         // What the screen's poll reads as `exited`: nothing, so it keeps the new reason.
         assert_eq!(reap(&mgr, &d.join("node")).await, (false, None));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Finding 3 (the review's probe ran an unmarked release): a release an earlier app build
+    /// unpacked without the signature check is never run, not even for -version.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unchecked_release_is_never_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mgr) = super::super::testnode::manager("unchecked", false).await;
+        let s = mgr.settings.lock().await.clone();
+        let bin = mgr.freebankd("v0.2.16");
+        let ran = d.join("ran");
+        std::fs::write(&bin, format!("#!/bin/sh\ntouch '{}'\necho 'FreeBank Daemon version v0.2.16.0-x'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_file(mgr.release_dir("v0.2.16").join(".verified")).unwrap();
+
+        assert!(!mgr.can_start(&s));
+        assert_eq!(mgr.unverified(&s).as_deref(), Some("v0.2.16"));
+        let err = start(&mgr).await.unwrap_err();
+        assert!(err.contains("before the app checked release signatures"), "{}", err);
+        assert_eq!(mgr.release_version("v0.2.16"), None);
+        let st = status(&mgr).await.unwrap();
+        assert!(st.unverified && st.installed && !st.managed, "{:?}", st);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!ran.exists(), "the unchecked freebankd ran");
+
+        // Once checked again (the marker fetch_release writes), it may start.
+        std::fs::write(mgr.release_dir("v0.2.16").join(".verified"), "b19da93f\n").unwrap();
+        assert!(mgr.can_start(&s));
+        assert_eq!(mgr.unverified(&s), None);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Finding 6: a node in the app's data folder on another port (BitWindow's FreeBank uses the same
+    /// folder) is seen by its lock: it is someone else's, the Node tab says a node is starting there,
+    /// and the app won't start a second one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_node_on_another_port_is_seen_by_its_lock() {
+        use super::super::testnode::{free_port, manager, FakeNode, Opts};
+        let (d, mgr) = manager("otherport", false).await;
+        let s = mgr.settings.lock().await.clone();
+        assert!(!someone_elses_node(&mgr).await);
+        let node = FakeNode::spawn(Path::new(&s.datadir), free_port(), Opts::default());
+        assert!(someone_elses_node(&mgr).await);
+        let err = start(&mgr).await.unwrap_err();
+        assert!(err.contains(&format!("process {}", node.pid())), "{}", err);
+        let st = status(&mgr).await.unwrap();
+        assert!(!st.managed && st.state == detect::RpcState::Warming, "{:?}", st);
+        let err = delete_chain_data(&mgr).await.unwrap_err();
+        assert!(err.contains("another program"), "{}", err);
+        drop(node);
+        assert!(!someone_elses_node(&mgr).await);
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

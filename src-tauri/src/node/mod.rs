@@ -2,12 +2,16 @@
 //! C++ freebankd release into the app's own data folder, run it, and report its progress, peers
 //! and height. This app never bids (no refreshbmm).
 
+pub mod background;
 pub mod commands;
 pub mod detect;
 pub mod install;
+pub mod lock;
 pub mod obliterate;
 pub mod process;
 pub mod release_key;
+#[cfg(all(test, unix))]
+pub mod testnode;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,8 +44,12 @@ pub fn platform() -> Result<(&'static str, &'static str), String> {
         Ok(("x86_64-linux-gnu", "linux_x86_64"))
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Ok(("arm64-apple-darwin", "osx_arm64"))
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        // Intel Macs: freebankd v0.2.16 has no build for them yet; the app is ready for the release that adds
+        // one, under this name (Bitcoin Core's depends triplet).
+        Ok(("x86_64-apple-darwin", "osx_x86_64"))
     } else {
-        Err("FreeBank runs on Linux x86_64 and Apple Silicon Macs for now.".into())
+        Err("FreeBank runs on Linux x86_64 and Macs for now.".into())
     }
 }
 
@@ -72,9 +80,18 @@ pub struct Settings {
     /// Release tag this app installed and runs, e.g. v0.2.15
     pub installed_tag: Option<String>,
     pub grpcurl: Option<String>,
-    /// The data folder the app created when it installed (it was missing, empty or only
-    /// leftovers). "Obliterate" ticks the node's folder for you only when it is this one.
+    /// The data folder the app created when it last installed (it was missing, empty or only
+    /// leftovers). Kept as v0.1.1 wrote it; `datadirs_created` has every one.
     pub datadir_created: Option<String>,
+    /// Every data folder the app created. "Obliterate" ticks a node folder for you only when it is
+    /// one of these (and still carries the mark).
+    pub datadirs_created: Vec<String>,
+    /// The folders FreeBank moved aside (<folder>.old-<time>): setup's older data folders, and the
+    /// folders a restore put the replaced wallet in (recovery/job.rs). Only these are called that.
+    pub moved_aside: Vec<String>,
+    /// "Keep FreeBank's node running after I close the app" (Settings). Off: the app stops its node
+    /// when it closes, as before.
+    pub keep_running: bool,
 }
 
 impl Default for Settings {
@@ -88,7 +105,32 @@ impl Default for Settings {
             installed_tag: None,
             grpcurl: None,
             datadir_created: None,
+            datadirs_created: Vec::new(),
+            moved_aside: Vec::new(),
+            keep_running: false,
         }
+    }
+}
+
+impl Settings {
+    /// Every data folder the app created, the one v0.1.1 recorded included, each once.
+    pub fn created(&self) -> Vec<String> {
+        let mut all = self.datadirs_created.clone();
+        if let Some(d) = &self.datadir_created {
+            if !all.contains(d) {
+                all.insert(0, d.clone());
+            }
+        }
+        all
+    }
+
+    /// Record a data folder this app created (after the one v0.1.1 recorded, which stays).
+    pub fn add_created(&mut self, datadir: &str) {
+        self.datadirs_created = self.created();
+        if !self.datadirs_created.iter().any(|d| d == datadir) {
+            self.datadirs_created.push(datadir.to_string());
+        }
+        self.datadir_created = Some(datadir.to_string());
     }
 }
 
@@ -117,8 +159,18 @@ pub struct NodeManager {
     pub obliterated: AtomicBool,
     /// What "Obliterate" leaves for the app's exit, because the screen still uses it.
     pub at_exit: std::sync::Mutex<obliterate::AtExit>,
-    /// Wallet backups made with "Back up wallet first" since the app started.
-    pub backups: std::sync::Mutex<Vec<String>>,
+    /// Wallet backups made since the app started (Obliterate's "Back up wallet"), each with the
+    /// wallet file it copies: a backup covers only its own wallet.
+    pub backups: std::sync::Mutex<Vec<obliterate::Backup>>,
+    /// The node this app started before it last closed (or crashed), recognised again at this launch
+    /// and managed like its own (background.rs). A child of this run lives in `child` instead.
+    pub adopted: std::sync::Mutex<Option<background::Adopted>>,
+    /// The node in `child` was started in its own session, so it can outlive the app.
+    pub detached: AtomicBool,
+    /// When the window's close was last held to say the node keeps running.
+    pub close_asked: std::sync::Mutex<Option<Instant>>,
+    /// When the app last looked for its node from an earlier launch.
+    pub adopt_tried: std::sync::Mutex<Option<Instant>>,
 }
 
 /// Holds `NodeManager::activity` for one long operation; clears it when dropped.
@@ -157,6 +209,10 @@ impl NodeManager {
             obliterated: AtomicBool::new(false),
             at_exit: std::sync::Mutex::new(Default::default()),
             backups: std::sync::Mutex::new(Vec::new()),
+            adopted: std::sync::Mutex::new(None),
+            detached: AtomicBool::new(false),
+            close_asked: std::sync::Mutex::new(None),
+            adopt_tried: std::sync::Mutex::new(None),
         }
     }
 
@@ -192,10 +248,14 @@ impl NodeManager {
         r
     }
 
-    /// The version and commit of an installed release, from `freebankd -version` (cached).
+    /// The version and commit of an installed release, from `freebankd -version` (cached). A release
+    /// this code didn't check is never run, not even for this.
     pub fn release_version(&self, tag: &str) -> Option<(String, Option<String>)> {
         if let Some(v) = self.versions.lock().unwrap().get(tag) {
             return Some(v.clone());
+        }
+        if !self.verified(tag) {
+            return None;
         }
         let out = std::process::Command::new(self.freebankd(tag))
             .arg("-version")
@@ -227,14 +287,44 @@ impl NodeManager {
         self.release_dir(tag).join("freebank/bin/freebankd")
     }
 
-    /// Can the app start its node? It needs the freebankd it installed and the node's data folder:
-    /// freebankd won't create that folder (setup does), so without it first run sets FreeBank up again.
+    /// Did this code put releases/<tag> there, after the signature and hash checks (`.verified`)?
+    /// Only such a release is run. One an earlier build of the app installed without the checks is
+    /// downloaded and checked again first (Node tab, or install again).
+    pub fn verified(&self, tag: &str) -> bool {
+        self.release_dir(tag).join(install::VERIFIED).is_file()
+    }
+
+    /// The installed release is on disk but wasn't checked by this code, so it won't be started.
+    pub fn unverified(&self, s: &Settings) -> Option<String> {
+        s.installed_tag
+            .as_deref()
+            .filter(|t| self.freebankd(t).is_file() && !self.verified(t))
+            .map(String::from)
+    }
+
+    /// Can the app start its node? It needs the freebankd it installed and checked, and the node's
+    /// data folder: freebankd won't create that folder (setup does), so without it first run sets
+    /// FreeBank up again.
     pub fn can_start(&self, s: &Settings) -> bool {
-        s.installed_tag.as_deref().is_some_and(|t| self.freebankd(t).is_file()) && Path::new(&s.datadir).is_dir()
+        s.installed_tag
+            .as_deref()
+            .is_some_and(|t| self.freebankd(t).is_file() && self.verified(t))
+            && Path::new(&s.datadir).is_dir()
+    }
+
+    /// The explorer's tip as the app last saw it (the Node tab asks every few seconds), if that was
+    /// in the last 10 minutes. Never asks the explorer.
+    pub fn explorer_tip_seen(&self) -> Option<u64> {
+        let (at, h) = (*self.explorer_tip.lock().unwrap())?;
+        (at.elapsed() < Duration::from_secs(600)).then_some(h)
     }
 
     /// The explorer's tip height, cached for 15 s so polling screens don't hammer it.
     pub async fn explorer_tip(&self) -> Option<u64> {
+        // Unit tests never ask the real explorer.
+        if cfg!(test) {
+            return self.explorer_tip_seen();
+        }
         if let Some((at, h)) = *self.explorer_tip.lock().unwrap() {
             if at.elapsed() < Duration::from_secs(15) {
                 return Some(h);
@@ -288,18 +378,69 @@ pub fn patch(tag: &str) -> Option<u32> {
     tag.strip_prefix("v0.2.")?.parse().ok()
 }
 
-/// The wallets in a datadir, wherever freebankd (Core 0.16) may have put them: wallet.dat and named
-/// wallets (-wallet=<name>, a file each) go in wallets/ when that folder exists, else in the datadir.
-/// freebankd makes wallets/ only when it creates the datadir itself; this app makes the folder
-/// first, so its nodes keep wallet.dat at the top. wallets/<name>/wallet.dat, as later Core
-/// versions lay it out, counts too. Both places are looked at, default wallets first.
-pub fn wallet_files(datadir: &Path) -> Vec<PathBuf> {
-    let wallets = datadir.join("wallets");
-    let mut found: Vec<PathBuf> = [wallets.join("wallet.dat"), datadir.join("wallet.dat")]
+/// The first `walletdir=` in the data folder's freebank.conf, read as freebankd reads it: the first
+/// line wins, `#` starts a comment, and keys after a `[section]` line belong to that section. Only a
+/// full path to a folder counts; freebankd refuses to start with anything else.
+pub fn conf_walletdir(datadir: &Path) -> Option<PathBuf> {
+    let conf = std::fs::read_to_string(datadir.join("freebank.conf")).ok()?;
+    for line in conf.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            return None;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "walletdir" {
+            let dir = PathBuf::from(value.trim());
+            return (dir.is_absolute() && dir.is_dir()).then_some(dir);
+        }
+    }
+    None
+}
+
+/// The folders freebankd (0.16) may keep wallets in, and lock with `.walletlock`: walletdir= from
+/// freebank.conf, wallets/, and the data folder itself. Those that exist, each once.
+pub fn wallet_dirs(datadir: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in [conf_walletdir(datadir), Some(datadir.join("wallets")), Some(datadir.to_path_buf())]
         .into_iter()
+        .flatten()
+    {
+        if dir.is_dir() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// The wallets of the node whose data folder is `datadir`, wherever freebankd (Core 0.16) may have
+/// put them: wallet.dat and named wallets (-wallet=<name>, a file each) go in the folder walletdir=
+/// in freebank.conf names, else in wallets/ when that folder exists, else in the datadir. freebankd
+/// makes wallets/ only when it creates the datadir itself; this app makes the folder first, so its
+/// nodes keep wallet.dat at the top. wallets/<name>/wallet.dat, as later Core versions lay it out,
+/// counts too. Every place is looked at, default wallets first. A walletdir may lie outside the
+/// data folder.
+pub fn wallet_files(datadir: &Path) -> Vec<PathBuf> {
+    // Each place, and whether its subfolders can hold wallets (not the data folder's: blocks/ and
+    // the like hold none).
+    let mut places: Vec<(PathBuf, bool)> = Vec::new();
+    for dir in [conf_walletdir(datadir), Some(datadir.join("wallets")), Some(datadir.to_path_buf())]
+        .into_iter()
+        .flatten()
+    {
+        if !places.iter().any(|(d, _)| *d == dir) {
+            let subfolders = dir != datadir;
+            places.push((dir, subfolders));
+        }
+    }
+    let mut found: Vec<PathBuf> = places
+        .iter()
+        .map(|(d, _)| d.join("wallet.dat"))
         .filter(|p| p.is_file())
         .collect();
-    for (dir, subfolders) in [(wallets.as_path(), true), (datadir, false)] {
+    for (dir, subfolders) in &places {
+        let (dir, subfolders) = (dir.as_path(), *subfolders);
         let mut named: Vec<PathBuf> = std::fs::read_dir(dir)
             .into_iter()
             .flatten()
@@ -319,7 +460,22 @@ pub fn wallet_files(datadir: &Path) -> Vec<PathBuf> {
         named.sort();
         found.extend(named);
     }
+    // A walletdir inside wallets/ is seen from both.
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|p| seen.insert(p.clone()));
     found
+}
+
+/// The wallets that lie inside `folder` (deleting the folder deletes them). A link to a folder
+/// holds none: only the link would go.
+pub fn wallets_inside(folder: &Path, wallets: &[PathBuf]) -> Vec<PathBuf> {
+    let is_link = std::fs::symlink_metadata(folder)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if is_link {
+        return Vec::new();
+    }
+    wallets.iter().filter(|w| w.starts_with(folder)).cloned().collect()
 }
 
 /// Is this a Berkeley DB btree file (what a wallet is)? The same test as Core's IsBerkeleyBtree:
@@ -449,6 +605,71 @@ mod tests {
         std::fs::remove_file(w.join("spending")).unwrap();
         std::fs::remove_dir_all(w.join("house")).unwrap();
         assert_eq!(wallet_files(&d), vec![w.join("wallet.dat")]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Finding 11: wallets in a walletdir= folder count, wherever it is.
+    #[test]
+    fn walletdir_is_read_as_freebankd_reads_it() {
+        let d = std::env::temp_dir().join(format!("fbwalletdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let datadir = d.join("node");
+        let mine = datadir.join("mywallets");
+        let outside = d.join("elsewhere");
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let conf = |text: &str| std::fs::write(datadir.join("freebank.conf"), text).unwrap();
+        let mut bdb = vec![0u8; 4096];
+        bdb[12..16].copy_from_slice(&0x0005_3162u32.to_le_bytes());
+
+        assert_eq!(conf_walletdir(&datadir), None);
+        conf(&format!("coinbasetag=x\n walletdir = {} # mine\nwalletdir={}\n", mine.display(), outside.display()));
+        assert_eq!(conf_walletdir(&datadir), Some(mine.clone()), "the first line wins");
+        conf(&format!("# walletdir={}\n[test]\nwalletdir={}\n", mine.display(), outside.display()));
+        assert_eq!(conf_walletdir(&datadir), None, "comments and other sections don't count");
+        conf("walletdir=relative/path\n");
+        assert_eq!(conf_walletdir(&datadir), None, "freebankd refuses a relative walletdir");
+        conf(&format!("walletdir={}\n", d.join("missing").display()));
+        assert_eq!(conf_walletdir(&datadir), None);
+
+        // Inside the data folder under another name: v0.1.1 missed these, so Obliterate deleted them
+        // with no warning or backup.
+        conf(&format!("walletdir={}\n", mine.display()));
+        std::fs::write(mine.join("wallet.dat"), b"w").unwrap();
+        std::fs::write(mine.join("savings"), &bdb).unwrap();
+        std::fs::write(datadir.join("wallet.dat"), b"old").unwrap();
+        assert_eq!(wallet_files(&datadir), vec![mine.join("wallet.dat"), datadir.join("wallet.dat"), mine.join("savings")]);
+        assert_eq!(wallet_dirs(&datadir), vec![mine.clone(), datadir.clone()]);
+        assert_eq!(wallets_inside(&datadir, &wallet_files(&datadir)).len(), 3);
+
+        // Outside it: still the node's wallets (backups copy them), but deleting the data folder
+        // doesn't take them.
+        conf(&format!("walletdir={}\n", outside.display()));
+        std::fs::write(outside.join("wallet.dat"), b"w").unwrap();
+        let all = wallet_files(&datadir);
+        assert_eq!(all, vec![outside.join("wallet.dat"), datadir.join("wallet.dat")]);
+        assert_eq!(wallets_inside(&datadir, &all), vec![datadir.join("wallet.dat")]);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn only_checked_releases_can_start() {
+        let d = std::env::temp_dir().join(format!("fbverify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("node")).unwrap();
+        let mgr = NodeManager::new(d.join("app"));
+        let s = Settings {
+            datadir: d.join("node").to_string_lossy().into_owned(),
+            installed_tag: Some("v0.2.16".into()),
+            ..Default::default()
+        };
+        assert!(!mgr.can_start(&s) && mgr.unverified(&s).is_none());
+        std::fs::create_dir_all(mgr.freebankd("v0.2.16").parent().unwrap()).unwrap();
+        std::fs::write(mgr.freebankd("v0.2.16"), b"#!/bin/sh\n").unwrap();
+        assert!(!mgr.can_start(&s));
+        assert_eq!(mgr.unverified(&s).as_deref(), Some("v0.2.16"));
+        std::fs::write(mgr.release_dir("v0.2.16").join(install::VERIFIED), b"x\n").unwrap();
+        assert!(mgr.can_start(&s) && mgr.verified("v0.2.16") && mgr.unverified(&s).is_none());
         std::fs::remove_dir_all(&d).unwrap();
     }
 

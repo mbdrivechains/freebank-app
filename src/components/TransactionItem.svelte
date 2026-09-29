@@ -1,8 +1,11 @@
 <script lang="ts">
   import type { Transaction } from "../lib/api";
   import { BASE_TICKER } from "../lib/brand";
+  import { CONFIRMED_AT } from "../lib/receipts";
 
   export let tx: Transaction;
+  /** A faster send replaced it (Speed up). */
+  export let replaced = false;
 
   $: isReceive = tx.category === "receive";
   $: formattedAmount = (isReceive ? "+" : "") + tx.amount.toFixed(8);
@@ -23,8 +26,9 @@
   <div class="tx-amount" class:positive={isReceive} class:negative={!isReceive}>
     {formattedAmount} {BASE_TICKER}
   </div>
-  <div class="tx-confirmations" class:unconfirmed={tx.confirmations < 6}>
-    {tx.confirmations < 6 ? `${tx.confirmations} conf` : "Confirmed"}
+  <!-- Confirmed at 3, as on the receipts (CONFIRMED_AT) -->
+  <div class="tx-confirmations" class:unconfirmed={!replaced && tx.confirmations < CONFIRMED_AT}>
+    {replaced ? "Replaced" : tx.confirmations < CONFIRMED_AT ? `${tx.confirmations} conf` : "Confirmed"}
   </div>
 </div>
 

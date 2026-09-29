@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { BASE_TICKER } from "../lib/brand";
+  import { fmtEcx } from "../lib/amount";
+  import { getPending, type Pending } from "../lib/deposit";
 
   export let balance: number;
   export let onRefresh: () => Promise<void>;
-  export let gramRate = 0; // sats per gram (launch scale); 0 = unknown
 
   let refreshing = false;
 
@@ -11,22 +13,37 @@
     refreshing = true;
     await onRefresh();
     refreshing = false;
+    loadPending();
   }
 
-  // Money made metric: lead with the gram, settle in ECX.
-  $: grams = gramRate > 0 ? (balance * 1e8) / gramRate : 0;
+  // The pending line (v0.2.0): getbalance counts spendable coins only, so a payment on its way in, or a
+  // deposit in its first FreeBank block, shows here (getwalletinfo). Read with each balance, and every 15 s.
+  let pending: Pending = { unconfirmed: 0, immature: 0 };
+  async function loadPending() {
+    try {
+      pending = await getPending();
+    } catch {
+      // A busy or restarting node: keep the last answer.
+    }
+  }
+  $: balance, loadPending();
+  const timer = setInterval(loadPending, 15000);
+  onDestroy(() => clearInterval(timer));
 </script>
 
 <div class="balance-card">
   <div class="balance-label">Balance</div>
-  {#if gramRate > 0}
-    <div class="balance-amount">
-      <span class="sym">☉</span><span class="value">{grams.toFixed(6)}</span><span class="unit">g</span>
-    </div>
-    <div class="balance-sub">{balance.toFixed(8)} {BASE_TICKER} · launch scale, not enforced</div>
-  {:else}
-    <div class="balance-amount">
-      <span class="value">{balance.toFixed(8)}</span><span class="unit">{BASE_TICKER}</span>
+  <div class="balance-amount">
+    <span class="value">{fmtEcx(Math.round(balance * 1e8))}</span><span class="unit">{BASE_TICKER}</span>
+  </div>
+  {#if pending.unconfirmed > 0 || pending.immature > 0}
+    <div class="pending">
+      {#if pending.unconfirmed > 0}
+        <div><span class="mono">+{fmtEcx(pending.unconfirmed)} {BASE_TICKER}</span> on its way: waiting for a FreeBank block</div>
+      {/if}
+      {#if pending.immature > 0}
+        <div><span class="mono">+{fmtEcx(pending.immature)} {BASE_TICKER}</span> arriving: a deposit or new coins, spendable after the next block</div>
+      {/if}
     </div>
   {/if}
   <button class="refresh-btn" on:click={handleRefresh} disabled={refreshing}>
@@ -54,12 +71,7 @@
   .balance-amount {
     font-size: 32px;
     font-weight: bold;
-    margin-bottom: 6px;
-  }
-
-  .balance-amount .sym {
-    margin-right: 8px;
-    opacity: 0.95;
+    margin-bottom: 16px;
   }
 
   .balance-amount .value {
@@ -72,11 +84,16 @@
     margin-left: 8px;
   }
 
-  .balance-sub {
-    font-size: 13px;
-    opacity: 0.75;
-    font-family: monospace;
-    margin-bottom: 16px;
+
+  .pending {
+    margin: -6px 0 16px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    opacity: 0.85;
+  }
+
+  .pending .mono {
+    color: #f3d38b;
   }
 
   .refresh-btn {

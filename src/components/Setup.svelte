@@ -3,11 +3,14 @@
   // and start one. Dispatches "ready" once the wallet can talk to the node. ("manual", for a node
   // elsewhere, is not offered for now: operator, 2026-09-26; see distribution/todo/remote-node.md.) Each step after the first can go back one: the
   // install screen to the eCash node, a download can be cancelled, and a node this screen started
-  // can be stopped.
+  // can be stopped. The header's gear opens Settings here too (`settingsOpen`), so someone stuck in
+  // setup can still delete chain data, remove FreeBank or obliterate.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
+  import NodeSettings from "./NodeSettings.svelte";
   import PathText from "./PathText.svelte";
   import {
+    megabytes,
     node,
     openUrl,
     randomTag,
@@ -22,6 +25,9 @@
   } from "../lib/node";
 
   const dispatch = createEventDispatcher<{ ready: void; manual: void }>();
+
+  /** Settings shown instead of the setup screens (the header's gear). */
+  export let settingsOpen = false;
 
   // "stack": the eCash node and enforcer, found or not.
   type Screen = "checking" | "unsupported" | "stack" | "locked" | "install" | "installing" | "syncing";
@@ -200,7 +206,8 @@
       if (prog.exited) {
         startError = prog.exited;
         stopPolling();
-      } else if (prog.rpc.state === "up" && synced(prog)) {
+      } else if (prog.rpc.state === "up" && synced(prog) && !settingsOpen) {
+        // Not while Settings is open: someone there may be about to obliterate.
         await finish();
       }
     }, 2000);
@@ -273,9 +280,6 @@
     await check(false);
   }
 
-  function mb(n: number): string {
-    return (n / 1e6).toFixed(1);
-  }
   function fmt(n: number | null | undefined): string {
     return n == null ? "…" : n.toLocaleString();
   }
@@ -285,11 +289,27 @@
       ? Math.min(100, (prog.rpc.blocks / prog.explorer_tip) * 100)
       : 0;
 
-  onMount(check);
+  // Back from Settings: its changes (the data folder, the ports) may change what setup finds. A
+  // download or a starting node carries on by itself.
+  let wasOpen = false;
+  $: settingsToggled(settingsOpen);
+  function settingsToggled(open: boolean) {
+    if (wasOpen && !open && !["installing", "syncing", "checking"].includes(screen)) check(false);
+    wasOpen = open;
+  }
+
+  onMount(() => {
+    settingsOpen = false;
+    check();
+  });
 </script>
 
 <div class="setup">
-  {#if screen === "checking"}
+  {#if settingsOpen}
+    <button class="link-btn back-link" on:click={() => (settingsOpen = false)}>← Back to setup</button>
+    <NodeSettings on:removed on:obliterated />
+
+  {:else if screen === "checking"}
     <div class="hero">
       <div class="spinner big" aria-hidden="true"></div>
       <h2>Looking for eCash beta</h2>
@@ -398,6 +418,13 @@
     </div>
 
     <div class="card">
+      {#if info?.unverified}
+        <p class="hint unchecked-note">
+          FreeBank {info.unverified} is on this computer, but an earlier version of the app installed it without checking its
+          signature, so it won't be started. Installing downloads the newest release and checks it. Your data folder and
+          wallet stay as they are.
+        </p>
+      {/if}
       <label class="field">
         <span class="field-label">Name on your blocks</span>
         <div class="input-with-btn">
@@ -416,7 +443,7 @@
           <input type="checkbox" bind:checked={moveAside} />
           <span>
             {datadir.message}{datadir.has_wallet ? " (It includes a wallet.dat.)" : ""}
-            <span class="path">Move to <PathText path={datadir.away} /></span>
+            <span class="path">Move to <PathText path={datadir.away ?? ""} /></span>
           </span>
         </label>
       {:else if datadir && datadir.message}
@@ -457,7 +484,7 @@
                 <span class="stage-line">
                   {label}
                   {#if state === "active" && install}
-                    <span class="stage-note">{mb(install.bytes)}{install.total ? ` of ${mb(install.total)}` : ""} MB</span>
+                    <span class="stage-note">{megabytes(install.bytes, install.total)}</span>
                   {/if}
                 </span>
                 <span class="bar">
@@ -542,3 +569,9 @@
     {/if}
   {/if}
 </div>
+
+<style>
+  .unchecked-note {
+    margin-bottom: 16px;
+  }
+</style>

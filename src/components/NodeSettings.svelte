@@ -1,12 +1,15 @@
 <script lang="ts">
-  // Settings for the node on this computer: its connection (Advanced, with Test connection), and
-  // three deliberate actions, each of which asks first: "Delete chain data", "Remove FreeBank", and
-  // "Obliterate: remove everything". Obliterate lists what would go (worked out by the app, with
-  // sizes; the node's folder is ticked only if FreeBank created it), shows the wallet's balance,
-  // offers a backup, and wants OBLITERATE typed before its button works. Each tick goes back with
-  // the path it showed, and the connection can't be changed while the list is open.
+  // Settings for the node on this computer: its connection (Advanced, with Test connection), what
+  // happens to it when the app closes (KeepRunning), and three deliberate actions, each of which
+  // asks first: "Delete chain data", "Remove FreeBank", and "Obliterate: remove everything".
+  // Obliterate lists what would go (worked out by the app, with sizes; a node folder is ticked only
+  // if FreeBank created it), shows the wallet's balance when it can be trusted, offers a backup (a
+  // backup covers only the wallet it copies), and wants OBLITERATE typed before its button works.
+  // Each tick goes back with the path it showed, and the connection can't be changed while the list
+  // is open. Also reachable from setup (the header's gear), for someone stuck there.
   import { createEventDispatcher, onMount } from "svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
+  import KeepRunning from "./KeepRunning.svelte";
   import PathText from "./PathText.svelte";
   import { BASE_TICKER } from "../lib/brand";
   import {
@@ -116,35 +119,57 @@
   }
 
   $: chosen = plan ? plan.items.filter((i) => i.allowed && ticked[key(i)]) : [];
-  // Wallets live in the node's folder and in folders setup moved aside.
+  // Wallets live in node folders and in folders FreeBank moved aside (during setup or a restore).
   $: walletCount = plan ? plan.items.reduce((n, i) => n + i.wallets.length, 0) : 0;
-  $: nodeWalletGoes = chosen.some((i) => i.kind === "node" && i.wallets.length > 0);
-  $: asideWalletGoes = chosen.some((i) => i.kind === "aside" && i.wallets.length > 0);
-  $: walletGoes = nodeWalletGoes || asideWalletGoes;
-  // The node says the wallet holds nothing, not even coins still on their way.
+  $: nodeWallets = chosen.filter((i) => i.kind === "node").flatMap((i) => i.wallets);
+  $: otherItems = chosen.filter((i) => i.kind !== "node" && i.wallets.length > 0);
+  $: otherWallets = otherItems.flatMap((i) => i.wallets);
+  $: nodeWalletGoes = nodeWallets.length > 0;
+  $: otherWalletGoes = otherWallets.length > 0;
+  $: walletGoes = nodeWalletGoes || otherWalletGoes;
+  // The node says the wallet holds nothing, not even coins still on their way. (It says so only with
+  // one wallet and the node caught up; otherwise there is no balance.)
   $: nodeEmpty = nodeWalletGoes && plan?.balance === 0 && !plan?.pending;
-  $: backedUp = !!plan && plan.backups.length > 0;
+  // A backup covers only the wallet it copies: one of another folder's wallet covers nothing here.
+  $: backups = plan?.backups ?? [];
+  $: uncovered = [...(nodeEmpty ? [] : nodeWallets), ...otherWallets].filter((w) => !backups.some((b) => b.wallet === w));
+  $: someCovered = backups.some((b) => nodeWallets.includes(b.wallet) || otherWallets.includes(b.wallet));
+  $: backedUp = walletGoes && uncovered.length === 0 && someCovered;
   // Nothing at stake: the wallet that goes is empty and no other wallet goes with it. The box is
   // then plain, not red, and backing up is offered without urging.
-  $: calm = walletGoes && nodeEmpty && !asideWalletGoes;
+  $: calm = walletGoes && nodeEmpty && !otherWalletGoes;
+  $: others = otherItems.every((i) => i.kind === "aside")
+    ? otherWallets.length === 1
+      ? "the old wallet in the folder FreeBank moved aside"
+      : "the old wallets in the folders FreeBank moved aside"
+    : otherItems.every((i) => i.kind === "earlier")
+      ? otherWallets.length === 1
+        ? "the wallet in the earlier data folder"
+        : "the wallets in the earlier data folders"
+      : "the wallets in the other folders ticked above";
   $: walletHeading =
-    nodeWalletGoes && asideWalletGoes
-      ? "Your wallet will be deleted, and so will the old one in the folder setup moved aside."
+    nodeWalletGoes && otherWalletGoes
+      ? `Your wallet will be deleted, and so will ${others}.`
       : nodeEmpty
         ? "Your wallet is empty. It will be deleted."
         : nodeWalletGoes
           ? "Your wallet will be deleted."
-          : "The old wallet in the folder setup moved aside will be deleted.";
-  // Once a backup is made, the backup is what the box says instead.
-  $: lossWarning = backedUp
-    ? ""
-    : nodeEmpty
-      ? asideWalletGoes
-        ? "Without a backup, any coins in the old one are gone for good."
-        : ""
-      : nodeWalletGoes && plan?.balance !== null
-        ? "Without a backup, those coins are gone for good."
-        : `Without a backup, any coins in ${nodeWalletGoes && asideWalletGoes ? "them" : "it"} are gone for good.`;
+          : `${others[0].toUpperCase()}${others.slice(1)} will be deleted.`;
+  // The recovery words restore the node's own wallet, not the older ones in other folders.
+  $: orWords = plan?.seed && nodeWalletGoes && !nodeEmpty && !otherWalletGoes ? " or your recovery words" : "";
+  // Once every wallet that goes is backed up, the backup is what the box says instead.
+  $: lossWarning =
+    backedUp || uncovered.length === 0
+      ? ""
+      : someCovered
+        ? "Your backup doesn't cover every wallet that goes: without one, any coins in the others are gone for good."
+        : nodeWalletGoes && !otherWalletGoes && plan?.balance !== null
+          ? `Without a backup${orWords}, those coins are gone for good.`
+          : `Without a backup${orWords}, any coins in ${uncovered.length > 1 ? "them" : "it"} are gone for good.`;
+  // The app's copy of the recovery words goes with its own folder.
+  $: seedGoes = !!plan?.seed && chosen.some((i) => i.kind === "app");
+  // ".freebank/wallet.dat": enough to tell apart wallets of the same name in different folders.
+  const walletName = (path: string) => path.split("/").slice(-2).join("/");
 
   async function backup() {
     backingUp = true;
@@ -191,6 +216,8 @@
 {/if}
 
 {#if info && st}
+  <KeepRunning keepRunning={info.settings.keep_running} />
+
   <div class="card">
     <h3>Connection</h3>
     <p class="muted small">Where your FreeBank node finds eCash beta, and where it keeps its data.</p>
@@ -296,7 +323,7 @@
               {#if walletGoes}
                 <strong>{walletHeading}</strong>
                 {#if nodeEmpty}
-                  {#if asideWalletGoes}<span>Your wallet is empty.{lossWarning ? ` ${lossWarning}` : ""}</span>{/if}
+                  {#if otherWalletGoes}<span>Your wallet is empty.{lossWarning ? ` ${lossWarning}` : ""}</span>{/if}
                 {:else if nodeWalletGoes && plan.balance !== null}
                   <span>
                     Your wallet holds {plan.balance.toFixed(8)} {BASE_TICKER}{plan.pending ? `, ${plan.pending.toFixed(8)} of it not spendable yet` : ""}.{lossWarning ? ` ${lossWarning}` : ""}
@@ -309,8 +336,8 @@
               {:else}
                 <span>{walletCount > 1 ? "Every wallet stays" : "Your wallet stays"}: nothing ticked holds one.</span>
               {/if}
-              {#each plan.backups as saved}
-                <span>Backed up to <span class="path"><PathText path={saved} /></span></span>
+              {#each plan.backups as b}
+                <span>Backed up {walletName(b.wallet)} to <span class="path"><PathText path={b.saved} /></span></span>
               {/each}
               <button class="secondary" on:click={backup} disabled={backingUp || busy}>
                 {backingUp
@@ -319,7 +346,17 @@
                     ? "Back up again"
                     : `Back up ${walletCount > 1 ? "wallets" : "wallet"}${walletGoes && !calm ? " first" : ""}`}
               </button>
+              {#if plan.backup_note}<span class="wipe-note">{plan.backup_note}</span>{/if}
               {#if backupError}<span class="soft-error">{backupError}</span>{/if}
+            </div>
+          {/if}
+          {#if seedGoes}
+            <div class="wallet-warn">
+              <strong>Your recovery words go too.</strong>
+              <span>
+                FreeBank keeps them encrypted in its own folder, which is ticked. Make sure you have them written down: with
+                them you can restore your wallet in FreeBank on any computer.
+              </span>
             </div>
           {/if}
 

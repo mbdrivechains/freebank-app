@@ -1,0 +1,1336 @@
+//! The desktop side of the FreeBank phone relay (relay/PROTOCOL.md in freebank-distribution):
+//! the desktop key D and its room, pairing, the KK session handshake, the narrow door (balance,
+//! history, receive, send, status), held sends, phone sends from an encrypted wallet, and the
+//! outbound link to the relay.
+//!
+//! `Phone` is the whole state and knows nothing of Tauri or WebSockets: frames from the relay go
+//! into `handle_frame`, frames for the relay come out of the channel `new` returns, the node is
+//! reached through `Rpc` and the screen through `Events`. `link` runs the WebSocket; `commands`
+//! are what the Settings screen calls.
+
+pub mod commands;
+pub mod crypto;
+pub mod link;
+pub mod store;
+#[cfg(test)]
+mod tests;
+
+use crypto::Session;
+use p256::SecretKey;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use store::{to_ecx, to_sats, Config, Device, Devices, HeldFile, Store};
+use tokio::sync::mpsc;
+use zeroize::Zeroizing;
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Bitcoin Core's JSON-RPC error codes the phone relay acts on.
+pub const RPC_WALLET_INSUFFICIENT_FUNDS: i64 = -6;
+pub const RPC_WALLET_UNLOCK_NEEDED: i64 = -13;
+pub const RPC_WALLET_PASSPHRASE_INCORRECT: i64 = -14;
+pub const RPC_IN_WARMUP: i64 = -28;
+
+/// A node call that failed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RpcFail {
+    /// Core's JSON-RPC error code; None when no JSON-RPC answer came back (unreachable, HTTP
+    /// error, timeout).
+    pub code: Option<i64>,
+    pub message: String,
+}
+
+impl RpcFail {
+    pub fn rpc(code: i64, message: impl Into<String>) -> Self {
+        Self { code: Some(code), message: message.into() }
+    }
+
+    pub fn other(message: impl Into<String>) -> Self {
+        Self { code: None, message: message.into() }
+    }
+
+    /// In words for the wallet's owner.
+    pub fn plain(&self) -> String {
+        match self.code {
+            None => "Your desktop can't reach its FreeBank node right now.".into(),
+            Some(RPC_IN_WARMUP) => "Your desktop's FreeBank node is still starting up.".into(),
+            Some(RPC_WALLET_INSUFFICIENT_FUNDS) => {
+                "Not enough ECX in your desktop wallet for this payment and its fee.".into()
+            }
+            Some(_) => self.message.clone(),
+        }
+    }
+}
+
+impl From<RpcFail> for String {
+    fn from(e: RpcFail) -> String {
+        e.plain()
+    }
+}
+
+/// The node, as the narrow door sees it. The app's implementation wraps the wallet's RPC client.
+pub trait Rpc: Send + Sync {
+    fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>>;
+}
+
+/// The screen: "Allow this phone?", held sends, the send log.
+pub trait Events: Send + Sync {
+    fn emit(&self, name: &str, payload: Value);
+}
+
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub const PAIR_TTL_SECS: u64 = 300;
+pub const HISTORY_MAX: u64 = 50;
+pub const NAME_MAX: usize = 40;
+/// Pair requests that can wait for one pairing code at once (the relay lets 8 phones in a room).
+pub const MAX_ASKS: usize = 8;
+/// A phone channel that hasn't completed `hello` or a pair request this long after its first
+/// frame is closed, so a stranger with the room id can't hold the room's phone slots (P5).
+pub const IDLE_CHANNEL_SECS: u64 = 30;
+/// A held send waits this long for the desktop; then its phone is told it wasn't confirmed.
+pub const HELD_TTL_SECS: u64 = 600;
+/// A phone send from an encrypted wallet unlocks it for this long, and locks it right after.
+pub const SEND_UNLOCK_SECS: u64 = 10;
+/// How far an unlock keeps from the moment the node relocks after the previous one
+/// (`crate::wallet::RelockGuard`).
+pub const RELOCK_MARGIN: Duration = crate::wallet::RELOCK_MARGIN;
+
+pub const ERR_DECLINED: &str = "declined on the desktop";
+pub const ERR_RESTARTED: &str = "the desktop app restarted; nothing was sent";
+pub const ERR_NOT_ENCRYPTED: &str =
+    "This wallet has no passphrase, so phones already send up to their daily limit without one.";
+pub const ERR_WRONG_PASSPHRASE: &str = "That isn't the wallet's passphrase.";
+
+pub const EV_PAIR: &str = "phone-pair-request";
+pub const EV_HELD: &str = "phone-held-send";
+pub const EV_SEND: &str = "phone-send";
+pub const EV_CHANGED: &str = "phone-changed";
+
+/// The final err of a held send nobody answered: "not confirmed on the desktop within 10 minutes".
+pub fn expired_text(ttl: u64) -> String {
+    if ttl % 60 == 0 {
+        let m = ttl / 60;
+        format!("not confirmed on the desktop within {m} minute{}", if m == 1 { "" } else { "s" })
+    } else {
+        format!("not confirmed on the desktop within {ttl} seconds")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CodeState {
+    Live,
+    /// A phone was allowed with it.
+    Used,
+}
+
+struct Code {
+    c: [u8; 16],
+    expires: u64,
+    state: CodeState,
+}
+
+/// A pair request waiting for "Allow this phone?". Several can wait on one pairing code (whoever
+/// saw the QR code can ask); each shows its own comparison code, and the owner allows the one whose
+/// code their phone shows.
+#[derive(Clone, Serialize)]
+pub struct Ask {
+    #[serde(skip)]
+    ch: u64,
+    #[serde(skip)]
+    p_pub: String,
+    /// This request: the answer names it.
+    pub id: String,
+    /// The phone's device id.
+    pub device: String,
+    pub name: String,
+    /// "042 917": allow only if the phone shows the same.
+    pub code: String,
+}
+
+#[derive(Default)]
+struct Pairing {
+    code: Option<Code>,
+    asks: Vec<Ask>,
+}
+
+/// A send waiting for the desktop: over the phone's remaining daily limit ("limit"), or the
+/// wallet is encrypted and phone sends aren't on ("locked"). Kept in held.json until answered.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Held {
+    pub confirm: String,
+    pub device: String,
+    pub name: String,
+    pub address: String,
+    pub sats: u64,
+    /// unix seconds
+    pub at: u64,
+    /// "limit" or "locked"
+    pub why: String,
+    /// The phone's request id: the final reply goes out under it.
+    pub req_id: Value,
+    /// The desktop is paying it right now; expiry and revoke leave it to that.
+    #[serde(skip)]
+    busy: bool,
+}
+
+impl Held {
+    fn view(&self, ttl: u64) -> HeldView {
+        HeldView {
+            confirm: self.confirm.clone(),
+            device: self.device.clone(),
+            name: self.name.clone(),
+            address: self.address.clone(),
+            amount: to_ecx(self.sats),
+            at: self.at,
+            expires: self.at.saturating_add(ttl),
+            why: self.why.clone(),
+        }
+    }
+}
+
+/// A held send as the screen shows it.
+#[derive(Clone, Serialize)]
+pub struct HeldView {
+    pub confirm: String,
+    pub device: String,
+    pub name: String,
+    pub address: String,
+    pub amount: f64,
+    pub at: u64,
+    /// unix seconds: when it stops waiting
+    pub expires: u64,
+    pub why: String,
+}
+
+/// A held send a restart cancelled. Each new session of its phone is told so, until the send's
+/// time would have run out.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Cancelled {
+    pub confirm: String,
+    pub device: String,
+    pub at: u64,
+    pub req_id: Value,
+}
+
+/// The link to the relay, as the Settings screen shows it.
+#[derive(Clone, Serialize, Default)]
+pub struct LinkStatus {
+    /// "off" (no phone paired and no pairing open), "connecting", "online", "retrying"
+    pub state: String,
+    pub detail: String,
+}
+
+/// The wallet, as `getwalletinfo` tells it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Wallet {
+    /// Not encrypted.
+    Plain,
+    Locked,
+    /// Unlocked until this unix time.
+    Unlocked(u64),
+}
+
+/// Why a payment didn't go out.
+enum Pay {
+    /// The wallet is locked and there is no passphrase to unlock it with. Nothing was sent.
+    Locked,
+    /// The passphrase given for this one send is wrong. Nothing was sent.
+    WrongPassphrase,
+    /// The node couldn't be asked before the send. Nothing was sent.
+    NotTried(String),
+    /// The node refused the send.
+    Failed(String),
+}
+
+/// The wallet as the Phone settings show it.
+#[derive(Clone, Serialize, Debug, PartialEq)]
+pub struct WalletView {
+    /// None when the node can't be asked right now.
+    pub encrypted: Option<bool>,
+    pub locked: bool,
+    /// "Let my phone send while FreeBank is open" is on: the passphrase is held in memory.
+    pub phone_send: bool,
+}
+
+/// What the desktop's "Send" on a held send came to.
+#[derive(Clone, Serialize, Debug, PartialEq)]
+pub struct Confirmed {
+    /// It went out.
+    pub txid: Option<String>,
+    /// Nothing happened: the wallet is locked. Ask for its passphrase and confirm again.
+    pub need_passphrase: bool,
+}
+
+pub struct Phone {
+    pub store: Store,
+    d: SecretKey,
+    pub d_pub: String,
+    pub room: String,
+    devices: Mutex<Devices>,
+    config: Mutex<Config>,
+    pairing: Mutex<Pairing>,
+    /// Live sessions by relay channel: the session and the device it belongs to.
+    chans: Mutex<HashMap<u64, (Session, String)>>,
+    /// Channels with neither a session nor a waiting pair request, since when (IDLE_CHANNEL_SECS).
+    idle: Mutex<HashMap<u64, u64>>,
+    held: Mutex<Vec<Held>>,
+    cancelled: Mutex<Vec<Cancelled>>,
+    held_ttl: AtomicU64,
+    /// The wallet passphrase while "Let my phone send while FreeBank is open" is on. Memory only:
+    /// never written, logged or handed to the screen, and wiped when it is let go.
+    pass: Mutex<Option<Zeroizing<String>>>,
+    /// One unlock, send and lock at a time, so one send's lock never cuts into another's unlock.
+    wallet_gate: tokio::sync::Mutex<()>,
+    /// Keeps every `walletpassphrase` clear of the node's relock (`crate::wallet::RelockGuard`).
+    /// Its own until the app hands it the one the screens use (`share_relock_guard`).
+    relock: Mutex<Arc<crate::wallet::RelockGuard>>,
+    status: Mutex<LinkStatus>,
+    out: mpsc::UnboundedSender<Value>,
+    /// Wakes the link: the relay URL changed, or it has (or no longer has) something to do.
+    pub wake: tokio::sync::Notify,
+    rpc: Arc<dyn Rpc>,
+    events: Arc<dyn Events>,
+    clock: Clock,
+}
+
+fn rand16() -> [u8; 16] {
+    use rand::RngCore;
+    let mut b = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    b
+}
+
+/// Characters a device name can't keep: invisible ones that can disguise it (bidirectional
+/// formatting, zero-width, tags) and line separators. Control characters go too.
+fn hidden(c: char) -> bool {
+    matches!(c,
+        // bidirectional formatting
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        // zero-width and invisible
+        | '\u{00AD}' | '\u{034F}' | '\u{180E}' | '\u{200B}'..='\u{200D}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}'
+        // tags, and line and paragraph separators
+        | '\u{E0000}'..='\u{E007F}' | '\u{2028}' | '\u{2029}')
+}
+
+/// A device name as it is shown and stored (P6): control, bidirectional and zero-width characters
+/// dropped, at most 40 characters, trimmed; "Phone" if nothing is left.
+fn clean_name(s: &str) -> String {
+    let n: String = s.chars().filter(|c| !c.is_control() && !hidden(*c)).take(NAME_MAX).collect();
+    let n = n.trim().to_string();
+    if n.is_empty() {
+        "Phone".into()
+    } else {
+        n
+    }
+}
+
+/// A FreeBank legacy address: 'X', base58, 26 to 35 characters. The node checks the rest.
+fn plausible_address(a: &str) -> bool {
+    const B58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    a.starts_with('X') && (26..=35).contains(&a.len()) && a.chars().all(|c| B58.contains(c))
+}
+
+impl Phone {
+    /// Load (or make) the desktop key, the device list and the relay setting from `app_dir/phone`.
+    /// Sends still held when the app last stopped are cancelled here, never paid.
+    /// Frames for the relay come out of the returned receiver; `link::run` takes it.
+    pub fn new(
+        app_dir: &Path,
+        rpc: Arc<dyn Rpc>,
+        events: Arc<dyn Events>,
+        clock: Clock,
+    ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Value>), String> {
+        let store = Store::new(app_dir);
+        let d = store.desktop_key()?;
+        let d_pub = crypto::pub_b64u(&d.public_key());
+        let room = crypto::room(&d.public_key());
+        let mut devices = store.load_devices();
+        // Names stored by an earlier version are cleaned the same way before they are shown.
+        for d in devices.devices.iter_mut() {
+            d.name = clean_name(&d.name);
+        }
+        let config = store.load_config();
+        let saved = store.load_held();
+        let (out, rx) = mpsc::unbounded_channel();
+        let phone = Arc::new(Self {
+            store,
+            d,
+            d_pub,
+            room,
+            devices: Mutex::new(devices),
+            config: Mutex::new(config),
+            pairing: Mutex::default(),
+            chans: Mutex::default(),
+            idle: Mutex::default(),
+            held: Mutex::default(),
+            cancelled: Mutex::new(saved.cancelled),
+            held_ttl: AtomicU64::new(HELD_TTL_SECS),
+            pass: Mutex::new(None),
+            wallet_gate: tokio::sync::Mutex::new(()),
+            relock: Mutex::new(Arc::default()),
+            status: Mutex::new(LinkStatus { state: "off".into(), detail: String::new() }),
+            out,
+            wake: tokio::sync::Notify::new(),
+            rpc,
+            events,
+            clock,
+        });
+        phone.cancel_after_restart(saved.held);
+        Ok((phone, rx))
+    }
+
+    fn now(&self) -> u64 {
+        (self.clock)()
+    }
+
+    fn today(&self) -> u64 {
+        store::day_of(self.now())
+    }
+
+    fn held_ttl(&self) -> u64 {
+        self.held_ttl.load(Ordering::SeqCst)
+    }
+
+    /// How long held sends wait: 10 minutes, shorter only for tests (at least 1 second).
+    #[cfg(test)]
+    pub fn set_held_ttl(&self, secs: u64) {
+        self.held_ttl.store(secs.clamp(1, HELD_TTL_SECS), Ordering::SeqCst);
+    }
+
+    // ----- the link's view -------------------------------------------------------------------
+
+    pub fn relay_url(&self) -> String {
+        self.config.lock().unwrap().relay_url.clone()
+    }
+
+    /// The first frame to the relay.
+    pub fn host_frame(&self) -> Value {
+        json!({"t": "host", "room": self.room, "d": self.d_pub})
+    }
+
+    /// The answer to the relay's challenge: proof that this desktop holds D.
+    pub fn proof_frame(&self, challenge_b64u: &str) -> Result<Value, String> {
+        let n = crypto::unb64u(challenge_b64u)?;
+        if n.len() != 32 {
+            return Err("the relay's challenge isn't 32 bytes".into());
+        }
+        Ok(json!({"t": "proof", "sig": crypto::b64u(&crypto::proof(&self.d, &n))}))
+    }
+
+    /// Whether the link should be up: a phone is paired, or a pairing is open.
+    pub fn wanted(&self) -> bool {
+        if !self.devices.lock().unwrap().devices.is_empty() {
+            return true;
+        }
+        let p = self.pairing.lock().unwrap();
+        !p.asks.is_empty()
+            || p.code.as_ref().is_some_and(|c| c.state == CodeState::Live && self.now() < c.expires)
+    }
+
+    pub fn set_status(&self, state: &str, detail: &str) {
+        let mut s = self.status.lock().unwrap();
+        if s.state != state || s.detail != detail {
+            *s = LinkStatus { state: state.into(), detail: detail.into() };
+            drop(s);
+            self.events.emit(EV_CHANGED, json!({}));
+        }
+    }
+
+    pub fn status(&self) -> LinkStatus {
+        self.status.lock().unwrap().clone()
+    }
+
+    /// The relay link dropped: every channel with it, and the pair requests that came on them.
+    pub fn clear_channels(&self) {
+        self.chans.lock().unwrap().clear();
+        self.idle.lock().unwrap().clear();
+        let mut p = self.pairing.lock().unwrap();
+        if !p.asks.is_empty() {
+            p.asks.clear();
+            drop(p);
+            self.events.emit(EV_CHANGED, json!({}));
+        }
+    }
+
+    // ----- frames ----------------------------------------------------------------------------
+
+    fn send_clear(&self, ch: u64, d: Value) {
+        let _ = self.out.send(json!({"ch": ch, "d": d}));
+    }
+
+    /// Seal `msg` for the session on `ch` and queue it. The lock covers the counter and the
+    /// queue, so frames leave in counter order.
+    fn send_sealed(&self, ch: u64, msg: &Value) -> bool {
+        let mut chans = self.chans.lock().unwrap();
+        let Some((s, _)) = chans.get_mut(&ch) else { return false };
+        let ct = s.tx.seal(msg.to_string().as_bytes());
+        let _ = self.out.send(json!({"ch": ch, "d": {"t": "m", "ct": crypto::b64u(&ct)}}));
+        true
+    }
+
+    /// Every channel with a live session for `device`.
+    fn channels_of(&self, device: &str) -> Vec<u64> {
+        self.chans.lock().unwrap().iter().filter(|(_, (_, d))| d == device).map(|(c, _)| *c).collect()
+    }
+
+    /// One frame from the relay (anything after the host handshake).
+    pub fn handle_frame(self: &Arc<Self>, f: Value) {
+        if f["t"] == "closed" {
+            if let Some(ch) = f["ch"].as_u64() {
+                self.chans.lock().unwrap().remove(&ch);
+                self.idle.lock().unwrap().remove(&ch);
+                let mut p = self.pairing.lock().unwrap();
+                let before = p.asks.len();
+                p.asks.retain(|a| a.ch != ch);
+                if p.asks.len() != before {
+                    drop(p);
+                    self.events.emit(EV_CHANGED, json!({}));
+                }
+            }
+            return;
+        }
+        let (Some(ch), Some(d)) = (f["ch"].as_u64(), f.get("d")) else { return };
+        match d["t"].as_str() {
+            Some("pair") => self.on_pair(ch, d),
+            Some("hello") => self.on_hello(ch, d),
+            Some("m") => self.on_message(ch, d),
+            _ => {}
+        }
+        self.note_idle(ch);
+    }
+
+    /// Start (or keep) the idle clock of a channel with neither a session nor a waiting pair
+    /// request; stop it for one that has either.
+    fn note_idle(&self, ch: u64) {
+        let active = self.chans.lock().unwrap().contains_key(&ch)
+            || self.pairing.lock().unwrap().asks.iter().any(|a| a.ch == ch);
+        let mut idle = self.idle.lock().unwrap();
+        if active {
+            idle.remove(&ch);
+        } else {
+            idle.entry(ch).or_insert(self.now());
+        }
+    }
+
+    /// Ask the relay to drop a phone channel.
+    fn close_channel(&self, ch: u64) {
+        self.idle.lock().unwrap().remove(&ch);
+        let _ = self.out.send(json!({"t": "close", "ch": ch}));
+    }
+
+    // ----- pairing ---------------------------------------------------------------------------
+
+    /// Open a pairing: a fresh one-use code for 5 minutes (any earlier code stops working).
+    /// Returns the URL the QR code shows and when it expires.
+    pub fn pair_start(&self) -> Result<(String, u64), String> {
+        let relay = self.relay_url();
+        let u = url::Url::parse(&relay).map_err(|_| format!("The relay address {relay} isn't a URL."))?;
+        let page_scheme = match u.scheme() {
+            "wss" => "https",
+            "ws" => "http",
+            _ => return Err("The relay address must start with ws:// or wss://.".into()),
+        };
+        let host = u.host_str().ok_or("The relay address has no host.")?;
+        let host = match u.port() {
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+        let c = rand16();
+        let expires = self.now() + PAIR_TTL_SECS;
+        let link = json!({"v": 1, "relay": relay, "room": self.room, "d": self.d_pub, "c": crypto::b64u(&c)});
+        let url = format!("{page_scheme}://{host}/#pair={}", crypto::b64u(link.to_string().as_bytes()));
+        let mut p = self.pairing.lock().unwrap();
+        p.code = Some(Code { c, expires, state: CodeState::Live });
+        // Requests for an earlier code are refused: that code stops working.
+        let old: Vec<Ask> = p.asks.drain(..).collect();
+        drop(p);
+        self.refuse_asks(&old);
+        self.wake.notify_one();
+        Ok((url, expires))
+    }
+
+    /// Tell these phones no, and let their channels go idle.
+    fn refuse_asks(&self, asks: &[Ask]) {
+        for a in asks {
+            self.send_clear(a.ch, json!({"t": "pair-refused"}));
+            self.note_idle(a.ch);
+        }
+        if !asks.is_empty() {
+            self.events.emit(EV_CHANGED, json!({}));
+        }
+    }
+
+    /// Open a pairing with a known code (the test vectors').
+    #[cfg(test)]
+    fn test_code(&self, c: [u8; 16]) {
+        let mut p = self.pairing.lock().unwrap();
+        p.code = Some(Code { c, expires: self.now() + PAIR_TTL_SECS, state: CodeState::Live });
+        p.asks.clear();
+    }
+
+    fn on_pair(&self, ch: u64, d: &Value) {
+        let refuse = || self.send_clear(ch, json!({"t": "pair-refused"}));
+        let mut p = self.pairing.lock().unwrap();
+        let Some(code) = p.code.as_ref() else { return refuse() };
+        if code.state != CodeState::Live || self.now() >= code.expires {
+            return refuse();
+        }
+        let c = code.c;
+        let opened = (|| -> Result<(p256::PublicKey, p256::PublicKey, String), String> {
+            let e = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
+            let n: [u8; 12] = crypto::unb64u(d["n"].as_str().ok_or("n")?)?
+                .try_into()
+                .map_err(|_| "nonce must be 12 bytes")?;
+            let ct = crypto::unb64u(d["ct"].as_str().ok_or("ct")?)?;
+            let k = crypto::pair_key(&self.d, &e, &c);
+            let pt: Value = serde_json::from_slice(&crypto::open(&k, &n, &ct)?).map_err(|_| "not JSON")?;
+            let phone = crypto::parse_pub(pt["p"].as_str().ok_or("p")?)?;
+            Ok((e, phone, clean_name(pt["name"].as_str().unwrap_or(""))))
+        })();
+        // A frame that doesn't open with the live code is refused, and changes nothing.
+        let Ok((e, phone, name)) = opened else { return refuse() };
+        // One waiting request per channel (a later one replaces it), and a few at most.
+        p.asks.retain(|a| a.ch != ch);
+        if p.asks.len() >= MAX_ASKS {
+            return refuse();
+        }
+        let ask = Ask {
+            ch,
+            p_pub: crypto::pub_b64u(&phone),
+            id: hex::encode(&rand16()[..8]),
+            device: Device::id_for(&phone),
+            name,
+            code: crypto::pair_code(&self.d.public_key(), &phone, &e, &c),
+        };
+        p.asks.push(ask.clone());
+        drop(p);
+        self.events.emit(EV_PAIR, serde_json::to_value(&ask).unwrap());
+    }
+
+    /// The pair requests waiting for an answer, oldest first.
+    pub fn pair_pending(&self) -> Vec<Ask> {
+        self.pairing.lock().unwrap().asks.clone()
+    }
+
+    /// "Allow this phone?" answered for one request. Allowing it spends the pairing code and
+    /// refuses every other request for it; denying refuses only this one, and the code stays
+    /// live for the phone the owner is holding.
+    pub fn pair_answer(&self, id: &str, allow: bool) -> Result<(), String> {
+        let mut p = self.pairing.lock().unwrap();
+        let i = p.asks.iter().position(|a| a.id == id).ok_or("That phone is no longer waiting.")?;
+        let expired = p.code.as_ref().is_none_or(|c| self.now() >= c.expires);
+        if !allow || expired {
+            let ask = p.asks.remove(i);
+            let rest: Vec<Ask> = if expired { p.asks.drain(..).collect() } else { vec![] };
+            drop(p);
+            self.refuse_asks(&[vec![ask], rest].concat());
+            return if allow { Err("The pairing code has expired. Make a new one.".into()) } else { Ok(()) };
+        }
+        let ask = p.asks.remove(i);
+        let rest: Vec<Ask> = p.asks.drain(..).collect();
+        if let Some(c) = p.code.as_mut() {
+            c.state = CodeState::Used;
+        }
+        drop(p);
+        self.refuse_asks(&rest);
+        let mut devs = self.devices.lock().unwrap();
+        devs.devices.retain(|d| d.p_pub != ask.p_pub);
+        devs.devices.push(Device {
+            id: ask.device.clone(),
+            name: ask.name.clone(),
+            p_pub: ask.p_pub.clone(),
+            added: self.now(),
+            last_seen: None,
+            limit_sats: store::DEFAULT_LIMIT_SATS,
+            spent_day: 0,
+            spent_sats: 0,
+        });
+        let saved = self.store.save_devices(&devs);
+        drop(devs);
+        if let Err(e) = saved {
+            self.send_clear(ask.ch, json!({"t": "pair-refused"}));
+            self.note_idle(ask.ch);
+            return Err(e);
+        }
+        self.send_clear(ask.ch, json!({"t": "paired"}));
+        // The phone comes back on a new channel for its first session; this one should go.
+        self.note_idle(ask.ch);
+        self.events.emit(EV_CHANGED, json!({}));
+        Ok(())
+    }
+
+    // ----- devices ---------------------------------------------------------------------------
+
+    pub fn devices(&self) -> Vec<Device> {
+        self.devices.lock().unwrap().devices.clone()
+    }
+
+    pub fn online(&self, device: &str) -> bool {
+        !self.channels_of(device).is_empty()
+    }
+
+    /// Forget a phone: its live sessions are cut (it is told `denied`) and its held sends dropped.
+    /// Revoking the last phone also turns phone sends off.
+    pub fn revoke(&self, id: &str) -> Result<(), String> {
+        let mut devs = self.devices.lock().unwrap();
+        let before = devs.devices.len();
+        devs.devices.retain(|d| d.id != id);
+        if devs.devices.len() == before {
+            return Err("No such phone.".into());
+        }
+        let none_left = devs.devices.is_empty();
+        let saved = self.store.save_devices(&devs);
+        drop(devs);
+        for ch in self.channels_of(id) {
+            self.chans.lock().unwrap().remove(&ch);
+            self.send_clear(ch, json!({"t": "denied"}));
+            // And the relay drops its connection.
+            self.close_channel(ch);
+        }
+        let dropped: Vec<Held> = {
+            let mut h = self.held.lock().unwrap();
+            let (gone, keep) = h.drain(..).partition(|x| x.device == id && !x.busy);
+            *h = keep;
+            gone
+        };
+        self.cancelled.lock().unwrap().retain(|c| c.device != id);
+        self.save_held();
+        for h in dropped {
+            self.log(&h.device, &h.name, &h.address, h.sats, "declined", json!("phone revoked"));
+        }
+        // With no phone left, "Let my phone send while FreeBank is open" serves no one, and Settings
+        // no longer shows its switch: the passphrase goes, so a phone paired later starts with phone
+        // sends off until they are turned on again.
+        if none_left {
+            self.forget_passphrase();
+        }
+        self.events.emit(EV_CHANGED, json!({}));
+        self.wake.notify_one();
+        saved
+    }
+
+    pub fn set_limit(&self, id: &str, ecx: f64) -> Result<(), String> {
+        let sats = to_sats(ecx)?;
+        let mut devs = self.devices.lock().unwrap();
+        devs.get_mut(id).ok_or("No such phone.")?.limit_sats = sats;
+        self.store.save_devices(&devs)
+    }
+
+    pub fn set_relay(&self, url: &str) -> Result<(), String> {
+        let url = url.trim();
+        let u = url::Url::parse(url).map_err(|_| "That isn't a URL.".to_string())?;
+        if !matches!(u.scheme(), "ws" | "wss") || u.host_str().is_none() {
+            return Err("The relay address must look like wss://host/ws (or ws:// for testing).".into());
+        }
+        let mut c = self.config.lock().unwrap();
+        c.relay_url = url.to_string();
+        let r = self.store.save_config(&c);
+        drop(c);
+        // Sessions and pairings belong to the old relay's room.
+        self.wake.notify_one();
+        r
+    }
+
+    // ----- session handshake -----------------------------------------------------------------
+
+    fn on_hello(&self, ch: u64, d: &Value) {
+        let p_str = d["p"].as_str().unwrap_or("");
+        let dev = self.devices.lock().unwrap().by_pub(p_str).map(|x| x.id.clone());
+        let keys = (|| -> Result<_, String> {
+            let p = crypto::parse_pub(p_str)?;
+            let ep = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
+            Ok((p, ep))
+        })();
+        let (Some(dev), Ok((p, ep))) = (dev, keys) else {
+            self.chans.lock().unwrap().remove(&ch);
+            return self.send_clear(ch, json!({"t": "denied"}));
+        };
+        let ed = crypto::random_secret();
+        self.accept_hello(ch, &dev, &p, &ep, &ed);
+    }
+
+    /// Split out so the tests can fix eD.
+    fn accept_hello(&self, ch: u64, dev: &str, p: &p256::PublicKey, ep: &p256::PublicKey, ed: &SecretKey) {
+        let (k_pd, k_dp) = crypto::desktop_session_keys(&self.d, ed, p, ep);
+        self.chans.lock().unwrap().insert(ch, (Session::desktop(k_pd, k_dp), dev.to_string()));
+        {
+            let mut devs = self.devices.lock().unwrap();
+            if let Some(x) = devs.get_mut(dev) {
+                x.last_seen = Some(self.now());
+            }
+            let _ = self.store.save_devices(&devs);
+        }
+        self.send_clear(ch, json!({"t": "hello-ok", "e": crypto::pub_b64u(&ed.public_key())}));
+        self.tell_restart(ch, dev);
+        self.events.emit(EV_CHANGED, json!({}));
+    }
+
+    /// A new session hears the final err of each of its phone's held sends that a restart cancelled.
+    fn tell_restart(&self, ch: u64, dev: &str) {
+        let (now, ttl) = (self.now(), self.held_ttl());
+        let notes: Vec<Cancelled> = self
+            .cancelled
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.device == dev && now < c.at.saturating_add(ttl))
+            .cloned()
+            .collect();
+        for c in notes {
+            self.send_sealed(ch, &json!({"id": c.req_id, "pending": c.confirm, "err": ERR_RESTARTED}));
+        }
+    }
+
+    fn on_message(self: &Arc<Self>, ch: u64, d: &Value) {
+        let opened = {
+            let mut chans = self.chans.lock().unwrap();
+            let Some((s, dev)) = chans.get_mut(&ch) else {
+                drop(chans);
+                return self.send_clear(ch, json!({"t": "closed"}));
+            };
+            let dev = dev.clone();
+            match crypto::unb64u(d["ct"].as_str().unwrap_or("")).and_then(|ct| s.rx.open(&ct)) {
+                Ok(pt) => Ok((pt, dev)),
+                Err(e) => {
+                    chans.remove(&ch);
+                    Err(e)
+                }
+            }
+        };
+        // Out of order or tampered: the session is over; the phone starts again with hello.
+        let Ok((pt, dev)) = opened else { return self.send_clear(ch, json!({"t": "closed"})) };
+        let Ok(req) = serde_json::from_slice::<Value>(&pt) else { return };
+        let me = self.clone();
+        tokio::spawn(async move {
+            let id = req["id"].clone();
+            let reply = match me.serve(&dev, &req).await {
+                Ok(v) => json!({"id": id, "ok": v}),
+                Err(e) => json!({"id": id, "err": e}),
+            };
+            me.send_sealed(ch, &reply);
+        });
+    }
+
+    // ----- the narrow door -------------------------------------------------------------------
+
+    async fn serve(&self, dev: &str, req: &Value) -> Result<Value, String> {
+        let a = &req["a"];
+        match req["m"].as_str().unwrap_or("") {
+            "balance" => {
+                let confirmed = self.rpc.call("getbalance", vec![]).await?.as_f64().ok_or("bad balance")?;
+                let pending = match self.rpc.call("getunconfirmedbalance", vec![]).await {
+                    Ok(v) => v.as_f64().unwrap_or(0.0),
+                    Err(_) => 0.0,
+                };
+                Ok(json!({"confirmed": confirmed, "pending": pending}))
+            }
+            "history" => {
+                let count = a["count"].as_u64().unwrap_or(20).clamp(1, HISTORY_MAX);
+                let r = self.rpc.call("listtransactions", vec![json!("*"), json!(count)]).await?;
+                // The node lists oldest first; the phone shows newest first.
+                let list: Vec<Value> = r
+                    .as_array()
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[])
+                    .iter()
+                    .rev()
+                    .map(|t| {
+                        json!({
+                            "txid": t["txid"], "category": t["category"], "amount": t["amount"],
+                            "confirmations": t["confirmations"], "time": t["time"], "address": t["address"],
+                        })
+                    })
+                    .collect();
+                Ok(Value::Array(list))
+            }
+            "receive" => {
+                // A new wallet gives out no address until it has its passphrase and recovery words
+                // (the desktop's address screens wait the same way, recovery::addresses_held).
+                let info = self.rpc.call("getwalletinfo", vec![]).await?;
+                if self.store.dir.parent().is_some_and(|app_dir| crate::recovery::addresses_held(&info, app_dir)) {
+                    return Err(crate::recovery::WALLET_NOT_SET_UP.into());
+                }
+                let r = self.rpc.call("getnewaddress", vec![json!(""), json!("legacy")]).await?;
+                Ok(json!({"address": r.as_str().ok_or("bad address")?}))
+            }
+            "status" => {
+                let r = self.rpc.call("getblockchaininfo", vec![]).await?;
+                let synced = match r["initialblockdownload"].as_bool() {
+                    Some(ibd) => !ibd,
+                    None => r["blocks"] == r["headers"],
+                };
+                let left = self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.left_on(self.today()));
+                Ok(json!({"blocks": r["blocks"], "synced": synced, "limit_left": to_ecx(left.unwrap_or(0))}))
+            }
+            "send" => self.send(dev, req).await,
+            _ => Err("unknown method".into()),
+        }
+    }
+
+    fn device_name(&self, dev: &str) -> String {
+        self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.name.clone()).unwrap_or_default()
+    }
+
+    fn log(&self, dev: &str, name: &str, address: &str, sats: u64, result: &str, detail: Value) {
+        let entry = json!({
+            "time": self.now(), "device": dev, "name": name, "address": address,
+            "amount": to_ecx(sats), "result": result, "detail": detail,
+        });
+        self.store.log_send(&entry);
+        self.events.emit(EV_SEND, entry);
+    }
+
+    /// Take `sats` from the phone's allowance for `day` if it fits.
+    fn reserve(&self, dev: &str, sats: u64, day: u64) -> bool {
+        let mut devs = self.devices.lock().unwrap();
+        let ok = devs.reserve(dev, sats, day);
+        if ok {
+            let _ = self.store.save_devices(&devs);
+        }
+        ok
+    }
+
+    /// Give back a reservation whose send didn't go out.
+    fn release(&self, dev: &str, sats: u64, day: u64) {
+        let mut devs = self.devices.lock().unwrap();
+        devs.release(dev, sats, day);
+        let _ = self.store.save_devices(&devs);
+    }
+
+    async fn send(&self, dev: &str, req: &Value) -> Result<Value, String> {
+        let a = &req["a"];
+        let address = a["address"].as_str().unwrap_or("").trim().to_string();
+        if !plausible_address(&address) {
+            return Err("That isn't a FreeBank address (it starts with X).".into());
+        }
+        let sats = store::json_to_sats(&a["amount"])?;
+        if sats == 0 {
+            return Err("amount must be more than zero".into());
+        }
+        // The node's own check (checksum, network) before anything is reserved or held.
+        let v = self.rpc.call("validateaddress", vec![json!(address)]).await?;
+        if v["isvalid"] != true {
+            return Err("That isn't a valid FreeBank address.".into());
+        }
+        let name = self.device_name(dev);
+        let day = self.today();
+        if !self.reserve(dev, sats, day) {
+            return Ok(self.hold(dev, &name, &address, sats, req, "limit"));
+        }
+        let paid = {
+            let _gate = self.wallet_gate.lock().await;
+            self.pay(&address, sats, None).await
+        };
+        match paid {
+            Ok(txid) => {
+                self.log(dev, &name, &address, sats, "sent", txid.clone());
+                Ok(json!({"txid": txid}))
+            }
+            // Within the limit, but the wallet is locked and phone sends aren't on: the desktop
+            // decides, and a send it confirms doesn't count against the limit.
+            Err(Pay::Locked | Pay::WrongPassphrase) => {
+                self.release(dev, sats, day);
+                Ok(self.hold(dev, &name, &address, sats, req, "locked"))
+            }
+            Err(Pay::NotTried(e) | Pay::Failed(e)) => {
+                self.release(dev, sats, day);
+                self.log(dev, &name, &address, sats, "failed", json!(e));
+                Err(e)
+            }
+        }
+    }
+
+    /// Hold a send for the desktop. Returns the phone's reply.
+    fn hold(&self, dev: &str, name: &str, address: &str, sats: u64, req: &Value, why: &str) -> Value {
+        let h = Held {
+            confirm: hex::encode(&rand16()[..8]),
+            device: dev.into(),
+            name: name.into(),
+            address: address.into(),
+            sats,
+            at: self.now(),
+            why: why.into(),
+            req_id: req["id"].clone(),
+            busy: false,
+        };
+        self.held.lock().unwrap().push(h.clone());
+        self.save_held();
+        self.log(dev, name, address, sats, "held", json!({"confirm": h.confirm, "why": why}));
+        self.events.emit(EV_HELD, serde_json::to_value(h.view(self.held_ttl())).unwrap());
+        json!({"pending": h.confirm, "why": why})
+    }
+
+    /// Write held.json: the held sends (except one being paid right now, so a crash mid-send never
+    /// tells the phone "nothing was sent") and the restart notices still owed.
+    fn save_held(&self) {
+        let held: Vec<Held> = self.held.lock().unwrap().iter().filter(|h| !h.busy).cloned().collect();
+        let cancelled = self.cancelled.lock().unwrap().clone();
+        if let Err(e) = self.store.save_held(&HeldFile { held, cancelled }) {
+            eprintln!("phone relay: {e}");
+        }
+    }
+
+    /// At start: every send still held when the app stopped is cancelled, never paid. Its phone is
+    /// told on each new session until the send's time would have run out.
+    fn cancel_after_restart(&self, saved: Vec<Held>) {
+        let (now, ttl) = (self.now(), self.held_ttl());
+        let had = {
+            let mut c = self.cancelled.lock().unwrap();
+            let had = !saved.is_empty() || !c.is_empty();
+            c.extend(saved.iter().map(|h| Cancelled {
+                confirm: h.confirm.clone(),
+                device: h.device.clone(),
+                at: h.at,
+                req_id: h.req_id.clone(),
+            }));
+            c.retain(|x| now < x.at.saturating_add(ttl));
+            had
+        };
+        for h in &saved {
+            self.log(&h.device, &h.name, &h.address, h.sats, "cancelled", json!(ERR_RESTARTED));
+        }
+        if had {
+            self.save_held();
+        }
+    }
+
+    /// Drop held sends nobody answered in time, telling their phones, and forget restart notices
+    /// whose time is up. The app runs this every second (`expire_forever`); the screens run it too.
+    pub fn expire(&self) {
+        self.expire_pairing();
+        self.close_idle_channels();
+        let (now, ttl) = (self.now(), self.held_ttl());
+        let gone: Vec<Held> = {
+            let mut h = self.held.lock().unwrap();
+            let (gone, keep) = h.drain(..).partition(|x| !x.busy && now >= x.at.saturating_add(ttl));
+            *h = keep;
+            gone
+        };
+        let forgot = {
+            let mut c = self.cancelled.lock().unwrap();
+            let before = c.len();
+            c.retain(|x| now < x.at.saturating_add(ttl));
+            c.len() != before
+        };
+        if gone.is_empty() && !forgot {
+            return;
+        }
+        self.save_held();
+        let msg = expired_text(ttl);
+        for h in &gone {
+            self.final_reply(h, "err", json!(msg));
+            self.log(&h.device, &h.name, &h.address, h.sats, "expired", json!(h.confirm));
+        }
+        if !gone.is_empty() {
+            self.events.emit(EV_CHANGED, json!({}));
+        }
+    }
+
+    /// Pair requests waiting on a code whose 5 minutes are up are refused.
+    fn expire_pairing(&self) {
+        let mut p = self.pairing.lock().unwrap();
+        if p.asks.is_empty() || p.code.as_ref().is_some_and(|c| self.now() < c.expires) {
+            return;
+        }
+        let gone: Vec<Ask> = p.asks.drain(..).collect();
+        drop(p);
+        self.refuse_asks(&gone);
+    }
+
+    /// Close phone channels that have had neither a session nor a waiting pair request for
+    /// IDLE_CHANNEL_SECS since their first frame (P5).
+    fn close_idle_channels(&self) {
+        let now = self.now();
+        let due: Vec<u64> = self
+            .idle
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, since)| now >= since.saturating_add(IDLE_CHANNEL_SECS))
+            .map(|(ch, _)| *ch)
+            .collect();
+        for ch in due {
+            self.close_channel(ch);
+        }
+    }
+
+    /// Expire held sends on time while the app runs.
+    pub async fn expire_forever(self: Arc<Self>) {
+        let mut t = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            t.tick().await;
+            self.expire();
+        }
+    }
+
+    /// A held send's final reply (`ok` or `err`), under its request id and with its confirm id, to
+    /// every live session of its phone.
+    fn final_reply(&self, h: &Held, key: &str, value: Value) {
+        let mut reply = json!({"id": h.req_id, "pending": h.confirm});
+        reply[key] = value;
+        for ch in self.channels_of(&h.device) {
+            self.send_sealed(ch, &reply);
+        }
+    }
+
+    pub fn held(&self) -> Vec<HeldView> {
+        self.expire();
+        let ttl = self.held_ttl();
+        self.held.lock().unwrap().iter().map(|h| h.view(ttl)).collect()
+    }
+
+    /// Take a held send out, unless the desktop is paying it right now.
+    fn take_held(&self, confirm: &str) -> Result<Held, String> {
+        let h = {
+            let mut held = self.held.lock().unwrap();
+            let i = held.iter().position(|h| h.confirm == confirm).ok_or("That send is no longer waiting.")?;
+            if held[i].busy {
+                return Err("That send is being paid right now.".into());
+            }
+            held.remove(i)
+        };
+        self.save_held();
+        Ok(h)
+    }
+
+    /// Mark a held send as being paid (or not any more). Returns its address and amount.
+    fn set_busy(&self, confirm: &str, busy: bool) -> Result<(String, u64), String> {
+        let r = {
+            let mut held = self.held.lock().unwrap();
+            let h = held.iter_mut().find(|h| h.confirm == confirm).ok_or("That send is no longer waiting.")?;
+            if busy && h.busy {
+                return Err("That send is being paid right now.".into());
+            }
+            h.busy = busy;
+            (h.address.clone(), h.sats)
+        };
+        self.save_held();
+        Ok(r)
+    }
+
+    /// The desktop's answer to a held send. The phone gets its final reply under the request's
+    /// own id, with the confirm id, on every live session it has. A confirmed send doesn't count
+    /// against the phone's limit. A locked wallet is unlocked for this one send with `pass`, or
+    /// else with the phone-send passphrase; with neither, nothing happens and `need_passphrase`
+    /// says so. A wrong `pass` is an error, and the send keeps waiting.
+    pub async fn confirm_send(
+        &self,
+        confirm: &str,
+        allow: bool,
+        pass: Option<Zeroizing<String>>,
+    ) -> Result<Confirmed, String> {
+        self.expire();
+        if !allow {
+            let h = self.take_held(confirm)?;
+            self.log(&h.device, &h.name, &h.address, h.sats, "declined", Value::Null);
+            self.final_reply(&h, "err", json!(ERR_DECLINED));
+            self.events.emit(EV_CHANGED, json!({}));
+            return Ok(Confirmed { txid: None, need_passphrase: false });
+        }
+        let _gate = self.wallet_gate.lock().await;
+        // Busy while the wallet is unlocked and paid from: expiry and revoke leave it alone.
+        let (address, sats) = self.set_busy(confirm, true)?;
+        let one_off = pass.as_ref().map(|p| p.as_str()).filter(|p| !p.is_empty());
+        let paid = match self.pay(&address, sats, one_off).await {
+            Err(Pay::Locked) => {
+                let _ = self.set_busy(confirm, false);
+                return Ok(Confirmed { txid: None, need_passphrase: true });
+            }
+            Err(Pay::WrongPassphrase) => {
+                let _ = self.set_busy(confirm, false);
+                return Err(format!("{ERR_WRONG_PASSPHRASE} The payment is still waiting."));
+            }
+            Err(Pay::NotTried(e)) => {
+                let _ = self.set_busy(confirm, false);
+                return Err(format!("{e} The payment is still waiting."));
+            }
+            Ok(txid) => Ok(txid),
+            Err(Pay::Failed(e)) => Err(e),
+        };
+        let h = {
+            let mut held = self.held.lock().unwrap();
+            let i = held.iter().position(|h| h.confirm == confirm).expect("a busy hold stays");
+            held.remove(i)
+        };
+        self.save_held();
+        let result = match paid {
+            Ok(txid) => {
+                self.log(&h.device, &h.name, &h.address, h.sats, "sent", txid.clone());
+                self.final_reply(&h, "ok", json!({"txid": txid}));
+                Ok(Confirmed { txid: txid.as_str().map(String::from), need_passphrase: false })
+            }
+            Err(e) => {
+                self.log(&h.device, &h.name, &h.address, h.sats, "failed", json!(e));
+                self.final_reply(&h, "err", json!(e));
+                Err(e)
+            }
+        };
+        self.events.emit(EV_CHANGED, json!({}));
+        result
+    }
+
+    // ----- the wallet ------------------------------------------------------------------------
+
+    async fn wallet_state(&self) -> Result<Wallet, RpcFail> {
+        let w = self.rpc.call("getwalletinfo", vec![]).await?;
+        Ok(match w.get("unlocked_until").map(|v| v.as_u64()) {
+            None => Wallet::Plain,
+            Some(Some(0)) | Some(None) => Wallet::Locked,
+            Some(Some(t)) => Wallet::Unlocked(t),
+        })
+    }
+
+    async fn lock_wallet(&self) {
+        if let Err(e) = self.rpc.call("walletlock", vec![]).await {
+            // Its short unlock runs out on its own.
+            eprintln!("phone relay: walletlock failed: {}", e.message);
+        }
+    }
+
+    /// Use the app's one relock guard, shared with the screens' unlocks.
+    pub fn share_relock_guard(&self, g: Arc<crate::wallet::RelockGuard>) {
+        *self.relock.lock().unwrap() = g;
+    }
+
+    /// `walletpassphrase`, through the relock guard (`crate::wallet::RelockGuard` explains the
+    /// freebankd deadlock it avoids).
+    async fn unlock_wallet(&self, pass: &str, secs: u64) -> Result<(), RpcFail> {
+        let guard = self.relock.lock().unwrap().clone();
+        guard
+            .run(
+                secs,
+                || self.rpc.call("walletpassphrase", vec![json!(pass), json!(secs)]),
+                // A refusal changes no timer; an unanswered call may have set one.
+                |e: &RpcFail| e.code.is_none(),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// Pay from the node's wallet. An encrypted, locked wallet is unlocked for the send with
+    /// `one_off` or else the phone-send passphrase, and locked again straight after; a wallet
+    /// that was already unlocked is left as it was. The caller holds the wallet gate.
+    async fn pay(&self, address: &str, sats: u64, one_off: Option<&str>) -> Result<Value, Pay> {
+        let mut first = true;
+        loop {
+            let unlocked = self.unlock_for_send(one_off).await?;
+            let r = self.rpc.call("sendtoaddress", vec![json!(address), json!(to_ecx(sats))]).await;
+            if unlocked {
+                self.lock_wallet().await;
+            }
+            match r {
+                Ok(txid) => return Ok(txid),
+                // Someone's unlock ran out between our look and the send: look again, once.
+                Err(e) if e.code == Some(RPC_WALLET_UNLOCK_NEEDED) && !unlocked && first => first = false,
+                Err(e) if e.code == Some(RPC_WALLET_UNLOCK_NEEDED) => return Err(Pay::Locked),
+                Err(e) => return Err(Pay::Failed(e.plain())),
+            }
+        }
+    }
+
+    /// Ready the wallet to pay. Ok(true) when this unlocked it: the caller locks it again.
+    async fn unlock_for_send(&self, one_off: Option<&str>) -> Result<bool, Pay> {
+        match self.wallet_state().await.map_err(|e| Pay::NotTried(e.plain()))? {
+            Wallet::Plain | Wallet::Unlocked(_) => Ok(false),
+            Wallet::Locked => {
+                let stored = self.pass.lock().unwrap().clone();
+                let pass = match (one_off, stored.as_ref()) {
+                    (Some(p), _) => p,
+                    (None, Some(p)) => p.as_str(),
+                    (None, None) => return Err(Pay::Locked),
+                };
+                match self.unlock_wallet(pass, SEND_UNLOCK_SECS).await {
+                    Ok(()) => Ok(true),
+                    Err(e) if e.code == Some(RPC_WALLET_PASSPHRASE_INCORRECT) && one_off.is_some() => {
+                        Err(Pay::WrongPassphrase)
+                    }
+                    Err(e) if e.code == Some(RPC_WALLET_PASSPHRASE_INCORRECT) => {
+                        // The passphrase changed since phone sends were turned on: they are off now.
+                        self.forget_passphrase();
+                        Err(Pay::Locked)
+                    }
+                    Err(e) => Err(Pay::NotTried(e.plain())),
+                }
+            }
+        }
+    }
+
+    /// Turn on "Let my phone send while FreeBank is open": check `pass` against the wallet and keep
+    /// it in memory. A locked wallet is unlocked for a second and locked again; an unlocked one is
+    /// checked by unlocking it again until the same time, and stays unlocked.
+    pub async fn phone_send_on(&self, pass: Zeroizing<String>) -> Result<(), String> {
+        if pass.is_empty() {
+            return Err("Enter the wallet's passphrase.".into());
+        }
+        let _gate = self.wallet_gate.lock().await;
+        let mut waited = false;
+        let (secs, relock) = loop {
+            match self.wallet_state().await? {
+                Wallet::Plain => return Err(ERR_NOT_ENCRYPTED.into()),
+                Wallet::Locked => break (1, true),
+                Wallet::Unlocked(t) => {
+                    let left = t.saturating_sub(self.now());
+                    // Someone's unlock is about to run out: let the node relock first (the
+                    // deadlock `crate::wallet::RelockGuard` explains), then check on the locked wallet.
+                    if !waited && Duration::from_secs(left) <= RELOCK_MARGIN {
+                        waited = true;
+                        tokio::time::sleep(Duration::from_secs(left) + RELOCK_MARGIN).await;
+                        continue;
+                    }
+                    break (left.max(1), false);
+                }
+            }
+        };
+        match self.unlock_wallet(pass.as_str(), secs).await {
+            Ok(()) => {}
+            Err(e) if e.code == Some(RPC_WALLET_PASSPHRASE_INCORRECT) => return Err(ERR_WRONG_PASSPHRASE.into()),
+            Err(e) => return Err(e.plain()),
+        }
+        if relock {
+            self.lock_wallet().await;
+        }
+        *self.pass.lock().unwrap() = Some(pass);
+        self.events.emit(EV_CHANGED, json!({}));
+        Ok(())
+    }
+
+    /// Turn phone sends off: the passphrase is wiped from memory. Also run at quit, and when the last
+    /// phone is revoked.
+    pub fn forget_passphrase(&self) {
+        let old = self.pass.lock().unwrap().take();
+        if old.is_some() {
+            drop(old);
+            self.events.emit(EV_CHANGED, json!({}));
+        }
+    }
+
+    pub fn phone_send_is_on(&self) -> bool {
+        self.pass.lock().unwrap().is_some()
+    }
+
+    pub async fn wallet_view(&self) -> WalletView {
+        let phone_send = self.phone_send_is_on();
+        let (encrypted, locked) = match self.wallet_state().await {
+            Ok(Wallet::Plain) => (Some(false), false),
+            Ok(Wallet::Locked) => (Some(true), true),
+            Ok(Wallet::Unlocked(_)) => (Some(true), false),
+            Err(_) => (None, false),
+        };
+        WalletView { encrypted, locked, phone_send }
+    }
+}

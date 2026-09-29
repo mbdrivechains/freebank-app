@@ -12,6 +12,10 @@ export const APP_TAGLINE = "Free-banking on a Bitcoin drivechain";
 export const BASE_TICKER = "ECX";
 export const NOTE_UNIT = "units";
 
+// The public explorer (beta). Receipts link a transaction as `${EXPLORER_URL}/tx/<txid>`.
+// The same address is node::EXPLORER on the Rust side.
+export const EXPLORER_URL = "https://explorer.ecxfreebank.com";
+
 // localStorage key for the saved PWA connection.
 export const CONFIG_KEY = "freebank_connection";
 

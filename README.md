@@ -11,22 +11,47 @@ Download from the [releases page](https://github.com/mbdrivechains/freebank-app/
 - **Ubuntu 22.04+ / Debian 12+:** `freebank_<version>_amd64.deb`. Double-click it and the software installer does the
   rest (or `sudo apt install ./freebank_<version>_amd64.deb`).
 - **Other Linux:** the `.AppImage`. Make it executable (`chmod +x`), then run it.
-- **macOS (Apple Silicon):** the `.dmg`. Drag FreeBank to Applications. This build is not notarised yet, so the first
+- **macOS (Apple Silicon and Intel):** the `.dmg`. Drag FreeBank to Applications. On Intel Macs the FreeBank node
+  itself comes with a later FreeBank release. This build is not notarised yet, so the first
   time macOS will refuse to open it: go to **System Settings → Privacy & Security** and choose **Open Anyway**.
 
-Every release lists `SHA256SUMS` to check the files against.
+### Verify your download
 
-## Model: node-custodial, remote-controlled
+Each release lists its files' SHA-256 hashes in `SHA256SUMS`. From v0.2.0 it is signed with the FreeBank release key
+(`SHA256SUMS.sig`), the same key that signs the FreeBank node's releases. The key's public half is below and is also
+published as a signing key on the maintainer's GitHub account
+([mblowes](https://api.github.com/users/mblowes/ssh_signing_keys)), so you can check it from two places:
 
-FreeBank is **node-custodial** — your keys live on your `freebankd` node, not in this app.
-The wallet is a thin remote control over JSON-RPC. That means you can:
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAi2C9Lpi3gHPva6tlbLE+wdF1Cer3uUnmwZYr6SeRjR FreeBank release signing
+fingerprint SHA256:1d0zm9Qb9ZtzDnQHH593fgjAkk7nPqMDG79XyWlyeeY
+```
 
-- connect to the node on **this computer**, or
-- reach **your own node from anywhere** over **Tailscale** (enter its `100.x.y.z` address),
-  e.g. from a laptop while travelling — **your keys never leave the node**.
+To verify (OpenSSH 8.1 or later):
 
-(A client-side-keys light wallet — "Model B" — is a later roadmap item. Tor transport is a
-first-class option in the UI but not wired in this build yet.)
+```
+echo 'freebank-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAi2C9Lpi3gHPva6tlbLE+wdF1Cer3uUnmwZYr6SeRjR' > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I freebank-release -n file -s SHA256SUMS.sig < SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The packages are built by this repository's GitHub workflow from the tagged source, and GitHub records a signed build
+attestation for each. Check one with GitHub CLI 2.49 or later, logged in (`gh auth login`):
+
+```
+gh attestation verify freebank_<version>_amd64.deb --repo mbdrivechains/freebank-app
+```
+
+## Model: your own node, your own keys
+
+Your wallet lives in your own `freebankd` node, and the app runs it for you.
+- **A passphrase and 24 recovery words** (v0.2.0). The words are standard BIP39 words. The node's wallet key comes
+  from them by BIP85 (the HD-Seed WIF application, index 0), so a BIP85 tool can rebuild it without this app. The app
+  keeps the words only encrypted with your passphrase, and never stores the passphrase.
+- **Your phone as a remote** (v0.2.0). Pair it in Settings > Phone. It reaches this computer through the relay at
+  app.ecxfreebank.com, end-to-end encrypted: the relay only passes sealed messages along. The phone has a daily
+  sending limit, and bigger payments wait for you here.
+- Advanced: the app can also connect to your own node on another computer, over Tailscale.
 
 ## First run (desktop)
 
@@ -40,14 +65,25 @@ the app just connects to it.
 ## Features
 
 - Connect to a `freebankd` node via RPC (local / Tailscale / custom)
-- Balance led in **grams** (☉, launch scale, presentation-only) with the **ECX**
-  settlement line; transaction history
-- Send and receive ECX; address generation
+- Balance and every amount in **ECX**, the only unit while gold is switched off; transaction
+  history
+- **Send** with Max, a speed choice and the fee shown before you confirm; a receipt with the transaction id and its
+  confirmations up to 3; **Speed up** while a payment waits; **History** with CSV export
+- **Receive** and **Deposit** (from eCash, through BitWindow) with QR codes; coins still arriving show on Home
+- **Wallet** (Settings): passphrase, recovery words, back up, restore from a file or from the words, change
+  passphrase
+- **Security** (Settings): the wallet's passphrase, the node's ports, old unencrypted backups, file permissions and
+  the node program's signature, with red items on Home until fixed
+- **Phone remote**: pair a phone, set its daily limit, allow or refuse bigger payments here
+- Keep the node running after you close the app
 - **Notes** — hold / mint / send / redeem / demand, per issuing house
 - **Houses** — directory, registration, reserve attestation
 - **Clearing pools** — swap notes ↔ ECX, add/remove liquidity, LP positions
 - **Bills of exchange** — issue / endorse / retire / claim escrow
-- (Planned) bearer par-redemption flow, advisory gold oracle, "Model B" light wallet
+- Notes, houses, pools and bills show only while the node reports FreeBank's credit gate open
+  (`getgateinfo` from freebankd v0.2.17; older nodes keep them open)
+- (Planned) v0.3.0: the app's own eCash wallet, and Deposit and Withdraw three ways (at par, atomic swap, money
+  changer); v0.4.0: bidding for FreeBank blocks
 
 ## Quick Start
 
@@ -82,7 +118,7 @@ npx tauri build        # -> src-tauri/target/release/bundle/  (always via the ta
 ```
 
 Releases are built by `.github/workflows/release.yml` on a `vX.Y.Z` tag: Linux (`.deb`, AppImage) on
-Ubuntu 22.04, macOS on Apple Silicon, and a GitHub Release with checksums.
+Ubuntu 22.04, one universal macOS app (Apple Silicon and Intel), and a GitHub Release with checksums.
 
 ## Connect to a node
 
@@ -92,8 +128,9 @@ The wallet needs a running `freebankd` node with RPC enabled:
 # main (RPC 8454); the app reads the node's cookie file, so no password is needed locally
 freebankd -daemon
 
-# to reach it remotely, bind RPC to the Tailscale interface and allow the client:
-#   -rpcbind=<tailscale-ip> -rpcallowip=<client-tailscale-ip-or-cidr>
+# to reach it from another computer, bind RPC to the Tailscale interface and allow only that client
+# (the Security panel then shows RPC as reachable from the network, on purpose):
+#   -rpcbind=<tailscale-ip> -rpcallowip=<client-tailscale-ip>
 ```
 
 FreeBank has two networks only — **main** (RPC 8454) and **regtest** (RPC 18457); there is

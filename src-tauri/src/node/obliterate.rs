@@ -1,19 +1,64 @@
 //! "Obliterate": remove everything FreeBank put on this computer. The list of what that is, with
 //! paths and sizes, is always worked out here: `execute` acts only on the ticked items of a fresh
 //! plan, never on paths from the screen. The screen sends back each tick with the path it showed,
-//! and a tick whose item now names another path is refused. The node's data folder is ticked for
-//! you only when the app created it and its mark is still there, because freebankd's default
-//! folder may hold a node run by hand; folders setup moved aside never are. The eCash node, the
-//! enforcer and BitWindow are never on the list. What the running screen still uses (the app's
-//! folder on Linux, the caches) goes when the app exits.
+//! and a tick whose item now names another path is refused. A node data folder is ticked for you
+//! only when the app created it and its mark is still there, because freebankd's default folder
+//! may hold a node run by hand; folders FreeBank moved aside (during setup or a restore) never are,
+//! and only the ones it recorded are called that. A folder a node is using (its lock is held) can't be ticked, whatever
+//! port that node answers on. The eCash node, the enforcer and BitWindow are never on the list.
+//! What the running screen still uses (the app's folder on Linux, the caches) goes when the app exits.
 
-use super::{detect, process, wallet_files, NodeManager, DATADIR_MARK};
+use super::{detect, lock, process, wallet_files, wallets_inside, NodeManager, DATADIR_MARK};
+
+/// A recorded moved-aside folder: setup moves an older data folder aside, and a restore the wallet it
+/// replaces (recovery/job.rs); both are recorded in Settings::moved_aside.
+pub const ASIDE_LABEL: &str = "A folder FreeBank moved aside (during setup or a restore)";
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 /// FreeBank's own files in the app's folder. They go at once, even when the folder waits for exit.
-const APP_FILES: &[&str] = &["settings.json", "releases", "tools", "tmp", "logs"];
+/// v0.2.0 added: `wallet/` (the recovery words, encrypted), `sends.json` (the send log, written
+/// through `.sends.json.tmp`), `phone/` (the phone link: this computer's key, paired phones, held
+/// sends and the phone send log), `backups.json` (the wallet backups the app made, for Settings >
+/// Security) and `node.pid` (the node the app started, written through `node.pid.new`).
+const APP_FILES: &[&str] = &[
+    "settings.json", "releases", "tools", "tmp", "logs", "wallet", "sends.json", ".sends.json.tmp", "phone",
+    "backups.json", "node.pid", "node.pid.new",
+];
+
+/// FreeBank's own files named by how they begin: a damaged send log moved aside
+/// (`sends.json.damaged-<time>`).
+const APP_FILE_PREFIXES: &[&str] = &["sends.json.damaged-"];
+
+/// FreeBank's own files in the app's folder that exist now (APP_FILES and APP_FILE_PREFIXES).
+fn app_files(app_dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = APP_FILES.iter().map(|n| app_dir.join(n)).filter(|p| exists(p)).collect();
+    let mut named: Vec<PathBuf> = std::fs::read_dir(app_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            APP_FILE_PREFIXES.iter().any(|p| n.starts_with(p))
+        })
+        .map(|e| e.path())
+        .collect();
+    named.sort();
+    found.extend(named);
+    found
+}
+
+/// The app's copy of the recovery words, encrypted with the wallet passphrase.
+pub const SEED_FILE: &str = "wallet/seed.enc";
+
+/// A wallet backup: the wallet file it copies, and where the copy is. A backup covers only its own
+/// wallet, so one backup never silences the warning for another.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Backup {
+    pub wallet: String,
+    pub saved: String,
+}
 
 /// What WebKitGTK keeps in the folders it names after the program ("freebank") rather than the
 /// app's identifier: its cache and HSTS list. Such a folder is listed only if it holds nothing else.
@@ -45,18 +90,26 @@ pub struct Places {
     /// files in it go, never the folder.
     pub app_dir_shared: bool,
     pub datadir: PathBuf,
-    /// The node folder the app created when it installed (Settings::datadir_created).
-    pub datadir_created: Option<PathBuf>,
+    /// Every node folder the app created when it installed (Settings::created).
+    pub created: Vec<PathBuf>,
+    /// The folders FreeBank moved aside, during setup or a restore (Settings::moved_aside).
+    pub moved_aside: Vec<PathBuf>,
     pub caches: Vec<Cache>,
     /// What must survive whatever is ticked: wallet backups made from the plan.
     pub keep: Vec<PathBuf>,
+    /// The process ids of the node the app runs: its locks don't make a folder "in use", because
+    /// Obliterate stops that node first.
+    pub ours: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     App,
+    /// The node's data folder (the one the settings name).
     Node,
+    /// Another node data folder the app created, before a switch to another folder under Advanced.
+    Earlier,
     Aside,
     Cache,
 }
@@ -64,7 +117,7 @@ pub enum Kind {
 /// One line of the list.
 #[derive(Debug, Clone, Serialize)]
 pub struct Item {
-    /// "app", "node", "aside:<folder name>" or "cache:<which>".
+    /// "app", "node", "earlier:<path>", "aside:<path>" or "cache:<which>".
     pub id: String,
     pub kind: Kind,
     pub label: String,
@@ -76,7 +129,8 @@ pub struct Item {
     /// Can be ticked at all.
     pub allowed: bool,
     pub note: String,
-    /// The wallets in it (the node's folder and folders setup moved aside).
+    /// The wallets deleting it would delete (node folders and folders FreeBank moved aside). None for a
+    /// link, which goes alone.
     pub wallets: Vec<String>,
 }
 
@@ -169,8 +223,9 @@ fn remove_item(path: &Path, home: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Folders setup moved aside: siblings of the node's folder named <name>.old-<digits>.
-fn asides(datadir: &Path) -> Vec<(String, PathBuf)> {
+/// Folders named as setup names the ones it moves aside: siblings of the node's folder named
+/// <name>.old-<digits>. Only those recorded in the settings were moved by setup.
+fn look_alikes(datadir: &Path) -> Vec<(String, PathBuf)> {
     let (Some(parent), Some(name)) = (datadir.parent(), datadir.file_name()) else {
         return Vec::new();
     };
@@ -227,22 +282,58 @@ fn entry(p: &Places, id: String, kind: Kind, label: &str, path: &Path, on: bool,
     }
 }
 
+/// The wallets that deleting `dir` would delete: its node's wallets that lie inside it (a walletdir
+/// elsewhere stays), none for a link.
 fn wallet_strings(dir: &Path) -> Vec<String> {
-    wallet_files(dir).iter().map(|w| w.to_string_lossy().into_owned()).collect()
+    wallets_inside(dir, &wallet_files(dir))
+        .iter()
+        .map(|w| w.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// A folder a node other than the app's own is using (its lock is held) can't be ticked.
+fn mark_in_use(item: &mut Item, p: &Places) {
+    if let Some(u) = lock::in_use(Path::new(&item.path), &p.ours) {
+        item.allowed = false;
+        item.checked = false;
+        item.note = format!("{} Stop that node first; until then this folder stays.", u.say());
+    }
+}
+
+/// The list's name for a folder the screen (the system webview) wrote, one per kind so no two lines
+/// read the same.
+fn cache_label(id: &str) -> &'static str {
+    match id {
+        "cache" => "App cache",
+        "local-data" => "App local data",
+        "webkit-cache" | "caches" => "Window cache",
+        "webkit-data" | "webkit" => "Window data",
+        "http-storage" => "Window web storage",
+        "cookies" => "Window cookies",
+        "saved-state" => "Saved window position",
+        _ => "Window files",
+    }
 }
 
 /// What of FreeBank's own is in its folder, as the list says it: "Settings, the node program and
 /// logs". grpcurl counts only when it is FreeBank's own copy (tools/), not one found elsewhere.
 fn app_contents(app_dir: &Path) -> String {
+    let damaged_log = app_files(app_dir)
+        .iter()
+        .any(|f| f.file_name().is_some_and(|n| n.to_string_lossy().starts_with("sends.json.damaged-")));
     let parts: Vec<&str> = [
         ("settings.json", "settings"),
         ("releases", "the node program"),
         ("tools/grpcurl", "grpcurl"),
+        ("wallet", "your recovery words (encrypted)"),
+        ("sends.json", "the record of your sends"),
+        ("phone", "the phone link (this computer's key, your paired phones, held sends and the phone's send log)"),
+        ("backups.json", "the list of wallet backups FreeBank made (the backups themselves stay)"),
         ("logs", "logs"),
         ("tmp", "an unfinished download"),
     ]
     .iter()
-    .filter(|(name, _)| exists(&app_dir.join(name)))
+    .filter(|(name, _)| exists(&app_dir.join(name)) || (*name == "sends.json" && damaged_log))
     .map(|(_, what)| *what)
     .collect();
     let text = match parts.as_slice() {
@@ -274,12 +365,12 @@ pub fn plan_items(p: &Places) -> Vec<Item> {
         };
         let mut app = entry(p, "app".into(), Kind::App, "FreeBank's own folder", &p.app_dir, true, true, &note);
         if p.app_dir_shared && app.allowed {
-            app.size = APP_FILES.iter().map(|n| size_of(&p.app_dir.join(n))).sum();
+            app.size = app_files(&p.app_dir).iter().map(|f| size_of(f)).sum();
         }
         items.push(app);
     }
     if exists(&p.datadir) {
-        let recorded = p.datadir_created.as_deref() == Some(p.datadir.as_path());
+        let recorded = p.created.contains(&p.datadir);
         let marked = p.datadir.join(DATADIR_MARK).exists();
         // The record alone isn't enough: after the folder was deleted, another program (BitWindow's
         // FreeBank uses the same default) may have made a new one at the same path, without the mark.
@@ -295,18 +386,54 @@ pub fn plan_items(p: &Places) -> Vec<Item> {
         };
         let mut node = entry(p, "node".into(), Kind::Node, "The node's data folder", &p.datadir, created, marked, note);
         node.wallets = wallet_strings(&p.datadir);
+        mark_in_use(&mut node, p);
         items.push(node);
     }
-    for (name, path) in asides(&p.datadir) {
-        let wallets = wallet_strings(&path);
-        let note = if wallets.is_empty() {
-            "Setup moved an older node's data here and promised not to delete it. No wallet was found in it."
+    // Node folders the app created before a switch to another folder under Advanced.
+    for dir in &p.created {
+        if *dir == p.datadir || !exists(dir) {
+            continue;
+        }
+        let marked = dir.join(DATADIR_MARK).exists();
+        let note = if marked {
+            "Chain data, a wallet and freebank.conf. FreeBank created this folder for an earlier install."
         } else {
-            "Setup moved an older node's data here and promised not to delete it. It holds that node's wallet."
+            "FreeBank created a folder here once, but its mark (.freebank-node) is gone, so another program may have made this one. It stays."
         };
-        let mut aside = entry(p, format!("aside:{}", name), Kind::Aside, "Folder setup moved aside", &path, false, true, note);
+        let id = format!("earlier:{}", dir.display());
+        let mut item = entry(p, id, Kind::Earlier, "An earlier node data folder", dir, marked, marked, note);
+        item.wallets = wallet_strings(dir);
+        mark_in_use(&mut item, p);
+        items.push(item);
+    }
+    for path in &p.moved_aside {
+        if !exists(path) {
+            continue;
+        }
+        let wallets = wallet_strings(path);
+        let note = if wallets.is_empty() {
+            "FreeBank moved this here during setup or a restore and promised not to delete it. No wallet was \
+             found in it."
+        } else {
+            "FreeBank moved this here during setup or a restore and promised not to delete it. It holds an \
+             older wallet."
+        };
+        let id = format!("aside:{}", path.display());
+        let mut aside = entry(p, id, Kind::Aside, ASIDE_LABEL, path, false, true, note);
         aside.wallets = wallets;
+        mark_in_use(&mut aside, p);
         items.push(aside);
+    }
+    // Named like those, but not recorded (an older app, or someone else): shown, never removed here.
+    for (_, path) in look_alikes(&p.datadir) {
+        if p.moved_aside.contains(&path) {
+            continue;
+        }
+        let id = format!("aside:{}", path.display());
+        let note = "Named like a folder FreeBank moves aside, but FreeBank has no record of moving it, so it stays.";
+        let mut item = entry(p, id, Kind::Aside, "Older node folder", &path, false, false, note);
+        item.wallets = wallet_strings(&path);
+        items.push(item);
     }
     let mut seen: Vec<PathBuf> = items.iter().map(|i| PathBuf::from(&i.path)).collect();
     for c in &p.caches {
@@ -322,7 +449,7 @@ pub fn plan_items(p: &Places) -> Vec<Item> {
             p,
             format!("cache:{}", c.id),
             Kind::Cache,
-            "Window cache",
+            cache_label(c.id),
             &c.path,
             true,
             true,
@@ -342,8 +469,8 @@ fn choose(p: &Places, ticks: &[Tick]) -> Result<(Vec<Item>, Vec<Item>), String> 
     }
     let mut chosen: Vec<Item> = Vec::new();
     for t in ticks {
-        // "node" and "aside:…" follow the data folder in settings, so the id alone could now name a
-        // folder the user never saw on the list.
+        // "node" follows the data folder in settings, so the id alone could now name a folder the
+        // user never saw on the list.
         let item = plan.iter().find(|i| i.id == t.id && i.path == t.path).ok_or(
             "The list has changed since it was shown, so nothing was removed. Please look at it again.",
         )?;
@@ -363,7 +490,7 @@ fn choose(p: &Places, ticks: &[Tick]) -> Result<(Vec<Item>, Vec<Item>), String> 
     for item in &chosen {
         let path = Path::new(&item.path);
         let full = check_deletable(path, &p.home)?;
-        if item.kind == Kind::Node && !path.join(DATADIR_MARK).exists() {
+        if matches!(item.kind, Kind::Node | Kind::Earlier) && !path.join(DATADIR_MARK).exists() {
             return Err(format!(
                 "{} wasn't set up by FreeBank, so nothing was removed.",
                 item.path
@@ -395,20 +522,35 @@ pub struct Done {
     pub app_removed: bool,
 }
 
-/// Delete the ticked items of a fresh plan. The node's folder and the moved-aside ones go first, so
-/// a failure there leaves the app's settings as they were.
+/// Delete the ticked items of a fresh plan. The node folders and the moved-aside ones go first, so
+/// a failure there leaves the app's settings as they were. Called once the app's node has stopped:
+/// then no node at all may be using a folder that goes.
 pub fn execute(p: &Places, ticks: &[Tick]) -> Result<Done, String> {
     let (plan, chosen) = choose(p, ticks)?;
     let mut done = Done::default();
-    for item in chosen.iter().filter(|i| matches!(i.kind, Kind::Node | Kind::Aside)) {
-        remove_item(Path::new(&item.path), &p.home)?;
+    let folders: Vec<&Item> = chosen
+        .iter()
+        .filter(|i| matches!(i.kind, Kind::Node | Kind::Earlier | Kind::Aside))
+        .collect();
+    for item in &folders {
+        if let Some(u) = lock::in_use(Path::new(&item.path), &[]) {
+            return Err(format!("{} Stop it first. Nothing was removed.", u.say()));
+        }
+    }
+    // Where each link that goes leads: that stays, and the list says so.
+    let mut targets = Vec::new();
+    for item in &folders {
+        let path = Path::new(&item.path);
+        if is_link(path) {
+            targets.extend(path.canonicalize().ok());
+        }
+        remove_item(path, &p.home)?;
         done.removed.push(PathBuf::from(&item.path));
     }
     if chosen.iter().any(|i| i.kind == Kind::App) {
         if p.app_dir_shared {
             // A developer's FREEBANK_APP_DIR: FreeBank's own files go, the folder and the rest stay.
-            for name in APP_FILES {
-                let path = p.app_dir.join(name);
+            for path in app_files(&p.app_dir) {
                 if super::remove_inside(&p.app_dir, &path)? {
                     done.removed.push(path);
                 }
@@ -419,8 +561,8 @@ pub fn execute(p: &Places, ticks: &[Tick]) -> Result<Done, String> {
         } else {
             // A link goes whole at exit; only a real folder is emptied of FreeBank's files now.
             if !is_link(&p.app_dir) {
-                for name in APP_FILES {
-                    super::remove_inside(&p.app_dir, &p.app_dir.join(name))?;
+                for path in app_files(&p.app_dir) {
+                    super::remove_inside(&p.app_dir, &path)?;
                 }
             }
             done.at_exit.push(p.app_dir.clone());
@@ -438,6 +580,7 @@ pub fn execute(p: &Places, ticks: &[Tick]) -> Result<Done, String> {
         .iter()
         .filter(|i| !chosen.iter().any(|c| c.id == i.id))
         .map(|i| PathBuf::from(&i.path))
+        .chain(targets)
         .collect();
     Ok(done)
 }
@@ -479,21 +622,27 @@ pub fn wipe_at_exit(mgr: &NodeManager) {
     }
 }
 
-/// The list the confirm panel shows, with the wallet's balance when the node answers.
+/// The list the confirm panel shows, with the wallet's balance when it can be trusted.
 #[derive(Debug, Serialize)]
 pub struct Plan {
     pub items: Vec<Item>,
-    /// The wallets in the node's data folder.
+    /// The wallets of the node whose data folder the settings name.
     pub wallets: Vec<String>,
     /// Everything their wallet holds, from getwalletinfo: spendable, unconfirmed and newly mined
     /// coins still maturing. (getbalance, the number the Home screen shows, counts only the first.)
+    /// Given only when it is the whole story: exactly one wallet, and the node caught up.
     pub balance: Option<f64>,
     /// How much of `balance` isn't spendable yet (unconfirmed or maturing), when any.
     pub pending: Option<f64>,
     /// Why there is no balance.
     pub balance_note: Option<String>,
-    /// Backups made with "Back up wallet first".
-    pub backups: Vec<String>,
+    /// Backups made since the app started, each with the wallet it copies.
+    pub backups: Vec<Backup>,
+    /// What backing up will do beyond copying (stop the node for a moment), or why it can't.
+    pub backup_note: Option<String>,
+    /// The app's copy of the recovery words (encrypted), when there is one: it goes with the app's
+    /// own folder.
+    pub seed: Option<String>,
     /// Why Obliterate can't run right now.
     pub blocked: Option<String>,
 }
@@ -523,6 +672,90 @@ fn holdings(info: &serde_json::Value) -> Option<(f64, f64)> {
     Some((spendable + waiting, waiting))
 }
 
+/// Has the node caught up, so the balance it reports is all the wallet holds? While it syncs (after
+/// "Delete chain data", say) a funded wallet reads 0. Caught up: as many blocks as headers, out of
+/// initial block download, and not behind the explorer's tip when the app has seen it lately.
+fn caught_up(info: &serde_json::Value, explorer_tip: Option<u64>) -> Result<(), String> {
+    let blocks = info["blocks"].as_u64();
+    let headers = info["headers"].as_u64();
+    let ibd = info["initialblockdownload"].as_bool();
+    let (Some(b), Some(h), Some(ibd)) = (blocks, headers, ibd) else {
+        return Err("Your node didn't say how far it has synced, so the balance it reports may be missing coins.".into());
+    };
+    let tip = explorer_tip.unwrap_or(0).max(h);
+    if b == h && !ibd && b + 1 >= tip {
+        return Ok(());
+    }
+    Err(if tip > b {
+        format!(
+            "Your node is still catching up (block {} of {}), so the balance it reports may be missing coins.",
+            detect::grouped(b),
+            detect::grouped(tip)
+        )
+    } else {
+        "Your node is still catching up, so the balance it reports may be missing coins.".into()
+    })
+}
+
+/// The balance of the node's one wallet, when it can be trusted: (balance, pending, why not).
+async fn balance_verdict(mgr: &NodeManager, s: &super::Settings, wallets: usize) -> (Option<f64>, Option<f64>, Option<String>) {
+    if wallets == 0 {
+        return (None, None, None);
+    }
+    if wallets > 1 {
+        return (
+            None,
+            None,
+            Some(format!(
+                "Your node has {} wallets and reports the balance of only one, so FreeBank can't say what they hold.",
+                wallets
+            )),
+        );
+    }
+    let probe = detect::probe(&mgr.http, s).await;
+    match probe.state {
+        detect::RpcState::Up => {
+            let c = detect::local_client(&mgr.http, s);
+            let chain = match c.call("getblockchaininfo", vec![]).await {
+                Ok(v) => v,
+                Err(e) => return (None, None, Some(format!("Your node couldn't say how far it has synced ({}).", e))),
+            };
+            if let Err(why) = caught_up(&chain, mgr.explorer_tip_seen()) {
+                return (None, None, Some(why));
+            }
+            match c.call("getwalletinfo", vec![]).await {
+                Ok(v) => match holdings(&v) {
+                    Some((total, waiting)) => (Some(total), (waiting > 0.0).then_some(waiting), None),
+                    None => (None, None, Some("Your node didn't say what the balance is.".to_string())),
+                },
+                Err(e) => (None, None, Some(format!("Your node couldn't say what the balance is ({}).", e))),
+            }
+        }
+        detect::RpcState::Down => (None, None, Some("Your node isn't running, so the balance can't be shown.".into())),
+        detect::RpcState::Warming | detect::RpcState::Busy => {
+            (None, None, Some("Your node is still starting, so the balance can't be shown yet.".into()))
+        }
+        detect::RpcState::Locked => (None, None, Some(probe.message)),
+    }
+}
+
+/// Why backing up several wallets needs more than a copy, said before the button is pressed.
+fn several_wallets(n: usize, ours: bool) -> String {
+    if ours {
+        format!(
+            "Your node has {} wallets. To copy each one whole, FreeBank stops the node for a moment, then starts it again.",
+            n
+        )
+    } else {
+        format!(
+            "Your node has {} wallets. While it runs, it can safely copy only the one it has open, and it was started \
+             by another program, which FreeBank never stops. Stop it there, then back up again: FreeBank then copies \
+             every wallet.",
+            n
+        )
+    }
+}
+
 pub async fn plan(mgr: &NodeManager, places: Places) -> Result<Plan, String> {
     mgr.still_here()?;
     let s = mgr.settings.lock().await.clone();
@@ -532,6 +765,8 @@ pub async fn plan(mgr: &NodeManager, places: Places) -> Result<Plan, String> {
         None => refusal(mgr).await,
     };
     let datadir = places.datadir.clone();
+    let seed = places.app_dir.join(SEED_FILE);
+    let seed = seed.is_file().then(|| seed.to_string_lossy().into_owned());
     let items = tokio::task::spawn_blocking(move || plan_items(&places))
         .await
         .map_err(|e| e.to_string())?;
@@ -539,28 +774,17 @@ pub async fn plan(mgr: &NodeManager, places: Places) -> Result<Plan, String> {
         .iter()
         .map(|w| w.to_string_lossy().into_owned())
         .collect();
-    let mut pending = None;
-    let (balance, balance_note) = if wallets.is_empty() {
-        (None, None)
-    } else {
-        let probe = detect::probe(&mgr.http, &s).await;
-        match probe.state {
-            detect::RpcState::Up => match detect::local_client(&mgr.http, &s).call("getwalletinfo", vec![]).await {
-                Ok(v) => match holdings(&v) {
-                    Some((total, waiting)) => {
-                        pending = (waiting > 0.0).then_some(waiting);
-                        (Some(total), None)
-                    }
-                    None => (None, Some("Your node didn't say what the balance is.".to_string())),
-                },
-                Err(e) => (None, Some(format!("Your node couldn't say what the balance is ({}).", e))),
-            },
-            detect::RpcState::Down => (None, Some("Your node isn't running, so the balance can't be shown.".into())),
-            detect::RpcState::Warming | detect::RpcState::Busy => {
-                (None, Some("Your node is still starting, so the balance can't be shown yet.".into()))
-            }
-            detect::RpcState::Locked => (None, Some(probe.message)),
+    let (balance, pending, balance_note) = balance_verdict(mgr, &s, wallets.len()).await;
+    let backup_note = if wallets.len() > 1 {
+        if process::child_alive(mgr).await {
+            Some(several_wallets(wallets.len(), true))
+        } else if detect::probe(&mgr.http, &s).await.state == detect::RpcState::Up {
+            Some(several_wallets(wallets.len(), false))
+        } else {
+            None
         }
+    } else {
+        None
     };
     Ok(Plan {
         items,
@@ -569,6 +793,8 @@ pub async fn plan(mgr: &NodeManager, places: Places) -> Result<Plan, String> {
         pending,
         balance_note,
         backups: mgr.backups.lock().unwrap().clone(),
+        backup_note,
+        seed,
         blocked,
     })
 }
@@ -656,7 +882,7 @@ pub async fn run(mgr: &NodeManager, places: Places, ticks: Vec<Tick>) -> Result<
         removed: strings(&done.removed),
         at_exit: strings(&done.at_exit),
         kept: strings(&done.kept),
-        backups: mgr.backups.lock().unwrap().clone(),
+        backups: mgr.backups.lock().unwrap().iter().map(|b| b.saved.clone()).collect(),
         app_removed: done.app_removed,
         app: how_to_remove_app(),
     })
@@ -709,14 +935,40 @@ fn file_safe(s: &str) -> String {
 }
 
 /// "wallets/savings" -> "wallets-savings": a wallet's place in the data folder, fit for a file name.
+/// A wallet in a walletdir elsewhere is named after its folder and file ("mywallets-savings").
 fn wallet_label(datadir: &Path, wallet: &Path) -> String {
-    let rel = wallet.strip_prefix(datadir).unwrap_or(wallet).to_string_lossy().into_owned();
+    let rel = match wallet.strip_prefix(datadir) {
+        Ok(r) => r.to_string_lossy().into_owned(),
+        Err(_) => wallet
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|c| c.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+    };
     file_safe(rel.strip_suffix(".dat").unwrap_or(&rel))
 }
 
+/// Only its owner may read or write `path` (0600 on Unix).
+fn set_private(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Couldn't protect {}: {}", path.display(), e))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// Copy a stopped node's wallets into `folder`: the first as <base>.dat, any others with their place
-/// in the data folder added. Never overwrites a file.
-fn copy_wallets(datadir: &Path, folder: &Path, base: &str) -> Result<Vec<PathBuf>, String> {
+/// in the data folder added. Each copy is readable only by its owner. Never overwrites a file.
+fn copy_wallets(datadir: &Path, folder: &Path, base: &str) -> Result<Vec<Backup>, String> {
     let wallets = wallet_files(datadir);
     if wallets.is_empty() {
         return Err(format!("There's no wallet in {}.", datadir.display()));
@@ -730,84 +982,130 @@ fn copy_wallets(datadir: &Path, folder: &Path, base: &str) -> Result<Vec<PathBuf
         };
         let dest = free_name(folder, &name);
         let mut from = std::fs::File::open(w).map_err(|e| format!("Couldn't read {}: {}", w.display(), e))?;
-        let mut to = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&dest)
-            .map_err(|e| format!("Couldn't write {}: {}", dest.display(), e))?;
+        let mut to = super::install::private_file(&dest).map_err(|e| format!("Couldn't write {}: {}", dest.display(), e))?;
         std::io::copy(&mut from, &mut to)
             .and_then(|_| to.sync_all())
             .map_err(|e| format!("Couldn't write {}: {}", dest.display(), e))?;
-        saved.push(dest);
+        saved.push(Backup {
+            wallet: w.to_string_lossy().into_owned(),
+            saved: dest.to_string_lossy().into_owned(),
+        });
     }
     Ok(saved)
 }
 
-/// "Back up wallet first": FreeBank-wallet-<local time>.dat in `folder`. A running node writes it
-/// itself (RPC backupwallet), so the copy is whole; a stopped node's wallet files are copied. The
-/// wallets in folders setup moved aside (no node runs there) are copied too, named after the folder.
+/// Copy the wallets of a folder no node is using (no lock held on it or its wallet folders).
+async fn copy_unused(dir: &Path, folder: &Path, base: &str) -> Result<Vec<Backup>, String> {
+    if let Some(u) = lock::in_use(dir, &[]) {
+        return Err(format!(
+            "{} FreeBank copies a wallet only when no node has it open. Stop that node, then back up again.",
+            u.say()
+        ));
+    }
+    let (d, f, b) = (dir.to_path_buf(), folder.to_path_buf(), base.to_string());
+    tokio::task::spawn_blocking(move || copy_wallets(&d, &f, &b))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// The node's own wallets (see `backup_wallet`).
+async fn backup_node(
+    mgr: &NodeManager,
+    s: &super::Settings,
+    wallets: &[PathBuf],
+    folder: &Path,
+    base: &str,
+    saved: &mut Vec<Backup>,
+) -> Result<(), String> {
+    let datadir = PathBuf::from(&s.datadir);
+    let ours = process::child_alive(mgr).await;
+    let probe = detect::probe(&mgr.http, s).await;
+    match probe.state {
+        // backupwallet saves only the wallet the node has open. To copy every one whole, the app
+        // stops its own node for a moment and starts it again.
+        detect::RpcState::Up if wallets.len() > 1 && ours => {
+            let _busy = mgr.busy("Backing up your wallets: the node stops for a moment…")?;
+            process::stop(mgr).await?;
+            let copied = copy_unused(&datadir, folder, base).await;
+            let restarted = process::start(mgr).await;
+            saved.extend(copied?);
+            restarted.map_err(|e| {
+                format!("Your wallets are backed up, but your node didn't start again ({}). Start it on the Node tab.", e)
+            })
+        }
+        detect::RpcState::Up if wallets.len() > 1 => Err(several_wallets(wallets.len(), false)),
+        detect::RpcState::Up => {
+            let dest = free_name(folder, base);
+            // Made first, readable only by its owner; the node then writes into it.
+            drop(super::install::private_file(&dest).map_err(|e| format!("Couldn't write {}: {}", dest.display(), e))?);
+            if let Err(e) = detect::local_client(&mgr.http, s)
+                .call("backupwallet", vec![serde_json::json!(dest.to_string_lossy())])
+                .await
+            {
+                let _ = std::fs::remove_file(&dest);
+                return Err(format!("Your node couldn't back up the wallet ({}).", e.trim_start_matches("RPC error: ")));
+            }
+            // The node's copy may carry the wallet's own permissions: put the owner-only ones back.
+            set_private(&dest)?;
+            if std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) == 0 {
+                return Err(format!("Your node said it saved the backup, but {} is empty.", dest.display()));
+            }
+            saved.push(Backup {
+                wallet: wallets[0].to_string_lossy().into_owned(),
+                saved: dest.to_string_lossy().into_owned(),
+            });
+            Ok(())
+        }
+        detect::RpcState::Down if !ours => {
+            saved.extend(copy_unused(&datadir, folder, base).await?);
+            Ok(())
+        }
+        detect::RpcState::Locked => Err(format!("{} Stop that node, then back up again.", probe.message)),
+        _ => Err("Your node is still starting. Back up once it's running.".into()),
+    }
+}
+
+/// Obliterate's "Back up wallet": FreeBank-wallet-<local time>.dat in `folder`, readable only by its
+/// owner. A running node with one wallet writes the copy itself (RPC backupwallet), so it is whole.
+/// With several, only a stopped node's files can all be copied whole: the app stops its own node for
+/// a moment, copies each and starts it again; a node another program started is never stopped, and
+/// the backup says why it can't. A stopped node's wallets are copied once no node holds the folder.
+/// The wallets in the other folders Obliterate may delete (earlier data folders the app created,
+/// and the folders FreeBank moved aside) are copied too, named after their folder. Each backup is
+/// recorded with the wallet it copies.
 pub async fn backup_wallet(mgr: &NodeManager, folder: &Path) -> Result<Vec<String>, String> {
     mgr.still_here()?;
     let s = mgr.settings.lock().await.clone();
     let datadir = PathBuf::from(&s.datadir);
     let base = format!("FreeBank-wallet-{}", stamp());
-    let node_wallets = wallet_files(&datadir).len();
-    let moved: Vec<(String, PathBuf)> = asides(&datadir)
-        .into_iter()
-        .filter(|(_, path)| !wallet_files(path).is_empty())
+    let node_wallets = wallet_files(&datadir);
+    let others: Vec<PathBuf> = s
+        .created()
+        .iter()
+        .chain(s.moved_aside.iter())
+        .map(PathBuf::from)
+        .filter(|d| *d != datadir && d.is_dir() && !wallet_files(d).is_empty())
         .collect();
-    if node_wallets == 0 && moved.is_empty() {
+    if node_wallets.is_empty() && others.is_empty() {
         return Err(format!("There's no wallet in {}.", datadir.display()));
     }
-    let mut saved = Vec::new();
-    if node_wallets > 0 {
-        let ours_alive = process::child_alive(mgr).await;
-        let probe = detect::probe(&mgr.http, &s).await;
-        match probe.state {
-            // backupwallet saves the one wallet the node has loaded; the others would be left out.
-            detect::RpcState::Up if node_wallets > 1 => {
-                return Err(format!(
-                    "Your node has {} wallets, and while it runs it can back up only one. Stop it on the Node tab, \
-                     then back up again: FreeBank then copies every wallet.",
-                    node_wallets
-                ))
-            }
-            detect::RpcState::Up => {
-                let dest = free_name(folder, &base);
-                detect::local_client(&mgr.http, &s)
-                    .call("backupwallet", vec![serde_json::json!(dest.to_string_lossy())])
-                    .await
-                    .map_err(|e| format!("Your node couldn't back up the wallet ({}).", e.trim_start_matches("RPC error: ")))?;
-                if !dest.is_file() {
-                    return Err(format!("Your node said it saved the backup, but {} isn't there.", dest.display()));
-                }
-                saved.push(dest);
-            }
-            detect::RpcState::Down if !ours_alive => {
-                let (d, f, b) = (datadir.clone(), folder.to_path_buf(), base.clone());
-                saved.extend(
-                    tokio::task::spawn_blocking(move || copy_wallets(&d, &f, &b))
-                        .await
-                        .map_err(|e| e.to_string())??,
-                );
-            }
-            detect::RpcState::Locked => return Err(format!("{} Stop that node, then back up again.", probe.message)),
-            _ => return Err("Your node is still starting. Back up once it's running.".into()),
+    let mut saved: Vec<Backup> = Vec::new();
+    let result = async {
+        if !node_wallets.is_empty() {
+            backup_node(mgr, &s, &node_wallets, folder, &base, &mut saved).await?;
         }
+        for dir in &others {
+            // ".freebank.old-1727000000" -> "FreeBank-wallet-<time>-freebank-old-1727000000"
+            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let named = format!("{}-{}", base, file_safe(name.trim_start_matches('.')));
+            saved.extend(copy_unused(dir, folder, &named).await?);
+        }
+        Ok::<(), String>(())
     }
-    for (name, path) in moved {
-        // ".freebank.old-1727000000" -> "FreeBank-wallet-<time>-freebank-old-1727000000"
-        let named = format!("{}-{}", base, file_safe(name.trim_start_matches('.')));
-        let f = folder.to_path_buf();
-        saved.extend(
-            tokio::task::spawn_blocking(move || copy_wallets(&path, &f, &named))
-                .await
-                .map_err(|e| e.to_string())??,
-        );
-    }
-    let saved = strings(&saved);
+    .await;
+    // What was saved is recorded even when a later step failed.
     mgr.backups.lock().unwrap().extend(saved.iter().cloned());
-    Ok(saved)
+    result.map(|_| saved.into_iter().map(|b| b.saved).collect())
 }
 
 #[cfg(test)]
@@ -835,6 +1133,8 @@ mod tests {
         let datadir = home.join(".freebank");
         write(&app_dir.join("settings.json"), b"{}");
         write(&app_dir.join("releases/v0.2.16/freebank/bin/freebankd"), &[0u8; 1000]);
+        // Checked by this code (install.rs), so the app may start it.
+        write(&app_dir.join("releases/v0.2.16/.verified"), b"");
         write(&datadir.join(DATADIR_MARK), b"");
         write(&datadir.join("wallet.dat"), &[1u8; 300]);
         write(&datadir.join("blocks/blk00000.dat"), &[2u8; 700]);
@@ -844,9 +1144,11 @@ mod tests {
             screen_uses_app_dir: false,
             app_dir_shared: false,
             datadir: datadir.clone(),
-            datadir_created: Some(datadir),
+            created: vec![datadir],
+            moved_aside: Vec::new(),
             caches: Vec::new(),
             keep: Vec::new(),
+            ours: Vec::new(),
         }
     }
 
@@ -880,7 +1182,7 @@ mod tests {
         assert_eq!(node.size, 1000);
 
         // Set up by the app (the mark) but not recorded, as older installs: shown, not ticked.
-        p.datadir_created = None;
+        p.created.clear();
         let node = find(&plan_items(&p), "node").clone();
         assert!(!node.checked && node.allowed);
         assert!(node.note.contains("didn't create"), "{}", node.note);
@@ -894,7 +1196,7 @@ mod tests {
 
         // Recorded but the mark is gone: another program may have made the folder again (BitWindow's
         // FreeBank uses the same default), so the record alone doesn't let it go.
-        p.datadir_created = Some(p.datadir.clone());
+        p.created = vec![p.datadir.clone()];
         let node = find(&plan_items(&p), "node").clone();
         assert!(!node.checked && !node.allowed);
         assert!(node.note.contains("mark"), "{}", node.note);
@@ -914,36 +1216,86 @@ mod tests {
     }
 
     #[test]
-    fn moved_aside_folders_listed_off() {
+    fn only_recorded_asides_are_called_moved() {
         let b = base("aside");
-        let p = places(&b);
-        let home = &p.home;
+        let mut p = places(&b);
+        let home = p.home.clone();
         write(&home.join(".freebank.old-1727000000/wallet.dat"), b"w");
         write(&home.join(".freebank.old-1727000001/debug.log"), b"l");
+        write(&home.join(".freebank.old-1727000002/wallet.dat"), b"someone's own copy");
         write(&home.join(".freebank.old-abc/wallet.dat"), b"w");
         write(&home.join(".freebank.old-/wallet.dat"), b"w");
         write(&home.join(".freebank-other/wallet.dat"), b"w");
+        // Setup moved the first two aside and recorded them; nobody recorded the third.
+        let moved = [home.join(".freebank.old-1727000000"), home.join(".freebank.old-1727000001")];
+        p.moved_aside = moved.to_vec();
+        let id = |path: &Path| format!("aside:{}", path.display());
 
         let items = plan_items(&p);
         let asides: Vec<&Item> = items.iter().filter(|i| i.kind == Kind::Aside).collect();
+        let unrecorded = home.join(".freebank.old-1727000002");
         assert_eq!(
-            asides.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
-            vec!["aside:.freebank.old-1727000000", "aside:.freebank.old-1727000001"]
+            asides.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![id(&moved[0]), id(&moved[1]), id(&unrecorded)]
         );
-        assert!(asides.iter().all(|i| !i.checked && i.allowed));
-        assert!(asides[0].note.contains("holds that node's wallet"));
-        assert_eq!(asides[0].wallets, vec![home.join(".freebank.old-1727000000/wallet.dat").to_string_lossy()]);
+        assert!(asides[..2].iter().all(|i| !i.checked && i.allowed && i.label == ASIDE_LABEL));
+        assert!(asides[0].note.contains("It holds an older wallet"));
+        assert_eq!(asides[0].wallets, vec![moved[0].join("wallet.dat").to_string_lossy()]);
         assert!(asides[1].note.contains("No wallet"));
         assert!(asides[1].wallets.is_empty());
+        // Named the same way but never recorded: not called moved by setup, and never removed here.
+        assert!(!asides[2].checked && !asides[2].allowed);
+        assert_eq!(asides[2].label, "Older node folder");
+        assert!(asides[2].note.contains("no record of moving it"), "{}", asides[2].note);
+        assert!(!asides[2].note.contains("Setup moved"));
+        assert!(execute(&p, &ticks(&p, &[&id(&unrecorded)])).is_err());
         assert_eq!(find(&items, "node").wallets, vec![p.datadir.join("wallet.dat").to_string_lossy()]);
         assert!(find(&items, "app").wallets.is_empty());
 
-        let done = execute(&p, &ticks(&p, &["aside:.freebank.old-1727000000"])).unwrap();
-        assert_eq!(done.removed, vec![home.join(".freebank.old-1727000000")]);
-        assert!(!home.join(".freebank.old-1727000000").exists());
-        assert!(home.join(".freebank.old-1727000001").exists());
+        let done = execute(&p, &ticks(&p, &[&id(&moved[0])])).unwrap();
+        assert_eq!(done.removed, vec![moved[0].clone()]);
+        assert!(!moved[0].exists());
+        assert!(moved[1].exists() && unrecorded.join("wallet.dat").exists());
         assert!(home.join(".freebank.old-abc/wallet.dat").exists());
         assert!(p.datadir.join("wallet.dat").exists());
+
+        // A recorded folder is listed wherever the node's folder is now.
+        p.datadir = home.join("disk/.freebank");
+        assert!(plan_items(&p).iter().any(|i| i.id == id(&moved[1])));
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    #[test]
+    fn every_folder_the_app_created_is_listed() {
+        let b = base("earlier");
+        let mut p = places(&b);
+        let home = p.home.clone();
+        // Installed into ~/.freebank, then switched to another folder and installed there too.
+        let first = p.datadir.clone();
+        let second = home.join("disk/freebank");
+        write(&second.join(DATADIR_MARK), b"");
+        write(&second.join("wallet.dat"), &[3u8; 50]);
+        p.datadir = second.clone();
+        p.created = vec![first.clone(), second.clone()];
+
+        let items = plan_items(&p);
+        let node = find(&items, "node");
+        assert_eq!(node.path, second.to_string_lossy());
+        assert!(node.checked && node.allowed);
+        let earlier = find(&items, &format!("earlier:{}", first.display()));
+        assert_eq!(earlier.kind, Kind::Earlier);
+        assert!(earlier.checked && earlier.allowed, "{}", earlier.note);
+        assert_eq!(earlier.wallets, vec![first.join("wallet.dat").to_string_lossy()]);
+
+        // Without its mark it may be another program's now: listed, never ticked or removed.
+        std::fs::remove_file(first.join(DATADIR_MARK)).unwrap();
+        let earlier = find(&plan_items(&p), &format!("earlier:{}", first.display())).clone();
+        assert!(!earlier.allowed && earlier.note.contains("mark"));
+        write(&first.join(DATADIR_MARK), b"");
+
+        let done = execute(&p, &ticks(&p, &["node", &format!("earlier:{}", first.display())])).unwrap();
+        assert_eq!(done.removed, vec![second.clone(), first.clone()]);
+        assert!(!first.exists() && !second.exists());
         std::fs::remove_dir_all(&b).unwrap();
     }
 
@@ -971,6 +1323,9 @@ mod tests {
         let caches: Vec<&str> = items.iter().filter(|i| i.kind == Kind::Cache).map(|i| i.id.as_str()).collect();
         assert_eq!(caches, vec!["cache:cache", "cache:webkit-cache"]);
         assert!(find(&items, "cache:cache").checked);
+        // Each line has a name of its own, not two called "Window cache".
+        assert_eq!(find(&items, "cache:cache").label, "App cache");
+        assert_eq!(find(&items, "cache:webkit-cache").label, "Window cache");
         assert_eq!(find(&items, "cache:webkit-cache").size, 5);
 
         // Caches wait for exit, then go through the same guard.
@@ -1003,33 +1358,29 @@ mod tests {
         let b = base("shown");
         let mut p = places(&b);
         let home = p.home.clone();
-        write(&home.join(".freebank.old-1/wallet.dat"), b"w");
-        let shown = ticks(&p, &["app", "node", "aside:.freebank.old-1"]);
+        let shown = ticks(&p, &["app", "node"]);
 
-        // Settings now point at another folder FreeBank once set up, with its own wallet and a
-        // moved-aside folder of the same name beside it. The same ids now name those folders.
+        // Settings now point at another folder FreeBank once set up, with its own wallet. The
+        // "node" id now names that folder.
         let other = home.join("disk/.freebank");
         write(&other.join(DATADIR_MARK), b"");
         write(&other.join("wallet.dat"), b"other");
-        write(&home.join("disk/.freebank.old-1/wallet.dat"), b"other aside");
         p.datadir = other.clone();
-        for t in &shown[1..] {
-            let err = execute(&p, std::slice::from_ref(t)).unwrap_err();
-            assert!(err.contains("list has changed"), "{}: {}", t.id, err);
-        }
+        let err = execute(&p, &shown[1..]).unwrap_err();
+        assert!(err.contains("list has changed"), "{}", err);
         let err = execute(&p, &shown).unwrap_err();
         assert!(err.contains("list has changed"), "{}", err);
         assert!(other.join("wallet.dat").exists());
-        assert!(home.join("disk/.freebank.old-1/wallet.dat").exists());
         assert!(home.join(".freebank/wallet.dat").exists());
         assert!(p.app_dir.join("settings.json").exists());
 
         // Ticks made from the list as it is now are taken.
-        let now = ticks(&p, &["aside:.freebank.old-1"]);
-        assert_eq!(now[0].path, home.join("disk/.freebank.old-1").to_string_lossy());
+        p.created.push(other.clone());
+        let now = ticks(&p, &["node"]);
+        assert_eq!(now[0].path, other.to_string_lossy());
         execute(&p, &now).unwrap();
-        assert!(!home.join("disk/.freebank.old-1").exists());
-        assert!(home.join(".freebank.old-1/wallet.dat").exists());
+        assert!(!other.exists());
+        assert!(home.join(".freebank/wallet.dat").exists());
         std::fs::remove_dir_all(&b).unwrap();
     }
 
@@ -1148,10 +1499,14 @@ mod tests {
         assert!(node.checked && node.allowed);
         assert_eq!(node.size, 0);
         assert!(node.note.contains("only the link goes"), "{}", node.note);
+        // Only the link goes, so no wallet goes with it: the box won't say the wallet is deleted.
+        assert!(node.wallets.is_empty(), "{:?}", node.wallets);
 
         let done = execute(&p, &ticks(&p, &["node", "cache:cache"])).unwrap();
         assert!(std::fs::symlink_metadata(&p.datadir).is_err());
         assert!(real.join("wallet.dat").exists() && real.join(DATADIR_MARK).exists());
+        // And where it led is shown as left in place.
+        assert!(done.kept.contains(&real), "{:?}", done.kept);
         assert!(wipe(&AtExit { home: p.home.clone(), paths: done.at_exit, webkit_only: done.webkit_only }).is_empty());
         assert!(std::fs::symlink_metadata(&cache_link).is_err());
         assert!(elsewhere.join("keep").exists());
@@ -1197,7 +1552,7 @@ mod tests {
                 write(&datadir.join(DATADIR_MARK), b"");
             }
             p.datadir = datadir.clone();
-            p.datadir_created = Some(datadir.clone());
+            p.created = vec![datadir.clone()];
             let node = find(&plan_items(&p), "node").clone();
             assert!(!node.allowed && !node.checked, "{}", datadir.display());
             assert!(node.note.contains("never deletes"), "{}", node.note);
@@ -1234,7 +1589,7 @@ mod tests {
         write(&inner.join(DATADIR_MARK), b"");
         write(&inner.join("wallet.dat"), b"w");
         p.datadir = inner.clone();
-        p.datadir_created = Some(inner.clone());
+        p.created = vec![inner.clone()];
         let err = execute(&p, &ticks(&p, &["app"])).unwrap_err();
         assert!(err.contains("isn't ticked"), "{}", err);
         assert!(inner.join("wallet.dat").exists());
@@ -1261,17 +1616,39 @@ mod tests {
 
         let base_name = "FreeBank-wallet-20260927-120000";
         write(&docs.join(format!("{}.dat", base_name)), b"an older backup");
-        let saved = copy_wallets(&p.datadir, &docs, base_name).unwrap();
+        // The wallet may be readable by others (made under a loose umask); its copies never are.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(p.datadir.join("wallet.dat"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let old = unsafe { libc::umask(0o022) };
+        let saved = copy_wallets(&p.datadir, &docs, base_name);
+        unsafe { libc::umask(old) };
+        let saved = saved.unwrap();
         assert_eq!(
             saved,
             vec![
-                docs.join(format!("{}-2.dat", base_name)),
-                docs.join(format!("{}-savings.dat", base_name)),
+                Backup {
+                    wallet: p.datadir.join("wallet.dat").to_string_lossy().into_owned(),
+                    saved: docs.join(format!("{}-2.dat", base_name)).to_string_lossy().into_owned(),
+                },
+                Backup {
+                    wallet: p.datadir.join("savings").to_string_lossy().into_owned(),
+                    saved: docs.join(format!("{}-savings.dat", base_name)).to_string_lossy().into_owned(),
+                },
             ]
         );
-        assert_eq!(std::fs::read(&saved[0]).unwrap(), vec![1u8; 300]);
+        #[cfg(unix)]
+        for b in &saved {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&b.saved).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{}", b.saved);
+        }
+        assert_eq!(std::fs::read(&saved[0].saved).unwrap(), vec![1u8; 300]);
         assert_eq!(std::fs::read(docs.join(format!("{}.dat", base_name))).unwrap(), b"an older backup");
         assert_eq!(wallet_label(&p.datadir, &p.datadir.join("wallets/house/wallet.dat")), "wallets-house-wallet");
+        assert_eq!(wallet_label(&p.datadir, Path::new("/mnt/w/mywallets/savings")), "mywallets-savings");
         assert!(copy_wallets(&p.home.join("nothing"), &docs, base_name).is_err());
 
         let s = stamp();
@@ -1284,7 +1661,8 @@ mod tests {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let s = super::super::Settings {
             datadir: p.datadir.to_string_lossy().into_owned(),
-            datadir_created: p.datadir_created.as_ref().map(|d| d.to_string_lossy().into_owned()),
+            datadirs_created: p.created.iter().map(|d| d.to_string_lossy().into_owned()).collect(),
+            moved_aside: p.moved_aside.iter().map(|d| d.to_string_lossy().into_owned()).collect(),
             installed_tag: Some("v0.2.16".into()),
             rpc_port: port,
             p2p_port: port,
@@ -1318,7 +1696,13 @@ mod tests {
         assert_eq!(saved.len(), 1);
         assert!(saved[0].starts_with(docs.join("FreeBank-wallet-").to_str().unwrap()));
         assert_eq!(std::fs::read(&saved[0]).unwrap(), vec![1u8; 300]);
-        assert_eq!(*mgr.backups.lock().unwrap(), saved);
+        assert_eq!(
+            *mgr.backups.lock().unwrap(),
+            vec![Backup { wallet: p.datadir.join("wallet.dat").to_string_lossy().into_owned(), saved: saved[0].clone() }]
+        );
+        // The plan says which wallet each backup covers.
+        let plan2 = super::plan(&mgr, p.clone()).await.unwrap();
+        assert_eq!(plan2.backups[0].wallet, plan2.wallets[0]);
 
         // Refused, with nothing removed, while an install runs or another operation holds the node.
         mgr.install.lock().unwrap().running = true;
@@ -1359,14 +1743,55 @@ mod tests {
         std::fs::remove_dir_all(&b).unwrap();
     }
 
+    /// A restore records the folder it moves the replaced wallet into, as setup records its moves
+    /// (recovery/job.rs): Obliterate lists it as FreeBank's own, unticked like setup's, and Back up
+    /// copies its wallet first.
+    #[tokio::test]
+    async fn a_restores_folder_is_freebanks_own() {
+        let b = base("restoreaside");
+        let mut p = places(&b);
+        let docs = p.home.join("Documents");
+        std::fs::create_dir_all(&docs).unwrap();
+        let dir = p.home.join(".freebank.old-1790700000");
+        let wallet = dir.join("wallet.dat.old-20260929-181500");
+        let mut w = vec![0u8; 4096];
+        w[12..16].copy_from_slice(&0x0005_3162u32.to_le_bytes());
+        write(&wallet, &w);
+        let id = format!("aside:{}", dir.display());
+        // Not recorded: only a look-alike, which stays.
+        let items = plan_items(&p);
+        assert_eq!(find(&items, &id).label, "Older node folder");
+        assert!(!find(&items, &id).allowed);
+        // Recorded: FreeBank's own, with its wallet named.
+        p.moved_aside = vec![dir.clone()];
+        let items = plan_items(&p);
+        let item = find(&items, &id);
+        assert_eq!(item.label, ASIDE_LABEL);
+        assert!(!item.checked && item.allowed);
+        assert!(item.note.contains("during setup or a restore") && item.note.contains("older wallet"), "{}", item.note);
+        assert_eq!(item.wallets, vec![wallet.to_string_lossy()]);
+        // Back up copies it too, named after its folder.
+        let mgr = manager(&p);
+        let saved = backup_wallet(&mgr, &docs).await.unwrap();
+        assert!(
+            saved.iter().any(|s| s.contains("-freebank-old-1790700000") && std::fs::read(s).unwrap() == w),
+            "{:?}",
+            saved
+        );
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
     #[tokio::test]
     async fn backups_take_moved_aside_wallets_too() {
         let b = base("asidebackup");
-        let p = places(&b);
+        let mut p = places(&b);
         let docs = p.home.join("Documents");
         std::fs::create_dir_all(&docs).unwrap();
         write(&p.home.join(".freebank.old-1727000000/wallets/wallet.dat"), b"old node's");
         write(&p.home.join(".freebank.old-1727000001/debug.log"), b"no wallet here");
+        // Named the same way but not moved by setup: its wallet isn't FreeBank's to copy.
+        write(&p.home.join(".freebank.old-1727000002/wallet.dat"), b"someone else's");
+        p.moved_aside = vec![p.home.join(".freebank.old-1727000000"), p.home.join(".freebank.old-1727000001")];
         let mgr = manager(&p);
 
         // The node is stopped: its wallet is copied, and so is the moved-aside one, named after its folder.
@@ -1375,6 +1800,10 @@ mod tests {
         assert_eq!(std::fs::read(&saved[0]).unwrap(), vec![1u8; 300]);
         assert!(saved[1].ends_with("-freebank-old-1727000000.dat"), "{}", saved[1]);
         assert_eq!(std::fs::read(&saved[1]).unwrap(), b"old node's");
+        assert_eq!(
+            mgr.backups.lock().unwrap()[1].wallet,
+            p.home.join(".freebank.old-1727000000/wallets/wallet.dat").to_string_lossy()
+        );
 
         // Only a moved-aside wallet: that one is still backed up.
         std::fs::remove_file(p.datadir.join("wallet.dat")).unwrap();
@@ -1411,5 +1840,211 @@ mod tests {
     fn older_settings_have_no_record() {
         let s: super::super::Settings = serde_json::from_str(r#"{"datadir":"/x","installed_tag":"v0.2.15"}"#).unwrap();
         assert_eq!(s.datadir_created, None);
+        assert!(s.created().is_empty() && s.moved_aside.is_empty() && !s.keep_running);
+        // v0.1.1 recorded one folder; it still counts, and the new list keeps every one.
+        let mut s: super::super::Settings =
+            serde_json::from_str(r#"{"datadir":"/b","datadir_created":"/a"}"#).unwrap();
+        assert_eq!(s.created(), vec!["/a".to_string()]);
+        s.add_created("/b");
+        s.add_created("/b");
+        assert_eq!(s.created(), vec!["/a".to_string(), "/b".to_string()]);
+        assert_eq!(s.datadir_created.as_deref(), Some("/b"));
+    }
+
+    fn bdb() -> Vec<u8> {
+        let mut b = vec![0u8; 4096];
+        b[12..16].copy_from_slice(&0x0005_3162u32.to_le_bytes());
+        b
+    }
+
+    /// Finding 6: a node in the data folder on another port (BitWindow's FreeBank uses the same one)
+    /// is seen by its lock. Obliterate won't run, the folder can't be ticked, and its wallet isn't
+    /// copied while that node has it open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_node_on_another_port_stops_obliterate_and_the_copy() {
+        use super::super::testnode::{free_port, FakeNode, Opts};
+        let b = base("elsewhere");
+        let p = places(&b);
+        let mgr = manager(&p);
+        let docs = p.home.join("Documents");
+        std::fs::create_dir_all(&docs).unwrap();
+        let node = FakeNode::spawn(&p.datadir, free_port(), Opts::default());
+
+        let plan1 = plan(&mgr, p.clone()).await.unwrap();
+        assert!(plan1.blocked.as_deref().unwrap_or("").contains("another program"), "{:?}", plan1.blocked);
+        let item = find(&plan1.items, "node");
+        assert!(!item.allowed && !item.checked);
+        assert!(item.note.contains(&format!("process {}", node.pid())), "{}", item.note);
+        let err = backup_wallet(&mgr, &docs).await.unwrap_err();
+        assert!(err.contains("no node has it open"), "{}", err);
+        assert_eq!(std::fs::read_dir(&docs).unwrap().count(), 0);
+        let err = run(&mgr, p.clone(), ticks(&p, &["app"])).await.unwrap_err();
+        assert!(err.ends_with("Nothing was removed."), "{}", err);
+        // The last check, once the app's node has stopped: nothing in use may go. (Here the list
+        // took that node for the app's own, as it would the app's node until Obliterate stops it.)
+        let mut as_ours = p.clone();
+        as_ours.ours = vec![node.pid()];
+        let err = execute(&as_ours, &ticks(&as_ours, &["app", "node"])).unwrap_err();
+        assert!(err.contains("Nothing was removed"), "{}", err);
+        assert!(p.datadir.join("wallet.dat").exists() && p.app_dir.join("settings.json").exists());
+
+        drop(node);
+        let plan2 = plan(&mgr, p.clone()).await.unwrap();
+        assert_eq!(plan2.blocked, None);
+        assert!(find(&plan2.items, "node").allowed);
+        assert_eq!(backup_wallet(&mgr, &docs).await.unwrap().len(), 1);
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    /// Findings 1 and 2 through a running node: the balance counts only with one wallet and the node
+    /// caught up, and the copy the node writes is readable only by its owner.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_running_node_gives_a_trusted_balance_and_a_private_copy() {
+        use super::super::testnode::{FakeNode, Opts};
+        use std::os::unix::fs::PermissionsExt;
+        let b = base("rpcbackup");
+        let p = places(&b);
+        let mgr = manager(&p);
+        let port = mgr.settings.try_lock().unwrap().rpc_port;
+        let docs = p.home.join("Documents");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::set_permissions(p.datadir.join("wallet.dat"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _node = FakeNode::spawn(&p.datadir, port, Opts::default());
+
+        let plan1 = plan(&mgr, p.clone()).await.unwrap();
+        assert_eq!((plan1.balance, plan1.balance_note.clone()), (Some(0.0), None));
+        assert_eq!(plan1.backup_note, None);
+        // The explorer, as the Node tab last saw it, is well ahead: the node hasn't caught up.
+        *mgr.explorer_tip.lock().unwrap() = Some((std::time::Instant::now(), 900));
+        let behind = plan(&mgr, p.clone()).await.unwrap();
+        assert_eq!(behind.balance, None);
+        assert!(behind.balance_note.unwrap().contains("block 10 of 900"));
+        *mgr.explorer_tip.lock().unwrap() = None;
+
+        let old = unsafe { libc::umask(0o022) };
+        let saved = backup_wallet(&mgr, &docs).await;
+        unsafe { libc::umask(old) };
+        let saved = saved.unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(std::fs::read(&saved[0]).unwrap(), vec![1u8; 300]);
+        assert_eq!(std::fs::metadata(&saved[0]).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(mgr.backups.lock().unwrap()[0].wallet, p.datadir.join("wallet.dat").to_string_lossy());
+
+        // A second wallet: the node reports one balance only, so none is given; and copying each
+        // whole means stopping the node, which FreeBank never does to one it didn't start.
+        write(&p.datadir.join("savings"), &bdb());
+        let plan2 = plan(&mgr, p.clone()).await.unwrap();
+        assert_eq!(plan2.balance, None);
+        assert!(plan2.balance_note.unwrap().contains("2 wallets"));
+        let note = plan2.backup_note.unwrap();
+        assert!(note.contains("started by another program"), "{}", note);
+        assert_eq!(backup_wallet(&mgr, &docs).await.unwrap_err(), note);
+        std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    /// Several wallets and the app's own node: it stops for a moment, every wallet is copied whole,
+    /// and it starts again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn several_wallets_are_copied_with_the_apps_node_stopped_for_a_moment() {
+        use super::super::testnode::{self, KillOnDrop};
+        let (d, mgr) = testnode::manager("severalours", false).await;
+        let s = mgr.settings.lock().await.clone();
+        let datadir = PathBuf::from(&s.datadir);
+        let docs = d.join("Documents");
+        std::fs::create_dir_all(&docs).unwrap();
+        write(&datadir.join("wallet.dat"), &[1u8; 300]);
+        write(&datadir.join("savings"), &bdb());
+        process::start(&mgr).await.unwrap();
+        testnode::wait_for_port(s.rpc_port);
+        let first = process::managed_pids(&mgr).await[0];
+        let _g1 = KillOnDrop { pid: first, datadir: datadir.clone() };
+
+        let mut p = places(&d);
+        p.datadir = datadir.clone();
+        p.created = vec![datadir.clone()];
+        p.ours = vec![first];
+        let plan1 = plan(&mgr, p).await.unwrap();
+        assert!(plan1.backup_note.unwrap().contains("stops the node for a moment"));
+
+        let saved = backup_wallet(&mgr, &docs).await.unwrap();
+        assert_eq!(saved.len(), 2, "{:?}", saved);
+        assert_eq!(std::fs::read(&saved[1]).unwrap(), bdb());
+        testnode::wait_for_port(s.rpc_port);
+        let again = process::managed_pids(&mgr).await;
+        assert_eq!(again.len(), 1);
+        assert_ne!(again[0], first);
+        let _g2 = KillOnDrop { pid: again[0], datadir: datadir.clone() };
+        process::stop(&mgr).await.unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_balance_only_once_the_node_has_caught_up() {
+        let info = |b: u64, h: u64, ibd: bool| serde_json::json!({"blocks": b, "headers": h, "initialblockdownload": ibd});
+        assert_eq!(caught_up(&info(10, 10, false), None), Ok(()));
+        assert_eq!(caught_up(&info(10, 10, false), Some(11)), Ok(()));
+        // Re-syncing after "Delete chain data": a funded wallet reads 0 until then.
+        let e = caught_up(&info(5, 10, false), None).unwrap_err();
+        assert!(e.contains("block 5 of 10"), "{}", e);
+        assert!(caught_up(&info(10, 10, true), None).unwrap_err().contains("still catching up"));
+        let e = caught_up(&info(10, 10, false), Some(1_500)).unwrap_err();
+        assert!(e.contains("block 10 of 1,500"), "{}", e);
+        assert!(caught_up(&serde_json::json!({"blocks": 10}), None).is_err());
+    }
+
+    #[test]
+    fn app_note_names_the_new_files() {
+        // Everything v0.2.0 keeps in the app's folder, as the send, phone, security, wallet and node
+        // code write it.
+        let files = [
+            "wallet/seed.enc",
+            "sends.json",
+            ".sends.json.tmp",
+            "sends.json.damaged-1790000000",
+            "phone/desktop.key",
+            "phone/devices.json",
+            "phone/config.json",
+            "phone/held.json",
+            "phone/sends.log",
+            "backups.json",
+            "node.pid",
+            "node.pid.new",
+        ];
+        for (shared, screen) in [(true, false), (false, true)] {
+            let b = base(&format!("appfiles-{}", shared));
+            let mut p = places(&b);
+            for f in files {
+                write(&p.app_dir.join(f), b"x");
+            }
+            write(&p.app_dir.join("notes/mine.txt"), b"a developer's own");
+            assert_eq!(
+                find(&plan_items(&p), "app").note,
+                "Settings, the node program, your recovery words (encrypted), the record of your sends, the phone link \
+                 (this computer's key, your paired phones, held sends and the phone's send log) and the list of wallet \
+                 backups FreeBank made (the backups themselves stay)."
+            );
+            // Each goes with FreeBank's own files: from a shared developer folder (FREEBANK_APP_DIR),
+            // and at once when the screen keeps the folder until exit.
+            p.app_dir_shared = shared;
+            p.screen_uses_app_dir = screen;
+            execute(&p, &ticks(&p, &["app"])).unwrap();
+            for f in files {
+                assert!(!p.app_dir.join(f).exists(), "{} was left behind", f);
+            }
+            for dir in ["wallet", "phone"] {
+                assert!(!p.app_dir.join(dir).exists(), "{}/ was left behind", dir);
+            }
+            assert!(p.app_dir.join("notes/mine.txt").exists());
+            std::fs::remove_dir_all(&b).unwrap();
+        }
+        // A damaged log alone still counts as the record of your sends.
+        let b = base("appfiles-damaged");
+        let p = places(&b);
+        write(&p.app_dir.join("sends.json.damaged-1790000000"), b"x");
+        assert!(find(&plan_items(&p), "app").note.contains("the record of your sends"));
+        std::fs::remove_dir_all(&b).unwrap();
     }
 }

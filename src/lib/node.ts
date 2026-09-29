@@ -11,8 +11,14 @@ export interface Settings {
   p2p_port: number;
   installed_tag: string | null;
   grpcurl: string | null;
-  /** The data folder the app created when it installed, if it did. */
+  /** The data folder the app created when it last installed, if it did. */
   datadir_created: string | null;
+  /** Every data folder the app created. */
+  datadirs_created: string[];
+  /** The folders FreeBank moved aside, during setup or a restore. */
+  moved_aside: string[];
+  /** "Keep FreeBank's node running after I close the app". */
+  keep_running: boolean;
 }
 
 export interface SetupInfo {
@@ -21,6 +27,9 @@ export interface SetupInfo {
   suggested_tag: string;
   current_tag: string | null;
   installed: boolean;
+  /** The installed release, when an earlier app build put it there without checking its signature:
+   * it isn't started, and setup installs again. */
+  unverified: string | null;
   default_datadir: string;
   app_version: string;
 }
@@ -60,6 +69,8 @@ export interface InstallProgress {
   note: string | null;
   error: string | null;
   cancelled: boolean;
+  /** On the Update progress: "update", or "refetch" (the installed release downloaded and checked again). */
+  what: string | null;
 }
 
 export interface NodeProgress {
@@ -90,6 +101,16 @@ export interface NodeStatus {
   message: string;
   managed: boolean;
   installed: boolean;
+  /** The installed freebankd wasn't checked against its signature by this app, so it isn't started. */
+  unverified: boolean;
+  /** Started before the app last closed, and managed again since this launch. */
+  adopted: boolean;
+  /** For such a node: since when it has run without the app (unix seconds). */
+  background_since: number | null;
+  /** The "Keep running" setting. */
+  keep_running: boolean;
+  /** The node the app manages keeps running when the app closes. */
+  keeps_running: boolean;
   exited: string | null;
   log_line: string | null;
   version: string;
@@ -130,7 +151,7 @@ export interface Removed {
  * the app acts only on its own fresh list, and refuses a tick whose item now names another path. */
 export interface WipeItem {
   id: string;
-  kind: "app" | "node" | "aside" | "cache";
+  kind: "app" | "node" | "earlier" | "aside" | "cache";
   label: string;
   path: string;
   size: number;
@@ -139,8 +160,14 @@ export interface WipeItem {
   /** Can be ticked at all. */
   allowed: boolean;
   note: string;
-  /** The wallets in it (the node's folder and folders setup moved aside). */
+  /** The wallets deleting it would delete (none for a link, which goes alone). */
   wallets: string[];
+}
+
+/** A wallet backup: the wallet file it copies, and where the copy is. It covers only that wallet. */
+export interface WalletBackup {
+  wallet: string;
+  saved: string;
 }
 
 export interface WipeTick {
@@ -151,12 +178,17 @@ export interface WipeTick {
 export interface ObliteratePlan {
   items: WipeItem[];
   wallets: string[];
-  /** Everything the node's wallet holds, spendable or not yet. */
+  /** Everything the node's wallet holds, spendable or not yet: only with one wallet and the node
+   * caught up. */
   balance: number | null;
   /** How much of balance isn't spendable yet (unconfirmed or newly mined), when any. */
   pending: number | null;
   balance_note: string | null;
-  backups: string[];
+  backups: WalletBackup[];
+  /** What backing up will do beyond copying (stop the node for a moment), or why it can't. */
+  backup_note: string | null;
+  /** The app's copy of the recovery words (encrypted), which goes with the app's own folder. */
+  seed: string | null;
   /** Why it can't run right now. */
   blocked: string | null;
 }
@@ -177,6 +209,12 @@ export interface Obliterated {
   backups: string[];
   app_removed: boolean;
   app: RemoveApp;
+}
+
+/** Sent when the window is closed with "Keep running" on and the app's node running. */
+export interface QuitAsk {
+  /** The node keeps running after the app closes (false: it started before the setting was on). */
+  outlives: boolean;
 }
 
 /** "restarted" | "external" (another program runs the node) | "saved" (the node isn't running) */
@@ -220,7 +258,17 @@ export function randomTag(): string {
   return "freebank-" + Array.from(b, (x) => TAG_ALPHABET[x % TAG_ALPHABET.length]).join("");
 }
 
+// The only links the app opens (v0.2.0): the explorer, BitWindow's downloads, FreeBank's release pages.
+// tauri.conf.json's plugins.shell.open holds the same pattern, and the shell plugin enforces it; this
+// copy keeps the browser build's window.open to them too. Keep the two alike (security/tests.rs checks).
+export const OPENABLE =
+  /^https:\/\/(explorer\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases)(\/[A-Za-z0-9._~%\/?=&#+-]*)?$/;
+
 export async function openUrl(url: string): Promise<void> {
+  if (!OPENABLE.test(url)) {
+    console.warn(`FreeBank opens only its own links, not ${url}`);
+    return;
+  }
   try {
     await tauriInvoke("plugin:shell|open", { path: url });
   } catch {
@@ -254,4 +302,25 @@ export const node = {
   walletBackup: () => tauriInvoke("wallet_backup") as Promise<string[]>,
   obliterate: (ticks: WipeTick[]) => tauriInvoke("obliterate", { ticks }) as Promise<Obliterated>,
   quit: () => tauriInvoke("app_quit") as Promise<void>,
+  setKeepRunning: (on: boolean) => tauriInvoke("node_set_keep_running", { on }) as Promise<Settings>,
+  restart: () => tauriInvoke("node_restart") as Promise<void>,
+  refetchStart: () => tauriInvoke("refetch_start") as Promise<void>,
 };
+
+/** Call `cb` when the window is closed with "Keep running" on. Returns a function that stops listening. */
+export async function onQuitRequested(cb: (ask: QuitAsk) => void): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<QuitAsk>("quit-requested", (e) => cb(e.payload));
+}
+
+/** "29 Sep 2026, 14:02" for a unix time. */
+export function when(unix: number): string {
+  return new Date(unix * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** "12.3 of 45.6 MB", or "Connecting…" before the server has answered. */
+export function megabytes(bytes: number, total: number | null): string {
+  if (!bytes && !total) return "Connecting…";
+  const mb = (n: number) => (n / 1e6).toFixed(1);
+  return `${mb(bytes)}${total ? ` of ${mb(total)}` : ""} MB`;
+}

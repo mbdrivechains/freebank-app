@@ -18,9 +18,12 @@ pub struct SetupInfo {
     pub suggested_tag: String,
     /// The name already in freebank.conf, if any.
     pub current_tag: Option<String>,
-    /// freebankd is installed by this app and present on disk, and the node's data folder is there.
-    /// Without the folder (removed by "Obliterate" or by hand) setup runs again and makes it.
+    /// freebankd is installed by this app, checked and present on disk, and the node's data folder
+    /// is there. Without the folder (removed by "Obliterate" or by hand) setup runs again and makes it.
     pub installed: bool,
+    /// The installed release, when an earlier build of the app put it there without checking its
+    /// signature: it isn't started, and setup installs again.
+    pub unverified: Option<String>,
     pub default_datadir: String,
     pub app_version: String,
 }
@@ -31,6 +34,7 @@ pub async fn setup_info(mgr: State<'_, Mgr>) -> Result<SetupInfo, String> {
     let installed = mgr.can_start(&settings);
     Ok(SetupInfo {
         current_tag: conf_tag(Path::new(&settings.datadir)),
+        unverified: mgr.unverified(&settings),
         settings,
         platform_error: platform().err(),
         suggested_tag: install::suggest_tag(),
@@ -228,6 +232,7 @@ pub fn update_start(mgr: State<'_, Mgr>) -> Result<(), String> {
         *p = install::InstallProgress {
             running: true,
             stage: "release".into(),
+            what: Some("update".into()),
             ..Default::default()
         };
     }
@@ -253,6 +258,8 @@ pub async fn delete_chain_data(mgr: State<'_, Mgr>) -> Result<(), String> {
 /// Where "Obliterate" looks: Tauri's paths for this app, and the settings on file.
 async fn obliterate_places(app: &AppHandle, mgr: &NodeManager) -> obliterate::Places {
     let s = mgr.settings.lock().await.clone();
+    let ours = process::managed_pids(mgr).await;
+    let keep = mgr.backups.lock().unwrap().iter().map(|b| PathBuf::from(&b.saved)).collect();
     let path = app.path();
     let local_data = path.app_local_data_dir().ok();
     obliterate::Places {
@@ -263,9 +270,11 @@ async fn obliterate_places(app: &AppHandle, mgr: &NodeManager) -> obliterate::Pl
         // A developer's scratch folder may hold other work: only FreeBank's own files in it go.
         app_dir_shared: std::env::var_os("FREEBANK_APP_DIR").is_some(),
         datadir: PathBuf::from(&s.datadir),
-        datadir_created: s.datadir_created.map(PathBuf::from),
+        created: s.created().iter().map(PathBuf::from).collect(),
+        moved_aside: s.moved_aside.iter().map(PathBuf::from).collect(),
         caches: screen_caches(app),
-        keep: mgr.backups.lock().unwrap().iter().map(PathBuf::from).collect(),
+        keep,
+        ours,
     }
 }
 
@@ -321,7 +330,8 @@ pub async fn obliterate_plan(app: AppHandle, mgr: State<'_, Mgr>) -> Result<obli
     obliterate::plan(&mgr, places).await
 }
 
-/// "Back up wallet first": into Documents, or the home folder if there is no Documents folder.
+/// "Back up wallet" (Obliterate's list): into Documents, or the home folder if there is no
+/// Documents folder.
 #[tauri::command]
 pub async fn wallet_backup(app: AppHandle, mgr: State<'_, Mgr>) -> Result<Vec<String>, String> {
     let path = app.path();
@@ -331,7 +341,10 @@ pub async fn wallet_backup(app: AppHandle, mgr: State<'_, Mgr>) -> Result<Vec<St
         .filter(|d| d.is_dir())
         .or_else(|| path.home_dir().ok())
         .ok_or("FreeBank couldn't find your Documents folder or your home folder.")?;
-    obliterate::backup_wallet(&mgr, &folder).await
+    let saved = obliterate::backup_wallet(&mgr, &folder).await?;
+    // Listed in <app data>/backups.json, so Settings > Security checks it in later sessions too.
+    crate::security::record_backups(&mgr, &saved);
+    Ok(saved)
 }
 
 /// "Obliterate": remove the ticked items. Only items of a fresh plan are acted on, never paths; the
@@ -375,4 +388,41 @@ pub async fn connect_local(
         return Err(format!("No RPC cookie in {} yet.", s.datadir));
     }
     c.call("getblockchaininfo", vec![]).await.map(|_| true)
+}
+
+/// "Keep FreeBank's node running after I close the app" (Settings).
+#[tauri::command]
+pub async fn node_set_keep_running(mgr: State<'_, Mgr>, on: bool) -> Result<Settings, String> {
+    mgr.still_here()?;
+    let mut s = mgr.settings.lock().await.clone();
+    s.keep_running = on;
+    mgr.save_settings(s.clone()).await?;
+    Ok(s)
+}
+
+/// Stop and start the app's node, so it runs as the settings now say (Settings, after "Keep
+/// running" was turned on while it ran).
+#[tauri::command]
+pub async fn node_restart(mgr: State<'_, Mgr>) -> Result<(), String> {
+    super::background::restart(&mgr).await
+}
+
+/// "Download it again and check it", for an installed release this code never checked. Progress
+/// is on update_progress.
+#[tauri::command]
+pub fn refetch_start(mgr: State<'_, Mgr>) -> Result<(), String> {
+    {
+        let mut p = mgr.update.lock().unwrap();
+        if p.running {
+            return Ok(());
+        }
+        *p = install::InstallProgress {
+            running: true,
+            stage: "release".into(),
+            what: Some("refetch".into()),
+            ..Default::default()
+        };
+    }
+    tauri::async_runtime::spawn(install::run_refetch(mgr.inner().clone()));
+    Ok(())
 }

@@ -31,6 +31,9 @@ pub struct InstallProgress {
     pub error: Option<String>,
     /// Set by "Cancel"; the install stops before it writes anything.
     pub cancelled: bool,
+    /// On the Update progress: "update", or "refetch" (the installed release downloaded and checked
+    /// again), so the Node tab names the right steps.
+    pub what: Option<String>,
 }
 
 /// The stages "Cancel" can stop: nothing has been written yet (bar the download in tmp/).
@@ -130,6 +133,8 @@ async fn download(
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("Download failed: {} ({})", url, e))?;
     let total = resp.content_length();
+    // The size is known as soon as the server answers, before the first bytes.
+    progress(0, total);
     let mut f = std::fs::File::create(dest).map_err(|e| e.to_string())?;
     let mut got = 0u64;
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Download interrupted: {}", e))? {
@@ -139,18 +144,6 @@ async fn download(
     }
     f.sync_all().map_err(|e| e.to_string())?;
     Ok(())
-}
-
-async fn download_text(http: &reqwest::Client, url: &str) -> Result<String, String> {
-    http.get(url)
-        .timeout(Duration::from_secs(60))
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("Download failed: {} ({})", url, e))?
-        .text()
-        .await
-        .map_err(|e| e.to_string())
 }
 
 /// A small file from a release, whole and byte for byte. Ok(None) when the release has no such file.
@@ -247,19 +240,33 @@ pub fn find_grpcurl(app_dir: &Path, saved: Option<&str>) -> Option<(PathBuf, &'s
         .find(|(p, _)| p.is_file() && runs(p))
 }
 
+/// The SHA-256 of grpcurl's release archives, pinned with its version (GRPCURL_VERSION), so a
+/// download is checked against these rather than a checksum file from the same place. Taken
+/// 2026-09-29 from github.com/fullstorydev/grpcurl v1.9.4: both archives were downloaded and hashed,
+/// and matched grpcurl_1.9.4_checksums.txt.
+const GRPCURL_SHA256: &[(&str, &str)] = &[
+    ("grpcurl_1.9.4_linux_x86_64.tar.gz", "97e13d58d2733a0e62cd2571d1d5f0c02823f0d25282f08bddedf1ad9c5d1736"),
+    ("grpcurl_1.9.4_osx_arm64.tar.gz", "e0df111350acf8ee38f453f4e97e0474cfe1a987ee0c368ebe5383e6a4bccf25"),
+    ("grpcurl_1.9.4_osx_x86_64.tar.gz", "0c1b24a82097862027af6abe88f362db73e4846859a3ceda2dd466e4dc971a06"),
+];
+
+/// The pinned SHA-256 of a grpcurl archive, by its file name.
+fn grpcurl_hash(asset: &str) -> Option<&'static str> {
+    GRPCURL_SHA256.iter().find(|(name, _)| *name == asset).map(|(_, h)| *h)
+}
+
 async fn fetch_grpcurl(http: &reqwest::Client, app_dir: &Path, tmp: &Path) -> Result<PathBuf, String> {
     let (_, os_arch) = platform()?;
     let asset = format!("grpcurl_{v}_{os_arch}.tar.gz", v = GRPCURL_VERSION);
+    let want = grpcurl_hash(&asset).ok_or("FreeBank has no checksum for grpcurl on this machine.")?;
     let base = format!(
         "https://github.com/fullstorydev/grpcurl/releases/download/v{}",
         GRPCURL_VERSION
     );
     let archive = tmp.join(&asset);
     download(http, &format!("{}/{}", base, asset), &archive, |_, _| {}).await?;
-    let sums = download_text(http, &format!("{}/grpcurl_{}_checksums.txt", base, GRPCURL_VERSION)).await?;
-    let want = listed_hash(&sums, &asset).ok_or("grpcurl's checksum list doesn't include this build")?;
     if want != sha256_file(&archive)? {
-        return Err("grpcurl's download didn't match its checksum. Nothing was installed.".into());
+        return Err("grpcurl's download didn't match the checksum FreeBank has for it. Nothing was installed.".into());
     }
     let unpacked = tmp.join("grpcurl-unpacked");
     untar_gz(&archive, &unpacked)?;
@@ -275,9 +282,14 @@ async fn fetch_grpcurl(http: &reqwest::Client, app_dir: &Path, tmp: &Path) -> Re
 }
 
 /// Written into releases/<tag>/ once its archive has passed the signature and hash checks; it holds
-/// the archive's SHA-256. Only a release with it is reused. One unpacked any other way (by an
-/// earlier build of the app that didn't check signatures) is downloaded and checked again.
-const VERIFIED: &str = ".verified";
+/// the archive's SHA-256. Only a release with it is run or reused (NodeManager::verified). One
+/// unpacked any other way (by an earlier build of the app that didn't check signatures) isn't
+/// started: it is downloaded and checked again first (`run_refetch`, or install again).
+pub(crate) const VERIFIED: &str = ".verified";
+
+/// The first release with a signed SHA256SUMS (v0.2.16). An older one can't be checked, so a node
+/// installed from it is updated instead of downloaded again.
+pub const FIRST_SIGNED: u32 = 16;
 
 /// Is releases/<tag> one this code checked, and does it run? A copy without the marker is never
 /// run, not even for -version.
@@ -305,7 +317,15 @@ async fn fetch_checked(
     let sig = download_bytes(http, &format!("{}/SHA256SUMS.sig", base)).await?;
     let sums = sums.ok_or_else(|| format!("FreeBank {} has no checksums file, so it wasn't installed.", tag))?;
     let sums = signed_sums(tag, &sums, sig.as_deref())?;
-    let want = listed_hash(sums, asset).ok_or(format!("{} isn't in the release's signed checksums.", asset))?;
+    let want = listed_hash(sums, asset).ok_or(if asset.contains("-apple-darwin") && asset.contains("x86_64") {
+        format!(
+            "FreeBank {} has no build for Intel Macs yet ({} isn't in the release's signed checksums). \
+             It comes with a later FreeBank release; nothing was installed.",
+            tag, asset
+        )
+    } else {
+        format!("{} isn't in the release's signed checksums.", asset)
+    })?;
 
     set(p, |s| {
         s.stage = "download".into();
@@ -446,7 +466,51 @@ async fn update(mgr: &Arc<NodeManager>) -> Result<(), String> {
     Ok(())
 }
 
-/// Write the name into freebank.conf, keeping every other line the user has there.
+/// "Download it again and check it", for an installed release this code never checked (an earlier
+/// build of the app installed it without the signature check, so it isn't started): the same tag
+/// again through the signature and hash checks, or, for a release from before signatures (older
+/// than v0.2.16), the update to the newest. Runs on the Update progress, which the Node tab shows.
+pub async fn run_refetch(mgr: Arc<NodeManager>) {
+    let p = mgr.update.clone();
+    let result = refetch(&mgr).await;
+    set(&p, |s| {
+        s.running = false;
+        match result {
+            Ok(()) => s.done = true,
+            Err(e) => s.error = Some(e),
+        }
+    });
+}
+
+async fn refetch(mgr: &Arc<NodeManager>) -> Result<(), String> {
+    let p = mgr.update.clone();
+    mgr.still_here()?;
+    let tag = mgr
+        .settings
+        .lock()
+        .await
+        .installed_tag
+        .clone()
+        .ok_or("FreeBank isn't installed yet.")?;
+    if super::patch(&tag).map_or(true, |n| n < FIRST_SIGNED) {
+        set(&p, |s| s.what = Some("update".into()));
+        return update(mgr).await;
+    }
+    set(&p, |s| {
+        s.stage = "release".into();
+        s.tag = Some(tag.clone());
+    });
+    let tmp = mgr.app_dir.join("tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    // The unchecked copy is never reused: fetch_release reuses only a folder with the marker.
+    fetch_release(mgr, &tag, &p, &tmp).await?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// Write the name into freebank.conf, keeping every other line the user has there. The file may
+/// hold an RPC password, so it is only ever readable by its owner (0600), as freebankd's own files.
 pub fn write_conf(datadir: &Path, tag: &str) -> Result<(), String> {
     std::fs::create_dir_all(datadir).map_err(|e| e.to_string())?;
     let path = datadir.join("freebank.conf");
@@ -460,8 +524,50 @@ pub fn write_conf(datadir: &Path, tag: &str) -> Result<(), String> {
     };
     out.push_str(&format!("coinbasetag={}\n", tag));
     let tmp = datadir.join("freebank.conf.new");
-    std::fs::write(&tmp, out).map_err(|e| e.to_string())?;
+    // A leftover from an interrupted write would keep its own permissions: start afresh.
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = private_file(&tmp).map_err(|e| format!("Couldn't write {}: {}", tmp.display(), e))?;
+    f.write_all(out.as_bytes())
+        .and_then(|_| f.sync_all())
+        .map_err(|e| format!("Couldn't write {}: {}", tmp.display(), e))?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// A new file only its owner can read and write (0600 on Unix). Fails if it exists.
+pub fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o.open(path)
+}
+
+/// The config stage's first step. The data folder was looked at before the download, which takes a
+/// while: another program (BitWindow's FreeBank uses the same default folder) may have started a
+/// node in it or filled it since. So it is looked at again, and nothing is changed unless it is as
+/// the user saw it (`seen`) and no node holds it. Then an "other" folder is moved aside, as agreed:
+/// only now, past the last point "Cancel" can stop the install, so a cancel or a failed download
+/// never leaves it moved. Returns where it went.
+fn settle_datadir(datadir: &Path, seen: &detect::DatadirCheck) -> Result<Option<String>, String> {
+    if let Some(u) = super::lock::in_use(datadir, &[]) {
+        return Err(format!(
+            "{} Nothing was changed. Stop it first, or choose another data folder under Advanced.",
+            u.say()
+        ));
+    }
+    let now = detect::check_datadir(datadir);
+    if now.kind != seen.kind || now.has_wallet != seen.has_wallet {
+        return Err(format!(
+            "{} changed while FreeBank was downloading, so nothing was changed. Go back to look at it again, then install.",
+            datadir.display()
+        ));
+    }
+    if seen.kind != "other" {
+        return Ok(None);
+    }
+    let away = seen.away.clone().unwrap_or_default();
+    std::fs::rename(datadir, &away).map_err(|e| format!("Couldn't move {} aside: {}", datadir.display(), e))?;
+    Ok(Some(away))
 }
 
 fn set(p: &Arc<std::sync::Mutex<InstallProgress>>, f: impl FnOnce(&mut InstallProgress)) {
@@ -489,7 +595,11 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
     let settings = mgr.settings.lock().await.clone();
     let datadir = PathBuf::from(&settings.datadir);
 
-    // Settle the data folder before anything is downloaded, so a refusal costs nothing.
+    // Settle the data folder before anything is downloaded, so a refusal costs nothing. A node
+    // running there on another port (BitWindow's FreeBank uses the same default folder) holds its lock.
+    if let Some(u) = super::lock::in_use(&datadir, &[]) {
+        return Err(format!("{} Stop it first, or choose another data folder under Advanced.", u.say()));
+    }
     let dd = detect::check_datadir(&datadir);
     // Missing, empty or only leftovers, or moved aside at the config stage: this install creates
     // the folder, and it is recorded so "Obliterate" may remove it. A folder in use stays unrecorded.
@@ -526,13 +636,7 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
         s.stage = "config".into();
         s.note = None;
     });
-    // Moved aside only now, past the last point "Cancel" can stop the install (unpack), so a
-    // cancel or a failed download never leaves the folder moved.
-    if dd.kind == "other" {
-        let away = dd.away.clone().unwrap_or_default();
-        std::fs::rename(&datadir, &away)
-            .map_err(|e| format!("Couldn't move {} aside: {}", datadir.display(), e))?;
-    }
+    let moved = settle_datadir(&datadir, &dd)?;
     std::fs::create_dir_all(&datadir).map_err(|e| e.to_string())?;
     std::fs::write(datadir.join(DATADIR_MARK), b"").map_err(|e| e.to_string())?;
     write_conf(&datadir, tag_name)?;
@@ -540,7 +644,11 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
     s2.installed_tag = Some(tag.clone());
     s2.grpcurl = Some(grpcurl.to_string_lossy().into_owned());
     if creates_datadir {
-        s2.datadir_created = Some(settings.datadir.clone());
+        s2.add_created(&settings.datadir);
+    }
+    // Recorded, so Obliterate calls only these (and a restore's) "moved aside by FreeBank".
+    if let Some(away) = moved {
+        s2.moved_aside.push(away);
     }
     mgr.save_settings(s2).await?;
     let _ = std::fs::remove_dir_all(&tmp);
@@ -686,6 +794,12 @@ mod tests {
         assert!(r.unwrap_err().contains("isn't in the release's signed checksums"));
         assert!(!asked.iter().any(|a| a.ends_with(".tar.gz")), "{:?}", asked);
 
+        // An Intel Mac, before freebankd publishes a build for it: said plainly, nothing downloaded.
+        let (r, _, asked) = fetch_from(Some(sig), "freebank-0.2.16-x86_64-apple-darwin.tar.gz", b"archive").await;
+        let e = r.unwrap_err();
+        assert!(e.starts_with("FreeBank v0.2.16 has no build for Intel Macs yet"), "{}", e);
+        assert!(!asked.iter().any(|a| a.ends_with(".tar.gz")), "{:?}", asked);
+
         // Well signed: the archive is downloaded after the signature files, then checked against it.
         let (r, stage, asked) = fetch_from(Some(sig), asset, b"not the release").await;
         let e = r.unwrap_err();
@@ -733,6 +847,88 @@ mod tests {
         write_conf(&d, "new name").unwrap();
         let c = std::fs::read_to_string(d.join("freebank.conf")).unwrap();
         assert_eq!(c, "rpcport=9000\ncoinbasetag=new name\n");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// freebank.conf can hold an RPC password: it is only ever readable by its owner, however it
+    /// was before and whatever the umask (the review's probe: 0600 became 0644).
+    #[cfg(unix)]
+    #[test]
+    fn conf_stays_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("fbconfmode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let conf = d.join("freebank.conf");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let old = unsafe { libc::umask(0o022) };
+        // A new file, an owner-only one, one v0.1.1 left readable, and a leftover temp file.
+        write_conf(&d, "first").unwrap();
+        let fresh = mode(&conf);
+        std::fs::write(&conf, "rpcuser=u\nrpcpassword=not-a-real-one\n").unwrap();
+        std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_conf(&d, "second").unwrap();
+        let kept = mode(&conf);
+        std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(d.join("freebank.conf.new"), "stale").unwrap();
+        std::fs::set_permissions(d.join("freebank.conf.new"), std::fs::Permissions::from_mode(0o666)).unwrap();
+        write_conf(&d, "third").unwrap();
+        let tightened = mode(&conf);
+        unsafe { libc::umask(old) };
+        assert_eq!((fresh, kept, tightened), (0o600, 0o600, 0o600));
+        let c = std::fs::read_to_string(&conf).unwrap();
+        assert_eq!(c, "rpcuser=u\nrpcpassword=not-a-real-one\ncoinbasetag=third\n");
+        assert!(!d.join("freebank.conf.new").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// grpcurl is checked against hashes pinned here, one per machine FreeBank runs on.
+    #[test]
+    fn grpcurl_hashes_are_pinned() {
+        for os_arch in ["linux_x86_64", "osx_arm64", "osx_x86_64"] {
+            let asset = format!("grpcurl_{}_{}.tar.gz", GRPCURL_VERSION, os_arch);
+            let h = grpcurl_hash(&asset).unwrap_or_else(|| panic!("no pinned hash for {}", asset));
+            assert!(h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{}", h);
+        }
+        assert_eq!(grpcurl_hash("grpcurl_1.9.3_linux_x86_64.tar.gz"), None);
+        let (_, os_arch) = platform().unwrap();
+        assert!(grpcurl_hash(&format!("grpcurl_{}_{}.tar.gz", GRPCURL_VERSION, os_arch)).is_some());
+    }
+
+    /// Finding 7: the folder is acted on only as the user saw it before the download.
+    #[cfg(unix)]
+    #[test]
+    fn the_folder_is_looked_at_again_before_it_is_changed() {
+        use super::super::testnode::{free_port, temp, FakeNode, Opts};
+        let d = temp("settle");
+        let datadir = d.join(".freebank");
+
+        // Missing when the user looked, and still missing: nothing to move.
+        let seen = detect::check_datadir(&datadir);
+        assert_eq!(seen.kind, "new");
+        assert_eq!(settle_datadir(&datadir, &seen), Ok(None));
+
+        // Missing then, but another program's node filled it during the download: left alone.
+        std::fs::create_dir_all(datadir.join("blocks")).unwrap();
+        std::fs::write(datadir.join("blocks/blk00000.dat"), b"b").unwrap();
+        std::fs::write(datadir.join("wallet.dat"), b"theirs").unwrap();
+        let err = settle_datadir(&datadir, &seen).unwrap_err();
+        assert!(err.contains("changed while FreeBank was downloading"), "{}", err);
+        assert!(datadir.join("wallet.dat").exists());
+
+        // Old data the user agreed to move aside, and still the same: moved, and where to is said.
+        let seen = detect::check_datadir(&datadir);
+        assert_eq!(seen.kind, "other");
+        // ...but a node has started in it meanwhile: nothing is moved.
+        let node = FakeNode::spawn(&datadir, free_port(), Opts::default());
+        let err = settle_datadir(&datadir, &seen).unwrap_err();
+        assert!(err.contains(&format!("process {}", node.pid())) && err.contains("Nothing was changed"), "{}", err);
+        assert!(datadir.join("wallet.dat").exists());
+        drop(node);
+        // The node left its lock and cookie behind (leftovers): the folder is still as seen.
+        let away = settle_datadir(&datadir, &seen).unwrap().unwrap();
+        assert_eq!(Some(away.clone()), seen.away);
+        assert!(Path::new(&away).join("wallet.dat").exists() && !datadir.exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

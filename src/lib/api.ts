@@ -100,6 +100,41 @@ export interface Bill {
   [k: string]: unknown;
 }
 
+/** The wallet's lock (Rust wallet_status). unlocked_until is unix seconds on the node's clock, 0 while
+ *  locked, and always 0 for a wallet without a passphrase: check `encrypted` first. */
+export interface WalletStatus {
+  encrypted: boolean;
+  unlocked_until: number;
+}
+
+/** Which parts of FreeBank the node's network has open (Rust gate_info). */
+export interface GateInfo {
+  /** Notes, houses, bills and pools. */
+  credit_open: boolean;
+  /** The gold unit; no gold screen exists yet. */
+  gold_open: boolean;
+  /** "node" (getgateinfo), "node-unrecognised" (getgateinfo in a shape this app doesn't read:
+   *  defaults), or "default" (a node without getgateinfo: credit open, gold closed). */
+  source: "node" | "node-unrecognised" | "default";
+}
+
+/** A node from before getgateinfo: credit as on beta today, gold closed. */
+export const GATES_BEFORE_V0217: GateInfo = { credit_open: true, gold_open: false, source: "default" };
+
+/** gettransaction's answer, the fields the receipt uses. confirmations < 0: a conflicting
+ *  transaction confirmed (it was replaced). */
+export interface WalletTx {
+  txid: string;
+  confirmations: number;
+  blockhash?: string;
+  blocktime?: number;
+  time: number;
+  amount: number;
+  fee?: number;
+  "bip125-replaceable"?: string;
+  [k: string]: unknown;
+}
+
 // Detect if running in Tauri
 const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
@@ -152,13 +187,14 @@ async function rpcCall(method: string, params: unknown[] = []): Promise<unknown>
     }),
   });
 
-  if (!response.ok) {
-    throw new Error(`RPC error: ${response.status} ${response.statusText}`);
+  // Core answers RPC errors with HTTP 500 (404 for an unknown method) and a JSON body: read the body
+  // first, and pass its code on the way the Rust commands do ("RPC error -13: …", lib/errors.ts).
+  const data = await response.json().catch(() => null);
+  if (data?.error) {
+    throw new Error(`RPC error ${data.error.code}: ${data.error.message || 'unknown error'}`);
   }
-
-  const data = await response.json();
-  if (data.error) {
-    throw new Error(data.error.message || 'RPC error');
+  if (!response.ok || !data) {
+    throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
   }
 
   return data.result;
@@ -172,7 +208,7 @@ export async function tauriInvoke(cmd: string, args?: Record<string, unknown>): 
 
 // Generic FreeBank RPC (notes/houses/pools/bills) — one path for both modes.
 // Desktop routes through the Rust rpc_call passthrough; PWA fetches JSON-RPC directly.
-async function fbCall(method: string, params: unknown[] = []): Promise<unknown> {
+export async function fbCall(method: string, params: unknown[] = []): Promise<unknown> {
   if (isTauri) return tauriInvoke('rpc_call', { method, params });
   return rpcCall(method, params);
 }
@@ -260,6 +296,56 @@ export const api = {
     }
   },
 
+  // ---- The wallet's lock (v0.2.0: the passphrase is required; lib/wallet.ts withUnlock) ----
+
+  /** Encrypted or not, and until when it is unlocked */
+  async walletStatus(): Promise<WalletStatus> {
+    if (isTauri) return tauriInvoke('wallet_status') as Promise<WalletStatus>;
+    const info = (await rpcCall('getwalletinfo')) as { unlocked_until?: number };
+    return info.unlocked_until === undefined
+      ? { encrypted: false, unlocked_until: 0 }
+      : { encrypted: true, unlocked_until: Math.max(0, info.unlocked_until) };
+  },
+
+  /** Unlock for `seconds` (clamped to 1..300). A wrong passphrase rejects with "RPC error -14: …". */
+  async walletUnlock(passphrase: string, seconds: number): Promise<WalletStatus> {
+    if (isTauri) return tauriInvoke('wallet_unlock', { passphrase, seconds: Math.round(seconds) }) as Promise<WalletStatus>;
+    if (!passphrase) throw new Error('Please enter your wallet passphrase.');
+    await rpcCall('walletpassphrase', [passphrase, Math.min(300, Math.max(1, Math.round(seconds)))]);
+    return api.walletStatus();
+  },
+
+  /** Lock now (nothing to do for a wallet without a passphrase) */
+  async walletLock(): Promise<WalletStatus> {
+    if (isTauri) return tauriInvoke('wallet_lock') as Promise<WalletStatus>;
+    await rpcCall('walletlock').catch((e) => {
+      if (!/RPC error -15:/.test(String(e))) throw e;
+    });
+    return api.walletStatus();
+  },
+
+  /** Which parts of FreeBank are open (lib/gates.ts). The browser build doesn't read getgateinfo
+   *  (its parser lives in Rust) and takes the pre-v0.2.17 defaults. */
+  async gateInfo(): Promise<GateInfo> {
+    if (isTauri) return tauriInvoke('gate_info') as Promise<GateInfo>;
+    return GATES_BEFORE_V0217;
+  },
+
+  // ---- Following a transaction (TxReceipt) ----
+
+  async getBlockCount(): Promise<number> {
+    return fbCall('getblockcount') as Promise<number>;
+  },
+
+  /** A wallet transaction; "RPC error -5: …" when this wallet doesn't know it */
+  async getTransaction(txid: string): Promise<WalletTx> {
+    return fbCall('gettransaction', [txid]) as Promise<WalletTx>;
+  },
+
+  async getBlockHeader(hash: string): Promise<{ hash: string; height: number; time: number }> {
+    return fbCall('getblockheader', [hash, true]) as Promise<{ hash: string; height: number; time: number }>;
+  },
+
   /** The node's network info (for its version: subversion "/FreeBank:0.2.15/") */
   async getNetworkInfo(): Promise<{ subversion: string; version: number }> {
     return fbCall('getnetworkinfo') as Promise<{ subversion: string; version: number }>;
@@ -270,11 +356,6 @@ export const api = {
   /** List this wallet's note holdings, one row per house */
   async listMyNotes(): Promise<NoteHolding[]> {
     return fbCall('listmynotes') as Promise<NoteHolding[]>;
-  },
-
-  /** Launch-scale gram rate for note units (display-only; 1 unit = 1 sat, grams = units / sats_per_gram) */
-  async getGramRate(): Promise<{ sats_per_gram: number; grams_per_ecx: number; disclaimer: string }> {
-    return fbCall('getgramrate') as Promise<{ sats_per_gram: number; grams_per_ecx: number; disclaimer: string }>;
   },
 
   /** Mint house notes (a house op; the single-wallet regtest plays the house) */

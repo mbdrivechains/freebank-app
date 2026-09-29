@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
 
-type ClientState = Arc<Mutex<FreeBankClient>>;
+pub(crate) type ClientState = Arc<Mutex<FreeBankClient>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Transaction {
@@ -76,7 +76,7 @@ pub async fn get_blockchain_info(
     client: State<'_, ClientState>,
 ) -> Result<BlockchainInfo, String> {
     let mut c = client.lock().await;
-    let result = c.call_fresh("getblockchaininfo", vec![]).await?;
+    let result = c.call_ui("getblockchaininfo", vec![]).await?;
 
     Ok(BlockchainInfo {
         chain: result["chain"].as_str().unwrap_or("unknown").to_string(),
@@ -92,7 +92,7 @@ pub async fn get_blockchain_info(
 #[tauri::command]
 pub async fn get_balance(client: State<'_, ClientState>) -> Result<f64, String> {
     let mut c = client.lock().await;
-    let result = c.call_fresh("getbalance", vec![]).await?;
+    let result = c.call_ui("getbalance", vec![]).await?;
     result.as_f64().ok_or_else(|| "Invalid balance response".to_string())
 }
 
@@ -101,7 +101,7 @@ pub async fn get_balance(client: State<'_, ClientState>) -> Result<f64, String> 
 pub async fn get_new_address(client: State<'_, ClientState>) -> Result<String, String> {
     let mut c = client.lock().await;
     let result = c
-        .call_fresh(
+        .call_ui(
             "getnewaddress",
             vec![serde_json::json!(""), serde_json::json!("legacy")],
         )
@@ -130,7 +130,7 @@ pub async fn send_transaction(
 
     let mut c = client.lock().await;
     let result = c
-        .call_fresh(
+        .call_ui(
             "sendtoaddress",
             vec![serde_json::json!(address), serde_json::json!(amount)],
         )
@@ -152,7 +152,7 @@ pub async fn get_transactions(
     let count = count.unwrap_or(20);
 
     let result = c
-        .call_fresh("listtransactions", vec![serde_json::json!("*"), serde_json::json!(count)])
+        .call_ui("listtransactions", vec![serde_json::json!("*"), serde_json::json!(count)])
         .await?;
 
     let txs: Vec<Transaction> = result
@@ -174,13 +174,16 @@ pub async fn get_transactions(
 
 /// Generic JSON-RPC passthrough for FreeBank-specific methods (notes / houses /
 /// pools / bills) so the frontend doesn't need a typed Rust command per RPC.
-/// The frontend is our own trusted UI and the node already gates access by RPC auth.
+/// Only the calls on security.rs's allowlist go through: the screens' own calls and read-only ones.
+/// The wallet-sensitive calls have their own commands, so a script injected into the page can't
+/// reach them this way.
 #[tauri::command]
 pub async fn rpc_call(
     client: State<'_, ClientState>,
     method: String,
     params: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    crate::security::allow_rpc(&method)?;
     let mut c = client.lock().await;
-    c.call_fresh(&method, params).await
+    c.call_ui(&method, params).await
 }
