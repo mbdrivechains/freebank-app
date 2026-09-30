@@ -11,11 +11,14 @@
     onPhoneEvent,
     phone,
     when,
+    type KeepInfo,
     type PhoneDevice,
     type PhoneSend,
     type PhoneWallet,
     type RelayStatus,
   } from "../lib/phone";
+  import { node } from "../lib/node";
+  import { nice } from "../lib/errors";
 
   let status: RelayStatus | null = null;
   let devices: PhoneDevice[] = [];
@@ -54,6 +57,45 @@
     } catch {
       wallet = null;
     }
+    try {
+      keep = await phone.keepInfo();
+    } catch {
+      keep = null;
+    }
+  }
+
+  // "Keep your phone connected when FreeBank is closed" (asked once, after the first phone pairs).
+  let keep: KeepInfo | null = null;
+  let keepNote = "";
+  let keepBusy = false;
+  // "Keep running" came with it, but the node started before: it stops with the app until restarted.
+  let keepRestart = false;
+  async function restartNode() {
+    keepBusy = true;
+    keepNote = "";
+    try {
+      await node.restart();
+      keepRestart = false;
+    } catch (e) {
+      keepNote = nice(e);
+    } finally {
+      keepBusy = false;
+    }
+  }
+
+  async function setKeep(on: boolean) {
+    keepBusy = true;
+    keepNote = "";
+    try {
+      await phone.keepSet(on);
+      keep = await phone.keepInfo();
+      // "Keep running" comes with it; a node started before that stops with the app until it restarts.
+      keepRestart = on && !(await node.status()).keeps_running;
+    } catch (e) {
+      keepNote = nice(e);
+    } finally {
+      keepBusy = false;
+    }
   }
 
   async function toggleSend(e: Event) {
@@ -84,7 +126,9 @@
     try {
       await phone.sendOn(p);
       askPass = false;
-      sendNote = "On until you turn it off, remove your last phone or quit FreeBank.";
+      sendNote = keep?.keep
+        ? "On until you turn it off or remove your last phone. When FreeBank closes, the background part keeps it until FreeBank opens again."
+        : "On until you turn it off, remove your last phone or quit FreeBank.";
     } catch (err) {
       sendNote = String(err);
     }
@@ -168,6 +212,18 @@
     }
   }
 
+  // "Remove Face ID": for a phone that lost its passkey.
+  let unlocking: string | null = null;
+  async function removeFaceId(id: string) {
+    try {
+      await phone.removePasskey(id);
+      unlocking = null;
+      load();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   async function revoke(id: string) {
     try {
       await phone.revoke(id);
@@ -193,6 +249,7 @@
     failed: "failed",
     expired: "not answered in time",
     cancelled: "cancelled when FreeBank restarted",
+    refused: "refused: FreeBank was closed",
   };
 
   function mmss(s: number) {
@@ -229,6 +286,11 @@
         it: allow it only if both show the same code. Anyone who sees this QR code can ask to pair, so only show it to
         your own phone.
       </p>
+      <p class="hint">
+        For FreeBank on an iPhone's Home Screen, copy the link instead and tap <strong>Paste pairing link</strong> in
+        the Home Screen app: the icon keeps its own storage, apart from Safari's. A Mac's Universal Clipboard passes the
+        link to your iPhone.
+      </p>
       <div class="row-actions">
         <button class="secondary" on:click={() => (pair = null)}>Close</button>
       </div>
@@ -246,6 +308,7 @@
           <div class="phone-head">
             <strong>{d.name}</strong>
             {#if d.online}<span class="pill pill-ok">connected</span>{/if}
+            {#if d.face_id}<span class="pill" title="The phone asks for Face ID{d.face_id_sends ? ' when it opens and before each send' : ' when it opens'}">Face ID</span>{/if}
           </div>
           <span class="muted small">Added {when(d.added)} · last seen {when(d.last_seen)}</span>
           <label class="limit-row">
@@ -266,14 +329,63 @@
                 <button class="secondary" on:click={() => (revoking = null)}>Cancel</button>
               </div>
             </div>
+          {:else if unlocking === d.id}
+            <div class="confirm-box">
+              <p>
+                {d.name} opens without Face ID until it is turned on again there. Do this only for a phone that lost its
+                passkey (a new phone, or its passwords reset).
+              </p>
+              <div class="row-actions">
+                <button class="danger" on:click={() => removeFaceId(d.id)}>Remove Face ID</button>
+                <button class="secondary" on:click={() => (unlocking = null)}>Cancel</button>
+              </div>
+            </div>
           {:else}
-            <button class="link-btn inline" on:click={() => (revoking = d.id)}>Revoke…</button>
+            <span class="device-actions">
+              <button class="link-btn inline" on:click={() => (revoking = d.id)}>Revoke…</button>
+              {#if d.face_id}<button class="link-btn inline" on:click={() => (unlocking = d.id)}>Remove Face ID…</button>{/if}
+            </span>
           {/if}
         </li>
       {/each}
     </ul>
   {:else if status}
     <p class="hint">No phone is paired yet.</p>
+  {/if}
+
+  {#if devices.length && keep}
+    <div class="phone-keep" data-testid="phone-keep">
+      {#if !keep.asked}
+        <p><strong>Keep your phone connected when FreeBank is closed?</strong></p>
+        <p class="hint">
+          The window closes, but a small background part of FreeBank keeps the node and the phone link running while
+          this computer is on and awake (asleep, your phone shows "Desktop offline"). Nothing can wait for you then: a
+          send over the limit is refused, and the phone says to open FreeBank. With phone sends on, your wallet
+          passphrase stays in that part's memory too (never on disk).
+        </p>
+        <div class="row-actions">
+          <button on:click={() => setKeep(true)} disabled={keepBusy}>Keep connected</button>
+          <button class="secondary" on:click={() => setKeep(false)} disabled={keepBusy}>Only while FreeBank is open</button>
+        </div>
+      {:else}
+        <label class="toggle-row">
+          <input type="checkbox" checked={keep.keep} disabled={keepBusy} on:change={(e) => setKeep(e.currentTarget.checked)} />
+          <span>Keep my phone connected when FreeBank is closed</span>
+        </label>
+        <p class="hint">
+          A small background part of FreeBank keeps the node and the phone link running while this computer is on and
+          awake; with phone sends on, it keeps your passphrase in memory too. Opening FreeBank takes the phone back. To
+          stop it all, close FreeBank with "Stop everything and close".
+        </p>
+      {/if}
+      {#if keep.took_back}<p class="hint">Your phone stayed connected while FreeBank was closed, from {when(keep.took_back)}.</p>{/if}
+      {#if keep.take_back_error}<p class="soft-error">{keep.take_back_error}</p>{/if}
+      {#if keepRestart}
+        <p class="hint">Your node started before this was on, so it would still stop when you close FreeBank. Restart it to keep it running.</p>
+        <button class="secondary" on:click={restartNode} disabled={keepBusy}>{keepBusy ? "Restarting…" : "Restart the node"}</button>
+      {/if}
+      {#if keepNote}<p class="hint">{keepNote}</p>{/if}
+    </div>
   {/if}
 
   {#if devices.length && wallet && wallet.encrypted !== null}
@@ -452,13 +564,24 @@
   .toggle-row input {
     width: auto;
   }
+  /* One line: the field gives way, so Cancel never wraps on its own. */
+  .device-actions {
+    display: flex;
+    gap: 14px;
+  }
+  .phone-keep {
+    margin-top: 16px;
+  }
   .pass-row {
     display: flex;
-    flex-wrap: wrap;
     gap: 8px;
   }
   .pass-row input {
-    flex: 1 1 180px;
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+  .pass-row button {
+    flex: none;
   }
   .phone-card .advanced {
     margin-top: 16px;

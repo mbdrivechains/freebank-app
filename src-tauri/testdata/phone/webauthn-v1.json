@@ -1,0 +1,177 @@
+{
+  "name": "FreeBank phone relay passkey (WebAuthn) vectors",
+  "spec": "distribution/relay/PROTOCOL.md, \"Face ID: passkeys (app v0.2.1)\"",
+  "generator": "distribution/phone/scripts/make-webauthn-vectors.mjs (Node WebCrypto; signatures differ run to run)",
+  "notes": [
+    "b64u = base64url without padding. pk is the uncompressed P-256 point. ad = authenticatorData, cdj = clientDataJSON, sig = DER ECDSA over ad || SHA-256(cdj).",
+    "Each case is checked with rp_id, origin and challenge below and the stored signature counter stored_count; ok says whether the desktop accepts it, and new_count what it keeps then."
+  ],
+  "rp_id": "app.ecxfreebank.com",
+  "origin": "https://app.ecxfreebank.com",
+  "challenge": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "pk": "BGD-1LolWp0xyWHrdMY1bWjASbiSO2H6bOZpYi5g8p-2eQP-EAi4vJmkGunpVii8ZPLxsgwtfp9Rd6PClNRGIpk",
+  "cases": [
+    {
+      "name": "good",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIGXyw_U6sQVHmbkKjaOmoqnjfdbx-ZNT60ZKODNeEkQQAiEAofuYFmfKGNyc4gPZePWgGPbyhG2V4ydDhOded1RLIso",
+      "stored_count": 0,
+      "ok": true,
+      "new_count": 0
+    },
+    {
+      "name": "good, no crossOrigin field (Safari)",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSJ9",
+      "sig": "MEUCIQC2QZy5PJi-VJ6Rctz9Z86ndl_GJeajD5QThE_2sZW2VQIgbOf_gYm7siahiagP21oGZguCdTq-78FyT-n7vb5Mtus",
+      "stored_count": 0,
+      "ok": true,
+      "new_count": 0
+    },
+    {
+      "name": "good, extra client data fields",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZSwib3RoZXJfa2V5c19jYW5fYmVfYWRkZWRfaGVyZSI6IngifQ",
+      "sig": "MEQCIFN3e0QaVs5Lf-UaqcWbqJuA2KBeXJCluivGZpN8Itw8AiBhnyn0SwcQPysyCvMMUvLME5Bw3qUovnsBiBNU_QNsPQ",
+      "stored_count": 0,
+      "ok": true,
+      "new_count": 0
+    },
+    {
+      "name": "good, counter goes up",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAACA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIQCqN7EHSPP-vG-wi1gH_A6huKHY-0SkFajKFYIA8_hLaQIgZLys2SKNt18pUSr4h57XZzsh6YeEQxn4ywjItGfSZuM",
+      "stored_count": 7,
+      "ok": true,
+      "new_count": 8
+    },
+    {
+      "name": "counter does not go up",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAABw",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIQCC6NJGF_iusfdRALZ-QicUzRBKJoYfuqUHckRTcZz4yAIgNmpqOatCGg7GpvL7kx-bDIelwRevnEH1KHvr22ZsKJU",
+      "stored_count": 7,
+      "ok": false
+    },
+    {
+      "name": "counter goes back to 0",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIQC2pNrzQ_EzIOu78ZNWliBMhLz_Ekm9HwvhLXUiB-SkWAIgRCNiyXwvAuvaMFDW9qhPhyR1L9ScTIfXdPsUV_hnFGc",
+      "stored_count": 7,
+      "ok": false
+    },
+    {
+      "name": "wrong origin",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vZXZpbC5leGFtcGxlIiwiY3Jvc3NPcmlnaW4iOmZhbHNlfQ",
+      "sig": "MEQCIFHZdih-B1wpdjA-2YK9BvvyoFaVtMyd2xLOpYWTAvheAiAQFNqpzYQVh-RYCwONtIPMdwZGpuGe3ULEHIbYXWLCSQ",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "origin with a trailing slash",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbS8iLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+      "sig": "MEUCIQDyV8u92iQq0d5rSkjkc9JxwDTnNZJPIcPW94evt0YhOAIgTF7qgGeTsYgiP6MvTTj-_iGEksGoZYO17LVq7BBJYmo",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "wrong challenge",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEYCIQDcyprWnd92Vc0tY5hHr3Rt8LdaH4lmernSBQhz3dmdbQIhAJOi1L5ickH8ReAB36jKpMpoBz05wUw-iMSmBXqcrwPQ",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "challenge with padding",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOD0iLCJvcmlnaW4iOiJodHRwczovL2FwcC5lY3hmcmVlYmFuay5jb20iLCJjcm9zc09yaWdpbiI6ZmFsc2V9",
+      "sig": "MEUCIDTx8iVmMnbHu44sa3UG-lMD23D46bmGK5OjqkPh9FFZAiEA9cK5JimJsUJieOMimPNENhheqiTPi_P7fxL2_Vpe_Ww",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "type webauthn.create",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIQDyiPVEAB87GlDyL7x8d5OMn6CGGdtY3_15VX1TkQLqTgIgGJ33w8fm1ml6UfMB1GcDgTlsp4hmPdn0PSCOU5_1xS0",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "crossOrigin true",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjp0cnVlfQ",
+      "sig": "MEUCIQD8h-Ma00_1K-29IxZun5Ufqv7Dg8JtXBot2FBDwyGf6QIgL12r3pUKW6vH58GRpTQwMnGIqKVW9_9uHv3S_52ds-g",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "no user verification (UV)",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8BAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIQDg6O_4fXlAQtNFmjRPNs8fkT_h9QROMMZ9yt1oGZpgdgIgYOhUIoccv46pgQ4fTtwKTcFRVRNKonk577I_WlaTC5w",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "no user presence (UP)",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8EAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIBjp6ptEEt5VePlw_uT-3cbco4XN6UPrFkmO8VzQMSPxAiEAlarDMp0C3WpCTDn-bQ9zmnTWAC0-zF5AAxbaxS9Qhsc",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "another relying party",
+      "ad": "nBgN4M1pnueIl8R8_bPn7h11kG4xt3RqR0fepTaQmDcFAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEYCIQDB4IZ7BPcY_MYTE0-u-m5-Wvz2_zHwXKmXmUHOVsrs3AIhAIapelBki8OCLxjeIgDZiAtwP_KtWQt2KCLjuwuEDW_6",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "authenticator data changed after signing",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q9FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIQDTCdsD3gzRrIvWEiayn2HJ9yi5EUL7t2B9neHu0mWO2QIgbJrjVC9x3XlCgQvsZWntjQ6njm8vkEcnNjyXDQGEeH0",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "authenticator data too short",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEQCIBjAbmlEamOBNCl716QXcDY8J92yLWgRJE33l2ik0SlKAiBIr5HLV2uBWXHJzG8M0k8PhgtFszgo6357vksbpBzZew",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "client data not JSON",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "dHlwZT13ZWJhdXRobi5nZXQ",
+      "sig": "MEUCIFu5Jgy2w3ePAUsqpzrDIxTfWWxXVKfC4TV0BmGpuMCBAiEA1BTSs1g_CgVva0U_ieoWRLQH_3OyZnT0bNVkuzLh8hs",
+      "stored_count": 0,
+      "ok": false
+    },
+    {
+      "name": "signature by another key",
+      "ad": "A_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q8FAAAAAA",
+      "cdj": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsIm9yaWdpbiI6Imh0dHBzOi8vYXBwLmVjeGZyZWViYW5rLmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+      "sig": "MEUCIGzYMz9thrgips4Jqw7mmuKMEY5pqxd8bvTB2m7UWnNfAiEA4CA8sEtqKXhVYvb-ZSZuRrXbynyW1IzlNmvwxa1MmkA",
+      "stored_count": 0,
+      "ok": false
+    }
+  ],
+  "attestation": {
+    "note": "A \"none\" attestation object as navigator.credentials.create returns it; the phone reads pk and cred from it.",
+    "object": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViUA_PtlPt3maW0MUa2_9GIfGxNOzf6HjmYOuovcBqK5q9FAAAAAAAAAAAAAAAAAAAAAAAAAAAAEKChoqOkpaanqKmqq6ytrq-lAQIDJiABIVggYP7UuiVanTHJYet0xjVtaMBJuJI7Yfps5mliLmDyn7YiWCB5A_4QCLi8maQa6elWKLxk8vGyDC1-n1F3o8KU1EYimQ",
+    "pk": "BGD-1LolWp0xyWHrdMY1bWjASbiSO2H6bOZpYi5g8p-2eQP-EAi4vJmkGunpVii8ZPLxsgwtfp9Rd6PClNRGIpk",
+    "cred": "oKGio6SlpqeoqaqrrK2urw"
+  }
+}

@@ -1,7 +1,32 @@
 <script lang="ts">
-  // The 24 recovery words in a numbered grid. They can't be selected, copied, cut or dragged: they are
-  // written down by hand, never put on the clipboard. The parent holds the words and wipes them.
+  // The 24 recovery words in a numbered grid. The grid can't be selected, copied, cut or dragged. "Copy
+  // words" puts them on the clipboard after a warning (operator, 2026-09-29: "i know you are not
+  // supposed to but people to.."): the app writes it, as a numbered table and as plain words, and
+  // clears it after 60 seconds. The parent holds the words and wipes them.
+  import { createEventDispatcher } from "svelte";
+  import { nice } from "../lib/errors";
+  import { walletSeed } from "../lib/walletSeed";
+
+  const dispatch = createEventDispatcher<{ copied: void }>();
+
   export let words: string[] = [];
+
+  const mac = typeof navigator !== "undefined" && /Mac/.test(navigator.userAgent);
+  let copy: "idle" | "ask" | "done" = "idle";
+  let copyError = "";
+  $: if (words.length === 0) copy = "idle";
+
+  async function copyNow() {
+    copyError = "";
+    try {
+      await walletSeed.copyWords(words);
+      copy = "done";
+      dispatch("copied");
+    } catch (e) {
+      copyError = nice(e);
+      copy = "idle";
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -17,6 +42,28 @@
     <li><span class="rw-n">{i + 1}</span><span class="rw-w">{w}</span></li>
   {/each}
 </ol>
+<div class="rw-copy">
+  {#if copy === "ask"}
+    <p class="rw-warn">
+      Other apps can read the clipboard, and so can clipboard history if you use one{mac
+        ? "; Universal Clipboard can pass it to your other Apple devices"
+        : ""}. FreeBank clears it after 60 seconds.
+    </p>
+    <div class="row-actions">
+      <button on:click={copyNow}>Copy anyway</button>
+      <button class="secondary" on:click={() => (copy = "idle")}>Cancel</button>
+    </div>
+  {:else if copy === "done"}
+    <p class="hint">
+      Copied: as a numbered list for Notes or mail, and as plain words for a password manager. FreeBank clears the
+      clipboard in 60 seconds. The words restore in FreeBank or a BIP85 tool; Electrum takes them but can't show
+      FreeBank coins.
+    </p>
+  {:else}
+    <button class="secondary" on:click={() => (copy = "ask")}>Copy words</button>
+  {/if}
+  {#if copyError}<p class="soft-error" role="alert">{copyError}</p>{/if}
+</div>
 
 <style>
   .rw {
@@ -55,6 +102,14 @@
     font-weight: 600;
     color: var(--text-color);
     overflow-wrap: anywhere;
+  }
+  .rw-copy {
+    margin-top: 10px;
+  }
+  .rw-warn {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0 0 8px;
   }
   @media (max-width: 380px) {
     .rw {

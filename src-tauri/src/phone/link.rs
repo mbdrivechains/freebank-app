@@ -42,6 +42,20 @@ pub async fn run(phone: Arc<Phone>, mut out: mpsc::UnboundedReceiver<Value>) {
         match end {
             End::Again => backoff = 1,
             End::Replaced => {
+                // The background part gives the room back to the app, the only one that may take it
+                // (security review L1); the app takes it back from a background part that outlived
+                // its start, at once.
+                if phone.is_background() {
+                    return;
+                }
+                if let Some(app_dir) = phone.store.dir.parent().map(|d| d.to_path_buf()) {
+                    // take_back waits up to 10 s for the part to stop: off the async workers (review note).
+                    let took = tokio::task::spawn_blocking(move || super::background::take_back(&app_dir)).await;
+                    if matches!(took, Ok(Ok(Some(_)))) {
+                        backoff = 1;
+                        continue;
+                    }
+                }
                 backoff = BACKOFF_MAX;
                 eprintln!("phone relay: replaced by another desktop for room {}", phone.room);
                 phone.set_status(

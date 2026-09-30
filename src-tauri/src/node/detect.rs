@@ -174,12 +174,17 @@ fn pin_entry(mainblockhash: &Path) -> Option<String> {
 #[derive(Debug, Serialize)]
 pub struct DatadirCheck {
     /// "new": empty or missing; "ours": a FreeBank beta datadir, used as is;
-    /// "other": data this node can't use, which must be moved aside first.
+    /// "other": data this node can't use, which must be moved aside first;
+    /// "earlier" (Setup only, `setup_check`): a folder FreeBank set up for an earlier install, which
+    /// Setup offers to use or to move aside ("Start fresh").
     pub kind: &'static str,
     pub message: String,
-    /// Where "other" data would be moved.
+    /// Where "other" or "earlier" data would be moved.
     pub away: Option<String>,
     pub has_wallet: bool,
+    /// For "earlier": the name on its blocks (freebank.conf) and the last block its log shows.
+    pub tag: Option<String>,
+    pub height: Option<u64>,
 }
 
 pub fn check_datadir(datadir: &Path) -> DatadirCheck {
@@ -196,6 +201,8 @@ pub fn check_datadir(datadir: &Path) -> DatadirCheck {
         message,
         away,
         has_wallet,
+        tag: None,
+        height: None,
     };
     if entries.iter().all(|e| e == "freebank.conf") {
         return mk("new", String::new(), None);
@@ -221,18 +228,57 @@ pub fn check_datadir(datadir: &Path) -> DatadirCheck {
             None,
         );
     }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let away = format!("{}.old-{}", datadir.to_string_lossy(), stamp);
     mk(
         "other",
         "This folder holds data from an older FreeBank node that this version can't use. \
          It will be moved aside, and nothing is deleted."
             .into(),
-        Some(away),
+        Some(away_path(datadir)),
     )
+}
+
+/// Where a folder is moved aside to: <folder>.old-<unix time>, or with -2, -3… if that is taken
+/// (two moves in one second).
+fn away_path(datadir: &Path) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let base = format!("{}.old-{}", datadir.to_string_lossy(), stamp);
+    (1..)
+        .map(|n| if n == 1 { base.clone() } else { format!("{}-{}", base, n) })
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .unwrap_or(base)
+}
+
+/// Setup's look at the data folder. A folder with FreeBank's mark that this install didn't record
+/// (`created`) was set up for an earlier one: v0.1.1's Obliterate kept it, or the app's own folder
+/// went. Setup says so and asks: use it (its blocks, wallet and name), or start fresh (moved aside).
+pub fn setup_check(datadir: &Path, created: &[String]) -> DatadirCheck {
+    let mut c = check_datadir(datadir);
+    let recorded = created.iter().any(|d| Path::new(d) == datadir);
+    if c.kind == "ours" && datadir.join(DATADIR_MARK).exists() && !recorded {
+        c.kind = "earlier";
+        c.message = "FreeBank set up this folder for an earlier install.".into();
+        c.away = Some(away_path(datadir));
+        c.tag = super::conf_tag(datadir);
+        c.height = last_height(datadir);
+    }
+    c
+}
+
+/// The height of the last "UpdateTip: new best=… height=N" line in the end of debug.log.
+fn last_height(datadir: &Path) -> Option<u64> {
+    let mut f = std::fs::File::open(datadir.join("debug.log")).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(256 * 1024))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    text.lines().rev().filter(|l| l.contains("UpdateTip: new best=")).find_map(|l| {
+        let rest = &l[l.find(" height=")? + 8..];
+        rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    })
 }
 
 /// Files a node leaves behind even when it never got going. Nothing here is worth keeping.
@@ -426,6 +472,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Operator, 2026-09-29: Setup took back an earlier install's folder, name and all, without asking.
+    #[test]
+    fn an_earlier_installs_folder_is_asked_about() {
+        let d = dir("earlier");
+        std::fs::write(d.join(DATADIR_MARK), b"").unwrap();
+        std::fs::write(d.join("wallet.dat"), b"w").unwrap();
+        std::fs::write(d.join("freebank.conf"), b"coinbasetag=Old Name\n").unwrap();
+        std::fs::write(
+            d.join("debug.log"),
+            "2026-09-29 10:48:47 UpdateTip: new best=19f4 height=402 version=0x20000000 tx=676549\n\
+             2026-09-29 10:51:08 UpdateTip: new best=ec8e height=403 version=0x20000000 tx=681276\n\
+             2026-09-29 10:53:38 Shutdown: done\n",
+        )
+        .unwrap();
+        let c = setup_check(&d, &[]);
+        assert_eq!((c.kind, c.tag.as_deref(), c.height, c.has_wallet), ("earlier", Some("Old Name"), Some(403), true));
+        assert!(c.away.unwrap().starts_with(&format!("{}.old-", d.display())));
+        // This install's own folder: used as it is, no question.
+        let mine = [d.to_string_lossy().into_owned()];
+        assert_eq!(setup_check(&d, &mine).kind, "ours");
+        // Without the mark it is someone else's beta node (or data this node can't use): as before.
+        std::fs::remove_file(d.join(DATADIR_MARK)).unwrap();
+        assert_eq!(setup_check(&d, &[]).kind, check_datadir(&d).kind);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

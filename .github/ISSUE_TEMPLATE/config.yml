@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A security problem
+    url: https://github.com/mbdrivechains/freebank-app/security/advisories/new
+    about: Report it privately, never in a public issue.
+  - name: No GitHub account?
+    url: https://github.com/mbdrivechains/freebank-app#report-a-problem
+    about: The app sends reports without one (Settings, then Help).

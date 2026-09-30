@@ -340,20 +340,9 @@ pub(crate) fn keep_aside(path: &Path) -> Result<PathBuf, String> {
 
 // ---- The node: stop, start, wait ----
 
-/// The last line of the node's debug.log, without its timestamp.
+/// The node's last debug.log line worth showing (`process::last_log_line`).
 fn log_tail(datadir: &str) -> Option<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(Path::new(datadir).join("debug.log")).ok()?;
-    let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(4096))).ok()?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
-    let b = line.as_bytes();
-    let stamped = b.len() > 20 && b[4] == b'-' && b[10] == b' ' && b[13] == b':' && b[19] == b' ';
-    let msg = if stamped { &line[20..] } else { line };
-    Some(msg.strip_prefix("init message: ").unwrap_or(msg).chars().take(160).collect())
+    crate::node::process::last_log_line(Path::new(datadir))
 }
 
 /// Wait until the node answers with its wallet. `ours`: the app started it, so if it exits, say why.

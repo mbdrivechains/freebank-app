@@ -118,6 +118,29 @@ export interface Moved {
 
 export const WORD_COUNT = 24;
 
+/**
+ * Words in pasted text, in order: lower case, list numbers ("1.", "12)", "(3)", "4:") dropped, and
+ * put in their numbered order when every word has a number 1 to n (a table copied out of Notes
+ * reads across its rows). The same rule as the app's restore (seed.rs `tokens`).
+ */
+export function wordsIn(text: string): string[] {
+  const got: { n: number | null; w: string }[] = [];
+  let n: number | null = null;
+  for (const raw of text.split(/[\s,]+/)) {
+    const t = raw.trim().toLowerCase();
+    const num = t.replace(/^[(#]+/, "").replace(/[.):]+$/, "");
+    if (!t) continue;
+    if (/^\d+$/.test(num)) n = Number(num);
+    else {
+      got.push({ n, w: t });
+      n = null;
+    }
+  }
+  const order = got.map((g) => g.n).filter((x): x is number => x !== null).sort((a, b) => a - b);
+  if (order.length === got.length && order.every((x, i) => x === i + 1)) got.sort((a, b) => a.n! - b.n!);
+  return got.map((g) => g.w);
+}
+
 /** The largest file taken as a wallet backup (the app checks it too). */
 export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 
@@ -141,6 +164,8 @@ export const walletSeed = {
   wordsConfirmed: () => tauriInvoke("wallet_words_confirmed") as Promise<void>,
   checkWords: (words: string) => tauriInvoke("seed_check_words", { words }) as Promise<WordsCheck>,
   reveal: (passphrase: string, what: "words" | "xprv") => tauriInvoke("wallet_reveal", { passphrase, what }) as Promise<Revealed>,
+  /** On the clipboard as a numbered table and as plain words; cleared after 60 s if still there. */
+  copyWords: (words: string[]) => tauriInvoke("copy_words", { words }) as Promise<void>,
   changePassphrase: (old: string, next: string) =>
     tauriInvoke("wallet_change_passphrase", { old, new: next }) as Promise<Changed>,
   backupNow: () => tauriInvoke("wallet_backup_now") as Promise<string[]>,

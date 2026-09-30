@@ -127,10 +127,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # Only the packages, by name: the apt job's Pages artifact (artifact.tar) must never become a release asset
+      # (it did in v0.2.0, when that job finished first; removed from the release by hand).
       - uses: actions/download-artifact@v4
         with:
+          name: linux
           path: out
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+          path: out
       - name: Record build attestations for the packages
         uses: actions/attest-build-provenance@v2
         with:

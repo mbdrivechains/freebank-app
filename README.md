@@ -165,6 +165,16 @@ python3 proxy.py --rpc-port 8454
 └─────────────────────────────────────────┘
 ```
 
+## Report a problem
+
+In the app: **Settings, then Help**. Choose a problem, an idea or a security problem, and either:
+- **Send to FreeBank:** no account needed. The app sends your text, and if you leave the box ticked, the app's version,
+  your system and the node's version. Nothing else: no addresses, balances or logs. Only the FreeBank team reads it.
+- **Open on GitHub:** opens a prefilled [issue](https://github.com/mbdrivechains/freebank-app/issues/new/choose) in
+  your browser for you to check and post. Issues are public.
+
+Security problems go privately: see [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

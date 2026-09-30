@@ -33,6 +33,16 @@ pub const DEFAULT_RPC_PORT: u16 = 8454;
 pub const DEFAULT_P2P_PORT: u16 = 8455;
 /// Marks a datadir this app set up, so it is never moved aside.
 pub const DATADIR_MARK: &str = ".freebank-node";
+
+/// The end of a moved-aside folder's name after "<name>.old-": a unix time, with "-2", "-3"… when
+/// two moves fell in one second (detect.rs `away_path`, recovery `keep_aside`).
+pub fn aside_stamp(rest: &str) -> bool {
+    let digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    match rest.split_once('-') {
+        Some((t, n)) => digits(t) && digits(n),
+        None => digits(rest),
+    }
+}
 /// What "Delete chain data" removes from the datadir. Houses, bills and pools live under blocks/.
 /// The wallet (wallet.dat or wallets/), freebank.conf and the eCash block-hash cache stay.
 pub const CHAIN_DATA: &[&str] = &["blocks", "chainstate", "indexes", "bmm.dat", "mempool.dat"];
@@ -92,6 +102,11 @@ pub struct Settings {
     /// "Keep FreeBank's node running after I close the app" (Settings). Off: the app stops its node
     /// when it closes, as before.
     pub keep_running: bool,
+    /// "Keep your phone connected when FreeBank is closed" (Settings > Phone; phone/background.rs).
+    /// On means `keep_running` too.
+    pub keep_phone: bool,
+    /// The question was asked (once, after the first phone pairs) or the switch was used.
+    pub keep_phone_asked: bool,
 }
 
 impl Default for Settings {
@@ -108,6 +123,8 @@ impl Default for Settings {
             datadirs_created: Vec::new(),
             moved_aside: Vec::new(),
             keep_running: false,
+            keep_phone: false,
+            keep_phone_asked: false,
         }
     }
 }
@@ -534,6 +551,16 @@ pub fn remove_inside(root: &Path, target: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aside_stamps() {
+        for ok in ["1727000001", "1727000001-2", "1727000001-10"] {
+            assert!(aside_stamp(ok), "{}", ok);
+        }
+        for bad in ["", "-2", "1727000001-", "1727000001-2-3", "17270x", "1727000001-b"] {
+            assert!(!aside_stamp(bad), "{}", bad);
+        }
+    }
 
     #[test]
     fn version_lines() {

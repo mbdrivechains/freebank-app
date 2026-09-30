@@ -287,3 +287,39 @@ export function qrPath(m: boolean[][], border = 4): string {
   );
   return d;
 }
+
+/** The ghost's gold: the icon's light gold (#ecd696), at 60% over white where the sun covers a
+ * module fully (operator's choice, 2026-09-30, after the stress test below). */
+const GOLD = [236, 214, 150];
+const GOLD_STRENGTH = 0.6;
+/** Shades of the ghost, from faint to full. */
+const GHOST_SHADES = 6;
+
+/**
+ * FreeBank's ☉ ghosted into a QR code (operator, 2026-09-30: "i like ghost gold"). The light
+ * modules under the sun's ring and dot are tinted gold; the dark ones stay black, the three finder
+ * corners (with their separators) are never tinted, and nothing else changes: the code is as dense
+ * as a plain one. The sun has the icon's proportions over the symbol without its quiet zone (ring
+ * radius 0.301, half-stroke 0.0357, dot radius 0.087, edges softened over a sixtieth). Tested with
+ * the jsQR decoder (`npm run check:qr`), 100 noisy copies a case: as often as plain under noise, low
+ * contrast, blur and glare; washed out and very noisy together, the pairing code read 38 times
+ * against 44 (full gold: 26). Returns one SVG path per shade, offset by `border` like `qrPath`, to
+ * draw between the white and the dark.
+ */
+export function qrGhost(m: boolean[][], border = 4): { d: string; fill: string }[] {
+  const n = m.length;
+  const finder = (x: number, y: number) => ((x < 8 || x >= n - 8) && y < 8) || (x < 8 && y >= n - 8);
+  const paths: string[] = new Array(GHOST_SHADES).fill("");
+  m.forEach((row, y) =>
+    row.forEach((dark, x) => {
+      if (dark || finder(x, y)) return;
+      const r = Math.hypot((x + 0.5) / n - 0.5, (y + 0.5) / n - 0.5);
+      const edge = Math.min(Math.abs(r - 0.301) - 0.0357, r - 0.087);
+      const shade = Math.round(Math.min(1, Math.max(0, 0.5 - edge * 60)) * GHOST_SHADES);
+      if (shade > 0) paths[shade - 1] += `M${x + border} ${y + border}h1v1h-1z`;
+    }),
+  );
+  const hex = (t: number) =>
+    "#" + GOLD.map((g) => Math.round(255 + (g - 255) * t * GOLD_STRENGTH).toString(16).padStart(2, "0")).join("");
+  return paths.map((d, i) => ({ d, fill: hex((i + 1) / GHOST_SHADES) })).filter((p) => p.d);
+}

@@ -276,6 +276,13 @@ pub struct QuitAsk {
     /// The node keeps running after the app closes. False when it was started before the setting
     /// was on (on Linux it then stops with the app).
     pub outlives: bool,
+    /// "Keep your phone connected when FreeBank is closed" is on and a phone is paired: the notice
+    /// offers to keep it connected (phone/background.rs).
+    #[serde(default)]
+    pub phone: bool,
+    /// Phone sends are on: keeping the phone connected hands the passphrase to the background part.
+    #[serde(default)]
+    pub phone_send: bool,
 }
 
 /// Should the window's close be held, so the screen can first say what happens to the node? Only
@@ -312,7 +319,12 @@ pub fn on_close(window: &tauri::Window, api: &tauri::CloseRequestApi) {
     };
     if let Some(outlives) = hold_close(&mgr) {
         api.prevent_close();
-        let _ = window.emit("quit-requested", QuitAsk { outlives });
+        let keep_phone = mgr.settings.try_lock().is_ok_and(|s| s.keep_phone);
+        let phone = window.try_state::<crate::phone::commands::PhoneState>();
+        let phone = phone.as_ref().and_then(|p| p.0.as_ref().ok());
+        let paired = phone.is_some_and(|p| p.has_phones());
+        let phone_send = phone.is_some_and(|p| p.phone_send_is_on());
+        let _ = window.emit("quit-requested", QuitAsk { outlives, phone: keep_phone && paired, phone_send });
     }
 }
 

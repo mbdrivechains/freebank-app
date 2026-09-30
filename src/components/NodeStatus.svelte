@@ -415,7 +415,11 @@
           {/each}
         </ul>
       {/if}
-      <p class="hint">Others can reach you only if port {st.p2p_port} is open to this computer. Without it, you still sync through your own outbound peers.</p>
+      {#if st.listens}
+        <p class="hint">Others can reach you only if port {st.p2p_port} is open to this computer. Without it, you still sync through your own outbound peers.</p>
+      {:else}
+        <p class="hint">Your node takes no incoming peers (freebank.conf says listen=0). It syncs through its own outbound peers.</p>
+      {/if}
     </div>
   {/if}
 

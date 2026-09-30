@@ -861,7 +861,7 @@ async fn door_methods_and_replay() {
     assert_eq!(lt, vec![json!("*"), json!(50)], "count capped at 50");
 
     let r = ask(&mut h, &mut sim, 7, 3, "status", json!({})).await;
-    assert_eq!(r["ok"], json!({"blocks": 120, "synced": true, "limit_left": 0.1}));
+    assert_eq!(r["ok"], json!({"blocks": 120, "synced": true, "limit_left": 0.1, "face_id": false, "face_id_sends": false}));
 
     let r = ask(&mut h, &mut sim, 7, 4, "dumpprivkey", json!({})).await;
     assert_eq!(r, json!({"id": 4, "err": "unknown method"}));
@@ -984,6 +984,25 @@ async fn held_send_confirmed_on_the_desktop() {
     assert!(h.phone.confirm_send(&confirm, true, None).await.is_err(), "answered once");
     // A confirmed send leaves the phone's own allowance alone.
     assert_eq!(limit_left(&mut h, &mut sim, 1).await, 0.05);
+}
+
+/// With the app closed (the background part), nobody can confirm: a send the app would hold is
+/// refused at once, and nothing is held or sent. Within the limit, sends still go out.
+#[tokio::test]
+async fn with_the_app_closed_over_the_limit_is_refused() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.phone.set_background(true);
+    let id = h.phone.devices()[0].id.clone();
+    h.phone.set_limit(&id, 0.05).unwrap();
+    let r = ask(&mut h, &mut sim, 1, 11, "send", json!({"address": TO, "amount": 0.06})).await;
+    assert_eq!(r, json!({"id": 11, "err": ERR_CLOSED_LIMIT}));
+    assert!(h.phone.held().is_empty() && h.rpc.sends().is_empty());
+    assert!(h.ev.named(EV_HELD).is_empty());
+    let r = ask(&mut h, &mut sim, 1, 12, "send", json!({"address": TO, "amount": 0.04})).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+    assert_eq!(h.rpc.sends(), vec![vec![json!(TO), json!(0.04)]]);
 }
 
 #[tokio::test]
@@ -1977,4 +1996,207 @@ async fn page_host() {
     if temp {
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ----- Face ID: passkeys (PROTOCOL.md, "Face ID: passkeys") -----------------------------------
+
+/// A phone's platform authenticator: signs WebAuthn assertions for the page's origin.
+struct Authenticator(p256::ecdsa::SigningKey);
+
+impl Authenticator {
+    fn new(seed: u8) -> Self {
+        Authenticator(p256::ecdsa::SigningKey::from_bytes(&[seed; 32].into()).unwrap())
+    }
+    fn pk(&self) -> String {
+        crypto::b64u(self.0.verifying_key().to_encoded_point(false).as_bytes())
+    }
+    fn assert_for(&self, challenge: &Value, origin: &str) -> Value {
+        use p256::ecdsa::signature::Signer;
+        use sha2::{Digest, Sha256};
+        let mut ad = Sha256::digest(b"app.ecxfreebank.com").to_vec();
+        ad.extend_from_slice(&[0x05, 0, 0, 0, 0]);
+        let cdj = json!({"type": "webauthn.get", "challenge": challenge, "origin": origin}).to_string();
+        let mut msg = ad.clone();
+        msg.extend_from_slice(&Sha256::digest(cdj.as_bytes()));
+        let sig: p256::ecdsa::Signature = self.0.sign(&msg);
+        json!({"ad": crypto::b64u(&ad), "cdj": crypto::b64u(cdj.as_bytes()), "sig": crypto::b64u(sig.to_der().as_bytes())})
+    }
+    fn assert(&self, challenge: &Value) -> Value {
+        self.assert_for(challenge, "https://app.ecxfreebank.com")
+    }
+}
+
+/// Add `fid`'s passkey on the session on `ch` (ids `id` and `id + 1`).
+async fn add_passkey(h: &mut H, sim: &mut Sim, ch: u64, id: u64, fid: &Authenticator, sends: bool) -> Value {
+    let c = ask(h, sim, ch, id, "auth-start", json!({"for": "add"})).await;
+    let mut add = fid.assert(&c["ok"]["challenge"]);
+    add["pk"] = json!(fid.pk());
+    add["cred"] = json!("Y3JlZC1pZA");
+    add["sends"] = json!(sends);
+    ask(h, sim, ch, id + 1, "passkey-add", add).await
+}
+
+#[tokio::test]
+async fn face_id_gates_each_session() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let fid = Authenticator::new(7);
+    assert_eq!(add_passkey(&mut h, &mut sim, 1, 1, &fid, false).await, json!({"id": 2, "ok": {}}));
+    assert!(h.phone.devices()[0].passkey.is_some());
+    // The session that added it goes on; a new one proves it first.
+    assert!(ask(&mut h, &mut sim, 1, 3, "balance", json!({})).await["ok"].is_object());
+    session(&mut h, &mut sim, 1).await;
+    let r = ask(&mut h, &mut sim, 1, 4, "balance", json!({})).await;
+    assert_eq!(r, json!({"id": 4, "err": ERR_AUTH_NEEDED, "auth": "open"}));
+    // Another origin's assertion fails, and uses the challenge up.
+    let c = ask(&mut h, &mut sim, 1, 5, "auth-start", json!({"for": "open"})).await;
+    assert_eq!(c["ok"]["cred"], "Y3JlZC1pZA");
+    let evil = fid.assert_for(&c["ok"]["challenge"], "https://evil.example");
+    assert_eq!(ask(&mut h, &mut sim, 1, 6, "auth", evil).await["err"], ERR_AUTH_FAILED);
+    let right = fid.assert(&c["ok"]["challenge"]);
+    assert_eq!(ask(&mut h, &mut sim, 1, 7, "auth", right).await["err"], ERR_AUTH_FAILED, "the challenge was used up");
+    // Another key fails; a fresh challenge and the phone's own key open the session.
+    let c = ask(&mut h, &mut sim, 1, 8, "auth-start", json!({"for": "open"})).await;
+    let other = Authenticator::new(9).assert(&c["ok"]["challenge"]);
+    assert_eq!(ask(&mut h, &mut sim, 1, 9, "auth", other).await["err"], ERR_AUTH_FAILED);
+    let c = ask(&mut h, &mut sim, 1, 10, "auth-start", json!({"for": "open"})).await;
+    assert_eq!(ask(&mut h, &mut sim, 1, 11, "auth", fid.assert(&c["ok"]["challenge"])).await, json!({"id": 11, "ok": {}}));
+    assert!(ask(&mut h, &mut sim, 1, 12, "balance", json!({})).await["ok"].is_object());
+    // A new session can't swap the passkey without proving the old one.
+    session(&mut h, &mut sim, 1).await;
+    let r = add_passkey(&mut h, &mut sim, 1, 13, &Authenticator::new(9), false).await;
+    assert_eq!(r["err"], ERR_AUTH_NEEDED);
+    assert_eq!(h.phone.devices()[0].passkey.as_ref().unwrap().pk, fid.pk());
+    // An expired challenge fails.
+    let c = ask(&mut h, &mut sim, 1, 15, "auth-start", json!({"for": "open"})).await;
+    h.later(CHALLENGE_SECS + 1);
+    assert_eq!(ask(&mut h, &mut sim, 1, 16, "auth", fid.assert(&c["ok"]["challenge"])).await["err"], ERR_AUTH_FAILED);
+    // The desktop's "Remove Face ID": the phone opens without it again.
+    let id = h.phone.devices()[0].id.clone();
+    h.phone.remove_passkey(&id).unwrap();
+    assert!(ask(&mut h, &mut sim, 1, 17, "balance", json!({})).await["ok"].is_object());
+    // A passkey that doesn't work is never kept.
+    let c = ask(&mut h, &mut sim, 1, 18, "auth-start", json!({"for": "add"})).await;
+    let mut add = Authenticator::new(9).assert(&c["ok"]["challenge"]);
+    add["pk"] = json!(fid.pk());
+    add["cred"] = json!("Y3JlZC1pZA");
+    assert_eq!(ask(&mut h, &mut sim, 1, 19, "passkey-add", add).await["err"], ERR_AUTH_FAILED);
+    assert!(h.phone.devices()[0].passkey.is_none());
+}
+
+#[tokio::test]
+async fn face_id_before_each_send_when_chosen() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let fid = Authenticator::new(7);
+    assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, true).await["ok"].is_object());
+    // Without an assertion over a send challenge, nothing is reserved or sent.
+    let r = ask(&mut h, &mut sim, 1, 3, "send", json!({"address": TO, "amount": 0.01})).await;
+    assert_eq!(r["err"], ERR_AUTH_FAILED);
+    assert!(h.rpc.sends().is_empty());
+    assert_eq!(limit_left(&mut h, &mut sim, 1).await, 0.1);
+    let c = ask(&mut h, &mut sim, 1, 5, "auth-start", json!({"for": "send"})).await;
+    let r = ask(&mut h, &mut sim, 1, 6, "send", json!({"address": TO, "amount": 0.01, "auth": fid.assert(&c["ok"]["challenge"])})).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+    // Turning it off takes Face ID too (security review M1), then sends go without it.
+    assert_eq!(ask(&mut h, &mut sim, 1, 7, "passkey-set", json!({"sends": false})).await["err"], ERR_AUTH_FAILED);
+    let c = ask(&mut h, &mut sim, 1, 8, "auth-start", json!({"for": "change"})).await;
+    let r = ask(&mut h, &mut sim, 1, 9, "passkey-set", json!({"sends": false, "auth": fid.assert(&c["ok"]["challenge"])})).await;
+    assert_eq!(r, json!({"id": 9, "ok": {}}));
+    let r = ask(&mut h, &mut sim, 1, 10, "send", json!({"address": TO, "amount": 0.01})).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+    assert_eq!(h.rpc.sends().len(), 2);
+}
+
+/// Security review M1: a phone left unlocked with FreeBank open. Removing or replacing the passkey
+/// takes Face ID again, and a proved session lapses after 5 minutes idle or 30 in all.
+#[tokio::test]
+async fn face_id_changes_take_face_id_and_proofs_lapse() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let fid = Authenticator::new(7);
+    assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, false).await["ok"].is_object());
+    // Removing it on a proved session, without Face ID: refused.
+    assert_eq!(ask(&mut h, &mut sim, 1, 3, "passkey-remove", json!({})).await["err"], ERR_AUTH_FAILED);
+    assert!(h.phone.devices()[0].passkey.is_some());
+    // Replacing it with another key: refused without the old one's assertion...
+    let other = Authenticator::new(9);
+    assert_eq!(add_passkey(&mut h, &mut sim, 1, 4, &other, false).await["err"], ERR_AUTH_FAILED);
+    assert_eq!(h.phone.devices()[0].passkey.as_ref().unwrap().pk, fid.pk());
+    // ...and kept with it.
+    let change = ask(&mut h, &mut sim, 1, 6, "auth-start", json!({"for": "change"})).await;
+    let add = ask(&mut h, &mut sim, 1, 7, "auth-start", json!({"for": "add"})).await;
+    let mut x = other.assert(&add["ok"]["challenge"]);
+    x["pk"] = json!(other.pk());
+    x["cred"] = json!("b3RoZXI");
+    x["auth"] = fid.assert(&change["ok"]["challenge"]);
+    assert_eq!(ask(&mut h, &mut sim, 1, 8, "passkey-add", x).await, json!({"id": 8, "ok": {}}));
+    assert_eq!(h.phone.devices()[0].passkey.as_ref().unwrap().pk, other.pk());
+    // Idle for 5 minutes: asked again.
+    h.later(VERIFIED_IDLE_SECS + 1);
+    assert_eq!(ask(&mut h, &mut sim, 1, 9, "balance", json!({})).await["auth"], "open");
+    let c = ask(&mut h, &mut sim, 1, 10, "auth-start", json!({"for": "open"})).await;
+    assert!(ask(&mut h, &mut sim, 1, 11, "auth", other.assert(&c["ok"]["challenge"])).await["ok"].is_object());
+    // Busy, but 30 minutes after the proof: asked again.
+    for i in 0..8 {
+        h.later(VERIFIED_IDLE_SECS - 60);
+        let r = ask(&mut h, &mut sim, 1, 12 + i, "balance", json!({})).await;
+        let lapsed = (i + 1) * (VERIFIED_IDLE_SECS - 60) > VERIFIED_MAX_SECS;
+        assert_eq!(r["auth"] == "open", lapsed, "after {} s: {r}", (i + 1) * (VERIFIED_IDLE_SECS - 60));
+        assert_eq!(lapsed, i == 7);
+    }
+    // Removing it with Face ID works.
+    let c = ask(&mut h, &mut sim, 1, 30, "auth-start", json!({"for": "open"})).await;
+    assert!(ask(&mut h, &mut sim, 1, 31, "auth", other.assert(&c["ok"]["challenge"])).await["ok"].is_object());
+    let c = ask(&mut h, &mut sim, 1, 32, "auth-start", json!({"for": "change"})).await;
+    let r = ask(&mut h, &mut sim, 1, 33, "passkey-remove", json!({"auth": other.assert(&c["ok"]["challenge"])})).await;
+    assert_eq!(r, json!({"id": 33, "ok": {}}));
+    assert!(h.phone.devices()[0].passkey.is_none());
+}
+
+/// Security review L2: a request that was on its way when the phone was removed is refused, and a
+/// phone that had Face ID doesn't fall back to "no passkey, nothing to prove" once its record is gone.
+#[tokio::test]
+async fn a_removed_phone_gets_nothing() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let fid = Authenticator::new(7);
+    assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, false).await["ok"].is_object());
+    // The record goes while the session stays (as when revoke races a request).
+    h.phone.devices.lock().unwrap().devices.clear();
+    let r = ask(&mut h, &mut sim, 1, 3, "balance", json!({})).await;
+    assert_eq!(r, json!({"id": 3, "err": "This phone was removed on the desktop."}));
+    let r = ask(&mut h, &mut sim, 1, 4, "receive", json!({})).await;
+    assert_eq!(r["err"], "This phone was removed on the desktop.");
+}
+
+/// Code review N1: a held send confirmed after the phone's Face ID proof lapsed still reaches the
+/// session that asked, and a session that reconnected hears it once it proves Face ID.
+#[tokio::test]
+async fn a_held_outcome_survives_the_proofs_lapse() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let fid = Authenticator::new(7);
+    assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, false).await["ok"].is_object());
+    let id = h.phone.devices()[0].id.clone();
+    h.phone.set_limit(&id, 0.05).unwrap();
+    let r = ask(&mut h, &mut sim, 1, 11, "send", json!({"address": TO, "amount": 0.06})).await;
+    let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
+    // The walk to the desktop takes over 5 minutes: the proof lapses meanwhile.
+    h.later(VERIFIED_IDLE_SECS + 60);
+    let txid = h.phone.confirm_send(&confirm, true, None).await.unwrap().txid.unwrap();
+    let final_reply = json!({"id": 11, "pending": confirm, "ok": {"txid": txid}});
+    assert_eq!(sim.open(&h.next().await["d"]), final_reply);
+    // The phone reconnects: once it proves Face ID, it hears the outcome again.
+    session(&mut h, &mut sim, 1).await;
+    let c = ask(&mut h, &mut sim, 1, 12, "auth-start", json!({"for": "open"})).await;
+    let f = sim.req(13, "auth", fid.assert(&c["ok"]["challenge"]));
+    h.feed(1, f);
+    assert_eq!(sim.open(&h.next().await["d"]), final_reply);
+    assert_eq!(sim.open(&h.next().await["d"]), json!({"id": 13, "ok": {}}));
 }

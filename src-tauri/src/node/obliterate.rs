@@ -224,7 +224,7 @@ fn remove_item(path: &Path, home: &Path) -> Result<bool, String> {
 }
 
 /// Folders named as setup names the ones it moves aside: siblings of the node's folder named
-/// <name>.old-<digits>. Only those recorded in the settings were moved by setup.
+/// <name>.old-<time>[-n] (`aside_stamp`). Only those recorded in the settings were moved by setup.
 fn look_alikes(datadir: &Path) -> Vec<(String, PathBuf)> {
     let (Some(parent), Some(name)) = (datadir.parent(), datadir.file_name()) else {
         return Vec::new();
@@ -236,8 +236,7 @@ fn look_alikes(datadir: &Path) -> Vec<(String, PathBuf)> {
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            let digits = n.strip_prefix(&prefix)?;
-            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| (n.clone(), e.path()))
+            super::aside_stamp(n.strip_prefix(&prefix)?).then(|| (n.clone(), e.path()))
         })
         .collect();
     found.sort();
@@ -378,7 +377,8 @@ pub fn plan_items(p: &Places) -> Vec<Item> {
         let note = if created {
             "Chain data, your wallet and freebank.conf. FreeBank created this folder."
         } else if marked {
-            "FreeBank didn't create this folder; it may hold a node you run yourself. Tick it only if you're sure."
+            "FreeBank has run a node in this folder but has no record of creating it, so it may also be a node you run \
+             yourself (BitWindow's FreeBank uses the same folder). Tick it to delete it."
         } else if recorded {
             "FreeBank created a folder here once, but its mark (.freebank-node) is gone, so another program may have made this one. It stays."
         } else {
@@ -1185,7 +1185,7 @@ mod tests {
         p.created.clear();
         let node = find(&plan_items(&p), "node").clone();
         assert!(!node.checked && node.allowed);
-        assert!(node.note.contains("didn't create"), "{}", node.note);
+        assert!(node.note.contains("no record of creating it"), "{}", node.note);
 
         // Neither recorded nor marked: can't be ticked, and execute refuses it.
         std::fs::remove_file(p.datadir.join(DATADIR_MARK)).unwrap();

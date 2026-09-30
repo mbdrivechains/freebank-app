@@ -40,13 +40,36 @@
 
   let tag = "";
   let moveAside = false;
+  // An earlier install's folder: "use" it (its blocks, wallet and name) or start "fresh" (moved aside).
+  let earlier: "use" | "fresh" | null = null;
   $: problem = tagProblem(tag);
   // Said right by the Install button whenever it is disabled.
   $: installBlocked = problem
     ? "Fix the name above to continue."
     : datadir?.kind === "other" && !moveAside
       ? "Tick the box above so the old data can be moved aside first."
-      : "";
+      : datadir?.kind === "earlier" && !earlier
+        ? "Choose Use it or Start fresh above."
+        : "";
+
+  function chooseEarlier(c: "use" | "fresh") {
+    earlier = c;
+    // The name goes with the choice, unless it was changed by hand.
+    if (c === "fresh" && datadir?.tag && tag === datadir.tag) tag = info?.suggested_tag ?? tag;
+    if (c === "use" && datadir?.tag && tag === info?.suggested_tag) tag = datadir.tag;
+  }
+
+  // "It holds blocks up to 403, a wallet and the name “Kestrel” on its blocks."
+  function earlierFacts(d: DatadirCheck): string {
+    const parts = [
+      ...(d.height != null ? [`blocks up to ${d.height.toLocaleString()}`] : []),
+      ...(d.has_wallet ? ["a wallet"] : []),
+      ...(d.tag ? [`the name “${d.tag}” on its blocks`] : []),
+    ];
+    if (parts.length === 0) return "";
+    const last = parts.pop();
+    return `It holds ${parts.length ? `${parts.join(", ")} and ${last}` : last}.`;
+  }
 
   let install: InstallProgress | null = null;
   let prog: NodeProgress | null = null;
@@ -160,6 +183,7 @@
   async function showInstall() {
     datadir = await node.datadirCheck();
     moveAside = false;
+    earlier = null;
     cancelledNote = "";
     screen = "install";
   }
@@ -223,7 +247,7 @@
     startError = "";
     cancelledNote = "";
     try {
-      await node.installStart(tag, moveAside);
+      await node.installStart(tag, datadir?.kind === "earlier" ? earlier === "fresh" : moveAside);
     } catch (e) {
       startError = String(e);
       return;
@@ -425,6 +449,25 @@
           wallet stay as they are.
         </p>
       {/if}
+      {#if datadir && datadir.kind === "earlier"}
+        <div class="aside-box" role="radiogroup" aria-label="An earlier FreeBank folder">
+          <div>
+            {datadir.message} {earlierFacts(datadir)}
+            <span class="path"><PathText path={info?.settings.datadir ?? ""} /></span>
+            <label class="earlier-choice">
+              <input type="radio" name="earlier" checked={earlier === "use"} on:change={() => chooseEarlier("use")} />
+              <span><strong>Use it</strong>: carry on from where it was{datadir.has_wallet ? ", with its wallet" : ""}.</span>
+            </label>
+            <label class="earlier-choice">
+              <input type="radio" name="earlier" checked={earlier === "fresh"} on:change={() => chooseEarlier("fresh")} />
+              <span>
+                <strong>Start fresh</strong>: move it aside and sync from the start. Nothing is deleted.
+                <span class="path">Move to <PathText path={datadir.away ?? ""} /></span>
+              </span>
+            </label>
+          </div>
+        </div>
+      {/if}
       <label class="field">
         <span class="field-label">Name on your blocks</span>
         <div class="input-with-btn">
@@ -446,7 +489,7 @@
             <span class="path">Move to <PathText path={datadir.away ?? ""} /></span>
           </span>
         </label>
-      {:else if datadir && datadir.message}
+      {:else if datadir && datadir.message && datadir.kind !== "earlier"}
         <p class="hint">{datadir.message}</p>
       {/if}
 
@@ -571,6 +614,18 @@
 </div>
 
 <style>
+  .earlier-choice {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin-top: 10px;
+    color: var(--text-color);
+    cursor: pointer;
+  }
+  .earlier-choice input {
+    margin-top: 3px;
+    accent-color: var(--accent-color);
+  }
   .unchecked-note {
     margin-bottom: 16px;
   }

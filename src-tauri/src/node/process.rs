@@ -75,6 +75,11 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
     let err = out.try_clone().map_err(|e| e.to_string())?;
 
     let mut cmd = tokio::process::Command::new(&bin);
+    // Its own folder as working folder: not the app's, which in an AppImage is the AppImage's mount and would
+    // keep it mounted as long as the node runs.
+    if Path::new(&s.datadir).is_dir() {
+        cmd.current_dir(&s.datadir);
+    }
     cmd.arg(format!("-datadir={}", s.datadir))
         .arg("-server=1")
         .arg("-mainchaintransport=enforcer")
@@ -182,21 +187,47 @@ pub async fn managed_pids(mgr: &NodeManager) -> Vec<u32> {
     pids
 }
 
-/// The last line of debug.log, without its timestamp, for the "warming up" screen.
-fn last_log_line(datadir: &Path) -> Option<String> {
+/// Lines freebankd logs for every block that read like errors but aren't (v0.2.17,
+/// validation.cpp:8886).
+const LOG_NOISE: &[&str] = &["Failed to get latest withdrawal bundle from ldb"];
+
+/// The last line of debug.log worth showing, without its timestamp: what the node is doing, for
+/// the "warming up" screen, or once it has stopped, why. Skips freebankd's per-block noise. After
+/// a stop ("Shutdown: In progress..." with no start since) it is the "Error: …" line before the
+/// shutdown, or nothing for a clean stop.
+pub(crate) fn last_log_line(datadir: &Path) -> Option<String> {
     let mut f = std::fs::File::open(datadir.join("debug.log")).ok()?;
     let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(4096))).ok()?;
+    f.seek(SeekFrom::Start(len.saturating_sub(8192))).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
     let text = String::from_utf8_lossy(&buf);
-    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
     // "2026-09-26 10:00:00 init message: Loading…" -> "Loading…"
-    let b = line.as_bytes();
-    let stamped = b.len() > 20 && b[4] == b'-' && b[10] == b' ' && b[13] == b':' && b[19] == b' ';
-    let msg = if stamped { &line[20..] } else { line };
-    let msg = msg.strip_prefix("init message: ").unwrap_or(msg);
-    Some(msg.chars().take(160).collect())
+    let msgs: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let b = line.as_bytes();
+            let stamped = b.len() > 20 && b[4] == b'-' && b[10] == b' ' && b[13] == b':' && b[19] == b' ';
+            let msg = if stamped { &line[20..] } else { line };
+            msg.strip_prefix("init message: ").unwrap_or(msg)
+        })
+        .collect();
+    let started = msgs.iter().rposition(|m| m.starts_with("FreeBank version v"));
+    let stopped = msgs.iter().rposition(|m| m.starts_with("Shutdown: In progress"));
+    match stopped {
+        // A reason may be long ("… Restart with -reindex …" comes late in freebankd's).
+        Some(s) if started.map_or(true, |b| s > b) => msgs[started.map_or(0, |b| b + 1)..s]
+            .iter()
+            .rev()
+            .find(|m| m.starts_with("Error: "))
+            .map(|m| m.chars().take(400).collect()),
+        _ => msgs
+            .iter()
+            .rev()
+            .find(|m| !LOG_NOISE.iter().any(|n| m.contains(n)))
+            .map(|m| m.chars().take(160).collect()),
+    }
 }
 
 /// If our child has exited, forget it and say why (once; later polls read `last_exit`). The same
@@ -313,6 +344,8 @@ pub struct NodeStatus {
     pub enforcer: String,
     pub release: Option<String>,
     pub p2p_port: u16,
+    /// False when freebank.conf says listen=0: no incoming peers.
+    pub listens: bool,
     pub versions: Versions,
 }
 
@@ -422,6 +455,8 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         enforcer: s.enforcer.clone(),
         release: s.installed_tag.clone(),
         p2p_port: s.p2p_port,
+        listens: std::fs::read_to_string(datadir.join("freebank.conf"))
+            .map_or(true, |c| crate::security::parse_conf(&c).listen != Some(false)),
         versions: Versions {
             app: super::APP_VERSION.to_string(),
             ..Default::default()
@@ -607,6 +642,33 @@ pub async fn delete_chain_data(mgr: &NodeManager) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The warm-up line skips freebankd's per-block noise; after a stop it is the error, or nothing
+    /// (not "Shutdown: done", which a protect stage used to show).
+    #[test]
+    fn the_log_line_skips_noise_and_shutdown() {
+        let d = std::env::temp_dir().join(format!("fblogline-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let log = |lines: &[&str]| {
+            let text: String = lines.iter().map(|l| format!("2026-09-29 10:48:47 {}\n", l)).collect();
+            std::fs::write(d.join("debug.log"), format!("\n\n\n\n{}", text)).unwrap();
+            last_log_line(&d)
+        };
+        let start = "FreeBank version v0.2.17.0-2afa30c (release build)";
+        let tip = "UpdateTip: new best=19f4 height=402 progress=1.000000";
+        let noise = "ConnectBlock: Failed to get latest withdrawal bundle from ldb: 0000!";
+        let error = "Error: This datadir's undo data (blocks/rev*.dat) is record format 1, but this build reads and writes \
+                     format 2. Restart with -reindex to regenerate it (-reindex-chainstate is NOT sufficient).";
+        assert_eq!(log(&[start, "init message: Loading block index…"]).as_deref(), Some("Loading block index…"));
+        assert_eq!(log(&[start, tip, noise]).as_deref(), Some(tip));
+        let failed = [start, error, "Shutdown: In progress...", "net thread exit", "Shutdown: done"];
+        assert_eq!(log(&failed).as_deref(), Some(error));
+        assert_eq!(log(&[start, tip, noise, "Shutdown: In progress...", "Shutdown: done"]), None);
+        // Started again since: the new run's line, not the old error.
+        let again = [start, error, "Shutdown: In progress...", "Shutdown: done", start, "init message: Verifying blocks…"];
+        assert_eq!(log(&again).as_deref(), Some("Verifying blocks…"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 
     #[tokio::test]
     async fn failed_start_drops_the_old_exit() {

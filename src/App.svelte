@@ -35,6 +35,9 @@
   import { clearReceipts, dismissReceipt, receipts, showReceipt } from "./lib/receipts";
   // v0.2.0 panels: the Security card and Home's red items, the Deposit panel, the Receive QR code
   import SecuritySettings from "./components/SecuritySettings.svelte";
+  import HelpSettings from "./components/HelpSettings.svelte";
+  import ReportDialog from "./components/ReportDialog.svelte";
+  import { openReport, reportDraft } from "./lib/report";
   import SecurityAlerts from "./components/SecurityAlerts.svelte";
   import DepositPanel from "./components/DepositPanel.svelte";
   import QrCode from "./components/QrCode.svelte";
@@ -575,6 +578,17 @@
     generatingAddress = false;
   }
 
+  // The Mac's Help menu: "Report a Problem or Suggest Something…" (src-tauri/src/lib.rs).
+  onMount(() => {
+    if (isPWA) return;
+    let stop: (() => void) | null = null;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("report-open", () => openReport("problem")))
+      .then((u) => (stop = u))
+      .catch(() => {});
+    return () => stop?.();
+  });
+
   onMount(async () => {
     // Prefill from a previously saved connection, then infer the mode from the host.
     const saved = getSavedConfig();
@@ -773,7 +787,8 @@
           Bills
         </button>
       {/if}
-      <button class:active={currentView === "send"} on:click={() => (currentView = "send")}>
+      <!-- Send shows "Available" and Max from the balance: fresh when it opens (found in the coin tests). -->
+      <button class:active={currentView === "send"} on:click={() => { currentView = "send"; refresh(); }}>
         Send
       </button>
       <button class:active={currentView === "receive"} on:click={() => (currentView = "receive")}>
@@ -1276,9 +1291,11 @@
         </div>
         {#if !isPWA}<PhoneSettings />{/if}
       {/if}
-      {#if !isPWA}<SecuritySettings />{/if}
+      {#if !isPWA}<SecuritySettings /><HelpSettings />{/if}
     {/if}
   {/if}
+
+  {#if $reportDraft}<ReportDialog />{/if}
 
   {#if $versions}
     <footer class="app-foot">

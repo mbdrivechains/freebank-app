@@ -24,6 +24,7 @@
     loadProtection,
     threePositions,
     walletSeed,
+    wordsIn,
     type Moved,
     type MovePlan,
     type Protection,
@@ -327,6 +328,28 @@
     step = "confirm";
   }
 
+  // Pasting all the words into any box fills the three asked for (a paste of one word is left alone).
+  // Not straight from FreeBank's own copy, though: that proves no lasting backup, since the copy is
+  // cleared after a minute (security review L5). Leaving the window after copying (to paste them
+  // into notes or a password manager) counts as saving them.
+  let copiedHere = false;
+  function onCopied() {
+    copiedHere = true;
+  }
+  function pasteWords(e: ClipboardEvent) {
+    const got = wordsIn(e.clipboardData?.getData("text/plain") ?? "");
+    // Exactly the 24 words: with a title or a stray word along, every position would shift (code review 9).
+    if (got.length !== WORD_COUNT) return;
+    e.preventDefault();
+    if (copiedHere) {
+      confirmError =
+        "That is FreeBank's own copy, which it clears in a minute. Paste the words into your notes or password manager first, then copy them from there, or type the three words.";
+      return;
+    }
+    confirmError = "";
+    answers = positions.map((p) => got[p - 1] ?? "");
+  }
+
   async function checkAnswers() {
     const wrong = positions.filter((pos, i) => answers[i].trim().toLowerCase() !== words[pos - 1]);
     if (wrong.length) {
@@ -442,7 +465,7 @@
   }
 </script>
 
-<svelte:window on:keydown={onKey} />
+<svelte:window on:keydown={onKey} on:blur={() => (copiedHere = false)} />
 
 <div class="wf-back">
   <div class="wf card" role="dialog" aria-modal="true" aria-labelledby="wf-title">
@@ -517,7 +540,7 @@
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <button class="link-btn" on:click={() => { pass = ""; step = "passphrase"; }} disabled={busy}>← Back</button>
     {:else if step === "words-in"}
-      <p class="wf-lede">All {WORD_COUNT} words, in order, with spaces or new lines between them.</p>
+      <p class="wf-lede">All {WORD_COUNT} words, in order, with spaces or new lines between them. A numbered list works too.</p>
       <textarea
         class="wf-words"
         bind:value={typed}
@@ -600,7 +623,7 @@
           <button class="secondary" on:click={() => (hidden = false)}>Show them</button>
         </div>
       {:else}
-        <RecoveryWords {words} />
+        <RecoveryWords {words} on:copied={onCopied} />
       {/if}
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <p class="hint">
@@ -611,12 +634,12 @@
         <button on:click={wroteThemDown} disabled={hidden}>I've written them down</button>
       </div>
     {:else if step === "confirm"}
-      <p class="wf-lede">To be sure your paper is right, type these three words from it.</p>
+      <p class="wf-lede">To be sure your paper (or copy) is right, type these three words from it, or paste all {WORD_COUNT}.</p>
       <form class="wf-form" on:submit|preventDefault={checkAnswers}>
         {#each positions as pos, i}
           <label class="wf-answer">
             Word {pos}
-            <input type="text" bind:value={answers[i]} autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <input type="text" bind:value={answers[i]} on:paste={pasteWords} autocomplete="off" autocapitalize="off" spellcheck="false" />
           </label>
         {/each}
         {#if confirmError}<p class="soft-error" role="alert">{confirmError}</p>{/if}

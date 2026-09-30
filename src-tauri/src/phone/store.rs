@@ -101,6 +101,20 @@ pub struct Device {
     /// Sent without asking the desktop on `spent_day`.
     #[serde(default)]
     pub spent_sats: u64,
+    /// Face ID: the phone's passkey, once it added one (PROTOCOL.md, "Face ID: passkeys").
+    #[serde(default)]
+    pub passkey: Option<Passkey>,
+}
+
+/// A phone's passkey: its public key and credential id (b64u), whether each send asks for it too,
+/// and the authenticator's signature counter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Passkey {
+    pub pk: String,
+    pub cred: String,
+    pub sends: bool,
+    pub count: u32,
+    pub added: u64,
 }
 
 impl Device {
@@ -304,6 +318,7 @@ mod tests {
                 limit_sats: limit,
                 spent_day: 0,
                 spent_sats: 0,
+                passkey: None,
             }],
         }
     }

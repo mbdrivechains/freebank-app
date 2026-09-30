@@ -59,8 +59,9 @@
   </label>
   <p class="hint">
     {#if keepRunning}
-      Your node keeps running in the background and stays in sync. Open FreeBank to stop it. Your phone can reach it only
-      while FreeBank is open.
+      Your node keeps running in the background and stays in sync. Open FreeBank to stop it. Your phone reaches it while
+      FreeBank is open, or always, with "Keep my phone connected when FreeBank is closed" (Phone). Turning this off turns
+      that off too.
     {:else}
       FreeBank stops its node when you close the app.
     {/if}

@@ -73,6 +73,84 @@ pub fn start(
     }
 }
 
+/// What the app found at its start: the background part it took the phone link back from (when
+/// that had started, unix seconds), or why it couldn't (background.rs, `take_back`).
+pub struct PhoneBackground(pub Result<Option<u64>, String>);
+
+#[derive(Serialize)]
+pub struct KeepInfo {
+    /// "Keep your phone connected when FreeBank is closed".
+    pub keep: bool,
+    /// Asked already (once, after the first phone pairs).
+    pub asked: bool,
+    /// The app took the link back at its start from a background part running since then.
+    pub took_back: Option<u64>,
+    pub take_back_error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn phone_keep_info(
+    mgr: State<'_, Arc<crate::node::NodeManager>>,
+    bg: State<'_, PhoneBackground>,
+) -> Result<KeepInfo, String> {
+    let s = mgr.settings.lock().await.clone();
+    let (took_back, take_back_error) = match &bg.0 {
+        Ok(t) => (*t, None),
+        Err(e) => (None, Some(e.clone())),
+    };
+    Ok(KeepInfo { keep: s.keep_phone, asked: s.keep_phone_asked, took_back, take_back_error })
+}
+
+/// The switch, and the question after the first pairing. On also keeps the node running.
+#[tauri::command]
+pub async fn phone_keep_set(mgr: State<'_, Arc<crate::node::NodeManager>>, on: bool) -> Result<(), String> {
+    mgr.still_here()?;
+    let mut s = mgr.settings.lock().await.clone();
+    s.keep_phone = on;
+    s.keep_phone_asked = true;
+    if on {
+        s.keep_running = true;
+    }
+    mgr.save_settings(s).await
+}
+
+/// "Keep the phone connected" in the close notice: start the background part with the phone-send
+/// passphrase (if on), then close. The node keeps running ("Keep running" is on with this setting).
+#[tauri::command]
+pub async fn phone_keep_connected_quit(
+    app: AppHandle,
+    mgr: State<'_, Arc<crate::node::NodeManager>>,
+    phone: State<'_, PhoneState>,
+) -> Result<(), String> {
+    let p = phone.get()?;
+    super::background::spawn(&mgr.app_dir, p.passphrase_for_handover())?;
+    super::background::HANDED_OVER.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.exit(0);
+    Ok(())
+}
+
+/// At quit without the close notice (⌘Q, the Dock's or the menu's Quit on a Mac, code review 1):
+/// with "Keep my phone connected" on, a phone paired and the node left running, start the background
+/// part as the notice's "Keep the phone connected" would. Not after that was done already, after
+/// "Stop everything" (the node is stopped), or after Obliterate.
+pub fn keep_at_exit(mgr: &crate::node::NodeManager, phone: &PhoneState) {
+    use std::sync::atomic::Ordering;
+    use crate::node::{background as node_bg, process};
+    if super::background::HANDED_OVER.load(Ordering::SeqCst) || mgr.obliterated.load(Ordering::SeqCst) {
+        return;
+    }
+    let Ok(p) = &phone.0 else { return };
+    let keep = mgr.settings.try_lock().is_ok_and(|s| s.keep_phone && s.keep_running);
+    if !keep || !p.has_phones() {
+        return;
+    }
+    let node_stays = node_bg::adopted_running(mgr)
+        || tauri::async_runtime::block_on(async { process::child_alive(mgr).await && node_bg::outlives_now(mgr) });
+    if node_stays && super::background::spawn(&mgr.app_dir, p.passphrase_for_handover()).is_ok() {
+        super::background::HANDED_OVER.store(true, Ordering::SeqCst);
+    }
+}
+
 #[derive(Serialize)]
 pub struct PairStart {
     pub url: String,
@@ -103,6 +181,9 @@ pub struct DeviceView {
     /// ECX of that sent today
     pub spent_today: f64,
     pub online: bool,
+    /// Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too.
+    pub face_id: bool,
+    pub face_id_sends: bool,
 }
 
 #[tauri::command]
@@ -115,6 +196,8 @@ pub fn phone_devices(phone: State<'_, PhoneState>) -> Result<Vec<DeviceView>, St
             online: p.online(&d.id),
             limit: to_ecx(d.limit_sats),
             spent_today: to_ecx(d.spent_on(today)),
+            face_id: d.passkey.is_some(),
+            face_id_sends: d.passkey.as_ref().is_some_and(|k| k.sends),
             id: d.id,
             name: d.name,
             added: d.added,
@@ -126,6 +209,12 @@ pub fn phone_devices(phone: State<'_, PhoneState>) -> Result<Vec<DeviceView>, St
 #[tauri::command]
 pub fn phone_revoke(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
     phone.get()?.revoke(&id)
+}
+
+/// "Remove Face ID": the phone's passkey goes (a phone that lost it can then open without it).
+#[tauri::command]
+pub fn phone_remove_passkey(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
+    phone.get()?.remove_passkey(&id)
 }
 
 #[tauri::command]

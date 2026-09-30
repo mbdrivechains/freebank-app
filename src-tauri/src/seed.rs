@@ -96,13 +96,28 @@ pub fn words(entropy: &[u8; 32]) -> Zeroizing<Vec<String>> {
 }
 
 /// Words as typed or pasted: lower case, split on spaces, commas and line breaks, with list numbering
-/// ("1.", "12)") dropped.
+/// ("1.", "12)", "(3)", "4:") dropped. When every word has a number and the numbers are 1 to n, the
+/// words go in that order: a table of words copied out of Notes reads across its rows, not down.
 fn tokens(text: &str) -> Vec<String> {
-    text.split(|c: char| c.is_whitespace() || c == ',')
-        .map(|t| t.trim().to_lowercase())
-        .filter(|t| !t.is_empty())
-        .filter(|t| !t.trim_end_matches(['.', ')']).chars().all(|c| c.is_ascii_digit()))
-        .collect()
+    let mut numbered: Vec<(Option<usize>, String)> = Vec::new();
+    let mut number = None;
+    for t in text.split(|c: char| c.is_whitespace() || c == ',') {
+        let t = t.trim().to_lowercase();
+        let n = t.trim_start_matches(['(', '#']).trim_end_matches(['.', ')', ':']);
+        if t.is_empty() {
+            continue;
+        } else if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
+            number = n.parse().ok();
+        } else {
+            numbered.push((number.take(), t));
+        }
+    }
+    let mut order: Vec<usize> = numbered.iter().filter_map(|(n, _)| *n).collect();
+    order.sort_unstable();
+    if order.len() == numbered.len() && order.iter().enumerate().all(|(i, &n)| n == i + 1) {
+        numbered.sort_by_key(|(n, _)| *n);
+    }
+    numbered.into_iter().map(|(_, t)| t).collect()
 }
 
 /// What the restore screen says while the words are typed.
@@ -501,6 +516,18 @@ pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn numbered_words_go_by_their_numbers() {
+        let w = |t: &str| super::tokens(t).join(" ");
+        assert_eq!(w("abandon ability, able\nabout"), "abandon ability able about");
+        // Copied back out of a table in Notes: across the rows, numbers kept.
+        assert_eq!(w("1. abandon\t3. able\n2. ability\t4. about"), "abandon ability able about");
+        assert_eq!(w("(2) ability #1 abandon 3: able"), "abandon ability able");
+        // Numbers that don't run 1 to n, or a word without one: the words stay as they came.
+        assert_eq!(w("1. abandon 3. ability"), "abandon ability");
+        assert_eq!(w("2. ability abandon"), "ability abandon");
+    }
+
     use super::*;
     use std::str::FromStr;
 

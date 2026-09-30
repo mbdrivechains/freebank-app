@@ -1,0 +1,30 @@
+name: Problem
+description: Something in the FreeBank app doesn't work as it should.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for telling us. Issues here are public: leave out addresses, amounts, transaction ids, file paths
+        and anything else private. A security problem goes privately instead: Security, then "Report a vulnerability".
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what FreeBank did instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: FreeBank app version
+      placeholder: "0.2.1"
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: "macOS 26.0 (aarch64)"
+  - type: input
+    id: node
+    attributes:
+      label: FreeBank node version
+      placeholder: "v0.2.17"

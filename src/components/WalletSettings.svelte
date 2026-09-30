@@ -54,6 +54,10 @@
 
   type Open = "change" | "words" | "xprv" | "file" | null;
   let open: Open = null;
+  const reveals: { which: "words" | "xprv"; title: string; text: string }[] = [
+    { which: "words", title: "Show recovery words", text: `The ${WORD_COUNT} words FreeBank keeps, locked with your passphrase.` },
+    { which: "xprv", title: "Show xprv", text: "For experts: the wallet's master extended private key, to export." },
+  ];
   function toggle(what: Open) {
     hideSecrets();
     open = open === what ? null : what;
@@ -255,7 +259,7 @@
       <div class="maint">
         <div class="maint-text">
           <strong>Back up</strong>
-          <span class="muted small">A copy of the wallet file in your Documents folder{info.encrypted ? ", locked with your passphrase" : ""}.</span>
+          <span class="muted small">A copy of the wallet file in your Documents folder (your home folder if there isn't one){info.encrypted ? ", locked with your passphrase" : ""}.</span>
         </div>
         <button class="secondary" on:click={backup} disabled={backingUp}>{backingUp ? "Backing up…" : "Back up"}</button>
       </div>
@@ -293,53 +297,49 @@
       {/if}
 
       {#if info.app_seed !== "none"}
-        <div class="maint">
-          <div class="maint-text">
-            <strong>Show recovery words</strong>
-            <span class="muted small">The {WORD_COUNT} words FreeBank keeps, locked with your passphrase.</span>
+        <!-- Each row's box opens right under it. -->
+        {#each reveals as r (r.which)}
+          <div class="maint">
+            <div class="maint-text">
+              <strong>{r.title}</strong>
+              <span class="muted small">{r.text}</span>
+            </div>
+            <button class="secondary" on:click={() => toggle(r.which)} disabled={open === r.which}>Show…</button>
           </div>
-          <button class="secondary" on:click={() => toggle("words")} disabled={open === "words"}>Show…</button>
-        </div>
-        <div class="maint">
-          <div class="maint-text">
-            <strong>Show xprv</strong>
-            <span class="muted small">For experts: the wallet's master extended private key, to export.</span>
-          </div>
-          <button class="secondary" on:click={() => toggle("xprv")} disabled={open === "xprv"}>Show…</button>
-        </div>
-        {#if open === "words" || open === "xprv"}
-          <div class="confirm-box">
-            {#if open === "words" ? shownWords.length === 0 : !shownXprv}
-              <form class="reveal-form" on:submit|preventDefault={() => reveal(open === "xprv" ? "xprv" : "words")}>
-                <PassphraseFields bind:this={revealFields} bind:value={revealPass} bind:valid={revealOk} twice={false} label="Your wallet's passphrase" />
-                {#if revealError}<p class="soft-error" role="alert">{revealError}</p>{/if}
-                <div class="row-actions">
-                  <button type="submit" disabled={!revealOk || revealing}>{revealing ? "Opening…" : open === "words" ? "Show my words" : "Show the xprv"}</button>
-                  <button type="button" class="secondary" on:click={() => toggle(null)} disabled={revealing}>Cancel</button>
-                </div>
-              </form>
-            {:else}
-              {#if matches === false}
-                <p class="soft-error">These belong to another seed than your wallet has now.</p>
-              {/if}
-              {#if open === "words"}
-                <RecoveryWords words={shownWords} />
-                <p>Anyone who has these words can take your coins. Write them down; never type them into a website.</p>
+          {#if open === r.which}
+            <div class="confirm-box">
+              {#if open === "words" ? shownWords.length === 0 : !shownXprv}
+                <form class="reveal-form" on:submit|preventDefault={() => reveal(open === "xprv" ? "xprv" : "words")}>
+                  <PassphraseFields bind:this={revealFields} bind:value={revealPass} bind:valid={revealOk} twice={false} label="Your wallet's passphrase" />
+                  {#if revealError}<p class="soft-error" role="alert">{revealError}</p>{/if}
+                  <div class="row-actions">
+                    <button type="submit" disabled={!revealOk || revealing}>{revealing ? "Opening…" : open === "words" ? "Show my words" : "Show the xprv"}</button>
+                    <button type="button" class="secondary" on:click={() => toggle(null)} disabled={revealing}>Cancel</button>
+                  </div>
+                </form>
               {:else}
-                <!-- svelte-ignore a11y-no-static-element-interactions -->
-                <div class="xprv mono" on:copy|preventDefault on:cut|preventDefault on:contextmenu|preventDefault>{shownXprv}</div>
-                <p>
-                  The master extended private key freebankd derives from this wallet's HD seed, for export only: it can't
-                  be used to restore a FreeBank wallet, but other tools can read this wallet's addresses from it
-                  (m/0'/0'/k' to receive, m/0'/1'/k' for change). Anyone who has it can take your coins.
-                </p>
+                {#if matches === false}
+                  <p class="soft-error">These belong to another seed than your wallet has now.</p>
+                {/if}
+                {#if open === "words"}
+                  <RecoveryWords words={shownWords} />
+                  <p>Anyone who has these words can take your coins. Write them down; never type them into a website.</p>
+                {:else}
+                  <!-- svelte-ignore a11y-no-static-element-interactions -->
+                  <div class="xprv mono" on:copy|preventDefault on:cut|preventDefault on:contextmenu|preventDefault>{shownXprv}</div>
+                  <p>
+                    The master extended private key freebankd derives from this wallet's HD seed, for export only: it can't
+                    be used to restore a FreeBank wallet, but other tools can read this wallet's addresses from it
+                    (m/0'/0'/k' to receive, m/0'/1'/k' for change). Anyone who has it can take your coins.
+                  </p>
+                {/if}
+                <div class="row-actions">
+                  <button class="secondary" on:click={() => toggle(null)}>Hide</button>
+                </div>
               {/if}
-              <div class="row-actions">
-                <button class="secondary" on:click={() => toggle(null)}>Hide</button>
-              </div>
-            {/if}
-          </div>
-        {/if}
+            </div>
+          {/if}
+        {/each}
       {/if}
 
       {#if plan && plan.coins > 0}

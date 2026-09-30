@@ -3,24 +3,44 @@
   // politely (role status), an error at once (role alert). The parent decides when it goes:
   //   {#if error}<Notice kind="error" message={error} on:dismiss={() => (error = "")} />{/if}
   // Richer content goes in the default slot instead of `message`.
+  // An error given as `message` offers "Report this", which opens the report dialog with it (lib/report.ts).
   import { createEventDispatcher } from "svelte";
+  import { api } from "../lib/api";
+  import { openReport } from "../lib/report";
 
   export let kind: "info" | "error" = "info";
   export let message = "";
   /** Show the × that dispatches `dismiss`. */
   export let dismissible = true;
+  /** Offer "Report this" on an error. */
+  export let reportable = true;
+
+  const canReport = !api.isPWA();
 
   const dispatch = createEventDispatcher<{ dismiss: void }>();
 </script>
 
 <div class="notice notice-{kind}" role={kind === "error" ? "alert" : "status"}>
-  <div class="notice-text"><slot>{message}</slot></div>
+  <div class="notice-text">
+    <slot>{message}</slot>
+    {#if kind === "error" && message && reportable && canReport}
+      <button
+        type="button"
+        class="link-btn notice-report"
+        on:click={() => openReport("problem", `FreeBank said: “${message}”\n\nWhat I was doing: `)}>Report this</button
+      >
+    {/if}
+  </div>
   {#if dismissible}
     <button type="button" class="ghost notice-x" aria-label="Dismiss" on:click={() => dispatch("dismiss")}>×</button>
   {/if}
 </div>
 
 <style>
+  .notice-report {
+    margin-left: 6px;
+    font-size: 12.5px;
+  }
   .notice {
     display: flex;
     align-items: flex-start;

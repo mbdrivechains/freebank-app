@@ -545,29 +545,47 @@ pub fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
 /// The config stage's first step. The data folder was looked at before the download, which takes a
 /// while: another program (BitWindow's FreeBank uses the same default folder) may have started a
 /// node in it or filled it since. So it is looked at again, and nothing is changed unless it is as
-/// the user saw it (`seen`) and no node holds it. Then an "other" folder is moved aside, as agreed:
-/// only now, past the last point "Cancel" can stop the install, so a cancel or a failed download
-/// never leaves it moved. Returns where it went.
-fn settle_datadir(datadir: &Path, seen: &detect::DatadirCheck) -> Result<Option<String>, String> {
+/// the user saw it (`seen`) and no node holds it. Then an "other" folder, or an "earlier" one the
+/// user chose to start afresh from (`move_aside`), is moved aside, as agreed: only now, past the last
+/// point "Cancel" can stop the install, so a cancel or a failed download never leaves it moved.
+/// Returns where it went.
+fn settle_datadir(
+    datadir: &Path,
+    seen: &detect::DatadirCheck,
+    created: &[String],
+    move_aside: bool,
+) -> Result<Option<String>, String> {
     if let Some(u) = super::lock::in_use(datadir, &[]) {
         return Err(format!(
             "{} Nothing was changed. Stop it first, or choose another data folder under Advanced.",
             u.say()
         ));
     }
-    let now = detect::check_datadir(datadir);
+    let now = detect::setup_check(datadir, created);
     if now.kind != seen.kind || now.has_wallet != seen.has_wallet {
         return Err(format!(
             "{} changed while FreeBank was downloading, so nothing was changed. Go back to look at it again, then install.",
             datadir.display()
         ));
     }
-    if seen.kind != "other" {
+    if !(seen.kind == "other" || (seen.kind == "earlier" && move_aside)) {
         return Ok(None);
     }
     let away = seen.away.clone().unwrap_or_default();
     std::fs::rename(datadir, &away).map_err(|e| format!("Couldn't move {} aside: {}", datadir.display(), e))?;
     Ok(Some(away))
+}
+
+/// What an install records about its data folder: one it created, or an earlier install's it was
+/// told to use, is FreeBank's own (Obliterate ticks it); one it moved aside is called that.
+fn record_folder(s: &mut super::Settings, datadir: &str, creates_datadir: bool, moved: Option<String>) {
+    if creates_datadir {
+        s.add_created(datadir);
+    }
+    // Recorded, so Obliterate calls only these (and a restore's) "moved aside by FreeBank".
+    if let Some(away) = moved {
+        s.moved_aside.push(away);
+    }
 }
 
 fn set(p: &Arc<std::sync::Mutex<InstallProgress>>, f: impl FnOnce(&mut InstallProgress)) {
@@ -600,9 +618,10 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
     if let Some(u) = super::lock::in_use(&datadir, &[]) {
         return Err(format!("{} Stop it first, or choose another data folder under Advanced.", u.say()));
     }
-    let dd = detect::check_datadir(&datadir);
+    let dd = detect::setup_check(&datadir, &settings.created());
     // Missing, empty or only leftovers, or moved aside at the config stage: this install creates
-    // the folder, and it is recorded so "Obliterate" may remove it. A folder in use stays unrecorded.
+    // the folder, and it is recorded so "Obliterate" may remove it. So is an earlier install's folder
+    // the user chose to use. Another folder in use (a beta node's) stays unrecorded.
     let creates_datadir = dd.kind != "ours";
     if dd.kind == "other" && !move_aside {
         return Err(dd.message);
@@ -636,20 +655,14 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
         s.stage = "config".into();
         s.note = None;
     });
-    let moved = settle_datadir(&datadir, &dd)?;
+    let moved = settle_datadir(&datadir, &dd, &settings.created(), move_aside)?;
     std::fs::create_dir_all(&datadir).map_err(|e| e.to_string())?;
     std::fs::write(datadir.join(DATADIR_MARK), b"").map_err(|e| e.to_string())?;
     write_conf(&datadir, tag_name)?;
     let mut s2 = mgr.settings.lock().await.clone();
     s2.installed_tag = Some(tag.clone());
     s2.grpcurl = Some(grpcurl.to_string_lossy().into_owned());
-    if creates_datadir {
-        s2.add_created(&settings.datadir);
-    }
-    // Recorded, so Obliterate calls only these (and a restore's) "moved aside by FreeBank".
-    if let Some(away) = moved {
-        s2.moved_aside.push(away);
-    }
+    record_folder(&mut s2, &settings.datadir, creates_datadir, moved);
     mgr.save_settings(s2).await?;
     let _ = std::fs::remove_dir_all(&tmp);
 
@@ -906,13 +919,13 @@ mod tests {
         // Missing when the user looked, and still missing: nothing to move.
         let seen = detect::check_datadir(&datadir);
         assert_eq!(seen.kind, "new");
-        assert_eq!(settle_datadir(&datadir, &seen), Ok(None));
+        assert_eq!(settle_datadir(&datadir, &seen, &[], true), Ok(None));
 
         // Missing then, but another program's node filled it during the download: left alone.
         std::fs::create_dir_all(datadir.join("blocks")).unwrap();
         std::fs::write(datadir.join("blocks/blk00000.dat"), b"b").unwrap();
         std::fs::write(datadir.join("wallet.dat"), b"theirs").unwrap();
-        let err = settle_datadir(&datadir, &seen).unwrap_err();
+        let err = settle_datadir(&datadir, &seen, &[], true).unwrap_err();
         assert!(err.contains("changed while FreeBank was downloading"), "{}", err);
         assert!(datadir.join("wallet.dat").exists());
 
@@ -921,14 +934,43 @@ mod tests {
         assert_eq!(seen.kind, "other");
         // ...but a node has started in it meanwhile: nothing is moved.
         let node = FakeNode::spawn(&datadir, free_port(), Opts::default());
-        let err = settle_datadir(&datadir, &seen).unwrap_err();
+        let err = settle_datadir(&datadir, &seen, &[], true).unwrap_err();
         assert!(err.contains(&format!("process {}", node.pid())) && err.contains("Nothing was changed"), "{}", err);
         assert!(datadir.join("wallet.dat").exists());
         drop(node);
         // The node left its lock and cookie behind (leftovers): the folder is still as seen.
-        let away = settle_datadir(&datadir, &seen).unwrap().unwrap();
+        let away = settle_datadir(&datadir, &seen, &[], true).unwrap().unwrap();
+        assert_eq!(Some(away.clone()), seen.away);
+        assert!(Path::new(&away).join("wallet.dat").exists() && !datadir.exists());
+
+        // An earlier install's folder: kept when the user chose "Use it", moved for "Start fresh".
+        std::fs::create_dir_all(&datadir).unwrap();
+        std::fs::write(datadir.join(DATADIR_MARK), b"").unwrap();
+        std::fs::write(datadir.join("wallet.dat"), b"earlier").unwrap();
+        let seen = detect::setup_check(&datadir, &[]);
+        assert_eq!(seen.kind, "earlier");
+        assert_eq!(settle_datadir(&datadir, &seen, &[], false), Ok(None));
+        assert!(datadir.join("wallet.dat").exists());
+        let away = settle_datadir(&datadir, &seen, &[], true).unwrap().unwrap();
         assert_eq!(Some(away.clone()), seen.away);
         assert!(Path::new(&away).join("wallet.dat").exists() && !datadir.exists());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Code review 15: what Setup records for an earlier install's folder, used or started afresh,
+    /// and nothing for a beta node's folder it only uses.
+    #[test]
+    fn what_setup_records_about_the_folder() {
+        let dir = "/x/.freebank";
+        let mut s = super::super::Settings::default();
+        record_folder(&mut s, dir, "earlier" != "ours", None); // "Use it"
+        assert_eq!((s.created(), s.moved_aside.len()), (vec![dir.to_string()], 0));
+        let mut s = super::super::Settings::default();
+        record_folder(&mut s, dir, true, Some("/x/.freebank.old-1790000000".into())); // "Start fresh"
+        assert_eq!(s.created(), vec![dir.to_string()]);
+        assert_eq!(s.moved_aside, vec!["/x/.freebank.old-1790000000".to_string()]);
+        let mut s = super::super::Settings::default();
+        record_folder(&mut s, dir, "ours" != "ours", None); // someone else's beta node folder
+        assert!(s.created().is_empty() && s.moved_aside.is_empty());
     }
 }

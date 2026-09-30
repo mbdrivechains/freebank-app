@@ -12,6 +12,9 @@ export interface PhoneDevice {
   limit: number;
   spent_today: number;
   online: boolean;
+  /** Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too. */
+  face_id: boolean;
+  face_id_sends: boolean;
 }
 
 export interface PairAsk {
@@ -68,16 +71,33 @@ export interface PhoneSend {
   name: string;
   address: string;
   amount: number;
-  /** "sent" | "held" | "declined" | "failed" | "expired" | "cancelled" */
+  /** "sent" | "held" | "declined" | "failed" | "expired" | "cancelled" | "refused" (FreeBank was closed) */
   result: string;
   detail: unknown;
 }
 
+/** "Keep your phone connected when FreeBank is closed" (src-tauri/src/phone/background.rs). */
+export interface KeepInfo {
+  keep: boolean;
+  /** Asked already (once, after the first phone pairs). */
+  asked: boolean;
+  /** At this start the app took the link back from a background part running since then (unix s). */
+  took_back: number | null;
+  take_back_error: string | null;
+}
+
 export const phone = {
+  keepInfo: () => tauriInvoke("phone_keep_info") as Promise<KeepInfo>,
+  /** On also keeps the node running. */
+  keepSet: (on: boolean) => tauriInvoke("phone_keep_set", { on }) as Promise<void>,
+  /** The close notice's "Keep the phone connected": start the background part, then close. */
+  keepConnectedQuit: () => tauriInvoke("phone_keep_connected_quit") as Promise<void>,
   pairStart: () => tauriInvoke("phone_pair_start") as Promise<{ url: string; expires: number }>,
   pairAnswer: (id: string, allow: boolean) => tauriInvoke("phone_pair_answer", { id, allow }) as Promise<void>,
   devices: () => tauriInvoke("phone_devices") as Promise<PhoneDevice[]>,
   revoke: (id: string) => tauriInvoke("phone_revoke", { id }) as Promise<void>,
+  /** "Remove Face ID", for a phone that lost its passkey. */
+  removePasskey: (id: string) => tauriInvoke("phone_remove_passkey", { id }) as Promise<void>,
   setLimit: (id: string, limit: number) => tauriInvoke("phone_set_limit", { id, limit }) as Promise<void>,
   /** `passphrase` unlocks a locked wallet for this one send. */
   confirmSend: (id: string, allow: boolean, passphrase?: string) =>

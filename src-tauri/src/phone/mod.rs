@@ -8,10 +8,12 @@
 //! reached through `Rpc` and the screen through `Events`. `link` runs the WebSocket; `commands`
 //! are what the Settings screen calls.
 
+pub mod background;
 pub mod commands;
 pub mod crypto;
 pub mod link;
 pub mod store;
+pub mod webauthn;
 #[cfg(test)]
 mod tests;
 
@@ -104,6 +106,33 @@ pub const MAX_ASKS: usize = 8;
 pub const IDLE_CHANNEL_SECS: u64 = 30;
 /// A held send waits this long for the desktop; then its phone is told it wasn't confirmed.
 pub const HELD_TTL_SECS: u64 = 600;
+/// Face ID (PROTOCOL.md, "Face ID: passkeys"): a request before the session proved the passkey. The
+/// reply carries `"auth":"open"` too, so the page asks for Face ID.
+pub const ERR_AUTH_NEEDED: &str = "Unlock with Face ID first.";
+pub const ERR_AUTH_FAILED: &str = "Face ID didn't check out. Try again.";
+/// How long a passkey challenge lasts, in seconds.
+pub const CHALLENGE_SECS: u64 = 120;
+/// A proved session asks again after this long without a request, and after `VERIFIED_MAX_SECS` in
+/// all (security review M1: a phone left unlocked with FreeBank open).
+pub const VERIFIED_IDLE_SECS: u64 = 300;
+pub const VERIFIED_MAX_SECS: u64 = 1800;
+
+/// A session's Face ID state: when it proved the passkey and last used it (None: not proved), and
+/// its live challenges by purpose ("open", "send", "add", "change"), each good once until its time.
+/// `gen` tells one session on a channel from the next (security review I1): a proof counts only for
+/// the session whose challenge it used.
+#[derive(Default)]
+struct Auth {
+    gen: u64,
+    verified: Option<(u64, u64)>,
+    challenges: HashMap<String, ([u8; 32], u64)>,
+}
+
+/// What the phone is told, with the app closed, about a send the open app would have held.
+pub const ERR_CLOSED_LIMIT: &str =
+    "This is over today's limit, and FreeBank is closed on your desktop. Open it there to send this.";
+pub const ERR_CLOSED_LOCKED: &str =
+    "Your wallet is locked, and FreeBank is closed on your desktop. Open it there to send this.";
 /// A phone send from an encrypted wallet unlocks it for this long, and locks it right after.
 pub const SEND_UNLOCK_SECS: u64 = 10;
 /// How far an unlock keeps from the moment the node relocks after the previous one
@@ -186,6 +215,10 @@ pub struct Held {
     /// The desktop is paying it right now; expiry and revoke leave it to that.
     #[serde(skip)]
     busy: bool,
+    /// The channel of the session that asked: it hears the outcome even after its Face ID proof lapsed,
+    /// since the send passed the gate (code review N1). Channels don't outlive a restart, nor do holds.
+    #[serde(skip)]
+    ch: u64,
 }
 
 impl Held {
@@ -288,9 +321,17 @@ pub struct Phone {
     chans: Mutex<HashMap<u64, (Session, String)>>,
     /// Channels with neither a session nor a waiting pair request, since when (IDLE_CHANNEL_SECS).
     idle: Mutex<HashMap<u64, u64>>,
+    /// Each session's Face ID state, by channel; a new hello starts it afresh.
+    auth: Mutex<HashMap<u64, Auth>>,
     held: Mutex<Vec<Held>>,
     cancelled: Mutex<Vec<Cancelled>>,
+    /// Held sends' final replies, by device, until when they are kept (the held time): a phone that
+    /// reconnects hears them once it may (code review N1).
+    finals: Mutex<Vec<(String, u64, Value)>>,
     held_ttl: AtomicU64,
+    /// Run by the background part with the app closed (`background.rs`): nobody can confirm a send,
+    /// so one that would be held is refused instead.
+    background: std::sync::atomic::AtomicBool,
     /// The wallet passphrase while "Let my phone send while FreeBank is open" is on. Memory only:
     /// never written, logged or handed to the screen, and wiped when it is let go.
     pass: Mutex<Option<Zeroizing<String>>>,
@@ -377,9 +418,12 @@ impl Phone {
             pairing: Mutex::default(),
             chans: Mutex::default(),
             idle: Mutex::default(),
+            auth: Mutex::default(),
             held: Mutex::default(),
             cancelled: Mutex::new(saved.cancelled),
+            finals: Mutex::default(),
             held_ttl: AtomicU64::new(HELD_TTL_SECS),
+            background: std::sync::atomic::AtomicBool::new(false),
             pass: Mutex::new(None),
             wallet_gate: tokio::sync::Mutex::new(()),
             relock: Mutex::new(Arc::default()),
@@ -458,6 +502,7 @@ impl Phone {
     /// The relay link dropped: every channel with it, and the pair requests that came on them.
     pub fn clear_channels(&self) {
         self.chans.lock().unwrap().clear();
+        self.auth.lock().unwrap().clear();
         self.idle.lock().unwrap().clear();
         let mut p = self.pairing.lock().unwrap();
         if !p.asks.is_empty() {
@@ -493,6 +538,7 @@ impl Phone {
         if f["t"] == "closed" {
             if let Some(ch) = f["ch"].as_u64() {
                 self.chans.lock().unwrap().remove(&ch);
+                self.auth.lock().unwrap().remove(&ch);
                 self.idle.lock().unwrap().remove(&ch);
                 let mut p = self.pairing.lock().unwrap();
                 let before = p.asks.len();
@@ -659,6 +705,7 @@ impl Phone {
             limit_sats: store::DEFAULT_LIMIT_SATS,
             spent_day: 0,
             spent_sats: 0,
+            passkey: None,
         });
         let saved = self.store.save_devices(&devs);
         drop(devs);
@@ -698,6 +745,7 @@ impl Phone {
         drop(devs);
         for ch in self.channels_of(id) {
             self.chans.lock().unwrap().remove(&ch);
+            self.auth.lock().unwrap().remove(&ch);
             self.send_clear(ch, json!({"t": "denied"}));
             // And the relay drops its connection.
             self.close_channel(ch);
@@ -758,6 +806,7 @@ impl Phone {
         })();
         let (Some(dev), Ok((p, ep))) = (dev, keys) else {
             self.chans.lock().unwrap().remove(&ch);
+            self.auth.lock().unwrap().remove(&ch);
             return self.send_clear(ch, json!({"t": "denied"}));
         };
         let ed = crypto::random_secret();
@@ -768,6 +817,14 @@ impl Phone {
     fn accept_hello(&self, ch: u64, dev: &str, p: &p256::PublicKey, ep: &p256::PublicKey, ed: &SecretKey) {
         let (k_pd, k_dp) = crypto::desktop_session_keys(&self.d, ed, p, ep);
         self.chans.lock().unwrap().insert(ch, (Session::desktop(k_pd, k_dp), dev.to_string()));
+        let gen = rand::RngCore::next_u64(&mut rand::rngs::OsRng);
+        self.auth.lock().unwrap().insert(ch, Auth { gen, ..Default::default() });
+        // Revoked while this hello was on its way (security review L2): no session for it.
+        if !self.devices.lock().unwrap().devices.iter().any(|d| d.id == dev) {
+            self.chans.lock().unwrap().remove(&ch);
+            self.auth.lock().unwrap().remove(&ch);
+            return self.send_clear(ch, json!({"t": "denied"}));
+        }
         {
             let mut devs = self.devices.lock().unwrap();
             if let Some(x) = devs.get_mut(dev) {
@@ -776,7 +833,11 @@ impl Phone {
             let _ = self.store.save_devices(&devs);
         }
         self.send_clear(ch, json!({"t": "hello-ok", "e": crypto::pub_b64u(&ed.public_key())}));
-        self.tell_restart(ch, dev);
+        // A phone with Face ID hears them once the session proves it (auth_open), not before (I4).
+        if self.passkey_of(dev).is_none() {
+            self.tell_restart(ch, dev);
+            self.replay_finals(ch, dev);
+        }
         self.events.emit(EV_CHANGED, json!({}));
     }
 
@@ -808,6 +869,7 @@ impl Phone {
                 Ok(pt) => Ok((pt, dev)),
                 Err(e) => {
                     chans.remove(&ch);
+                    self.auth.lock().unwrap().remove(&ch);
                     Err(e)
                 }
             }
@@ -818,8 +880,9 @@ impl Phone {
         let me = self.clone();
         tokio::spawn(async move {
             let id = req["id"].clone();
-            let reply = match me.serve(&dev, &req).await {
+            let reply = match me.serve(ch, &dev, &req).await {
                 Ok(v) => json!({"id": id, "ok": v}),
+                Err(e) if e == ERR_AUTH_NEEDED => json!({"id": id, "err": e, "auth": "open"}),
                 Err(e) => json!({"id": id, "err": e}),
             };
             me.send_sealed(ch, &reply);
@@ -828,9 +891,35 @@ impl Phone {
 
     // ----- the narrow door -------------------------------------------------------------------
 
-    async fn serve(&self, dev: &str, req: &Value) -> Result<Value, String> {
+    async fn serve(&self, ch: u64, dev: &str, req: &Value) -> Result<Value, String> {
         let a = &req["a"];
-        match req["m"].as_str().unwrap_or("") {
+        let m = req["m"].as_str().unwrap_or("");
+        // A request that was on its way when the phone was revoked (security review L2).
+        if !self.devices.lock().unwrap().devices.iter().any(|d| d.id == dev) {
+            return Err("This phone was removed on the desktop.".into());
+        }
+        // Face ID first, for a phone that added a passkey (PROTOCOL.md, "Face ID: passkeys").
+        match m {
+            "auth-start" => return self.auth_start(ch, dev, a),
+            "auth" => return self.auth_open(ch, dev, a),
+            "passkey-add" => return self.passkey_add(ch, dev, a),
+            _ if !self.verified(ch, dev) => return Err(ERR_AUTH_NEEDED.into()),
+            _ => {}
+        }
+        match m {
+            // Changing Face ID takes Face ID again, over its own challenge (M1): a session proved
+            // earlier doesn't do.
+            "passkey-set" => {
+                let sends = a["sends"].as_bool().ok_or("sends is true or false")?;
+                self.check_assertion(ch, dev, "change", &a["auth"], None)?;
+                self.with_passkey(dev, |k| k.sends = sends)?;
+                Ok(json!({}))
+            }
+            "passkey-remove" => {
+                self.check_assertion(ch, dev, "change", &a["auth"], None)?;
+                self.with_device(dev, |d| d.passkey = None)?;
+                Ok(json!({}))
+            }
             "balance" => {
                 let confirmed = self.rpc.call("getbalance", vec![]).await?.as_f64().ok_or("bad balance")?;
                 let pending = match self.rpc.call("getunconfirmedbalance", vec![]).await {
@@ -875,11 +964,196 @@ impl Phone {
                     None => r["blocks"] == r["headers"],
                 };
                 let left = self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.left_on(self.today()));
-                Ok(json!({"blocks": r["blocks"], "synced": synced, "limit_left": to_ecx(left.unwrap_or(0))}))
+                let key = self.passkey_of(dev);
+                Ok(json!({
+                    "blocks": r["blocks"], "synced": synced, "limit_left": to_ecx(left.unwrap_or(0)),
+                    "face_id": key.is_some(), "face_id_sends": key.is_some_and(|k| k.sends),
+                }))
             }
-            "send" => self.send(dev, req).await,
+            "send" => {
+                if self.passkey_of(dev).is_some_and(|k| k.sends) {
+                    self.check_assertion(ch, dev, "send", &a["auth"], None)?;
+                }
+                let r = self.send(dev, req).await;
+                // A held send remembers the session that asked (N1).
+                if let Some(confirm) = r.as_ref().ok().and_then(|v| v["pending"].as_str()) {
+                    if let Some(h) = self.held.lock().unwrap().iter_mut().find(|h| h.confirm == confirm) {
+                        h.ch = ch;
+                    }
+                }
+                r
+            }
             _ => Err("unknown method".into()),
         }
+    }
+
+    // ----- Face ID: passkeys -----------------------------------------------------------------
+
+    fn passkey_of(&self, dev: &str) -> Option<store::Passkey> {
+        self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).and_then(|d| d.passkey.clone())
+    }
+
+    /// Change a device and save the list.
+    fn with_device(&self, dev: &str, f: impl FnOnce(&mut Device)) -> Result<(), String> {
+        let mut devs = self.devices.lock().unwrap();
+        let d = devs.get_mut(dev).ok_or("This phone was removed on the desktop.")?;
+        f(d);
+        self.store.save_devices(&devs)?;
+        drop(devs);
+        self.events.emit(EV_CHANGED, json!({}));
+        Ok(())
+    }
+
+    fn with_passkey(&self, dev: &str, f: impl FnOnce(&mut store::Passkey)) -> Result<(), String> {
+        let mut found = false;
+        self.with_device(dev, |d| {
+            if let Some(k) = d.passkey.as_mut() {
+                found = true;
+                f(k);
+            }
+        })?;
+        if found { Ok(()) } else { Err("This phone has no Face ID set up.".into()) }
+    }
+
+    /// The session may use the narrow door: its phone has no passkey, or the session proved it lately
+    /// (within `VERIFIED_IDLE_SECS` of its last request and `VERIFIED_MAX_SECS` of the proof). Each
+    /// request that passes counts as use.
+    fn verified(&self, ch: u64, dev: &str) -> bool {
+        let Some(has_key) = self.device_has_passkey(dev) else { return false };
+        if !has_key {
+            return true;
+        }
+        let now = self.now();
+        let mut auth = self.auth.lock().unwrap();
+        let Some(s) = auth.get_mut(&ch) else { return false };
+        match s.verified {
+            Some((at, used)) if now <= used + VERIFIED_IDLE_SECS && now <= at + VERIFIED_MAX_SECS => {
+                s.verified = Some((at, now));
+                true
+            }
+            _ => {
+                s.verified = None;
+                false
+            }
+        }
+    }
+
+    /// Whether the device has a passkey; None if it is gone.
+    fn device_has_passkey(&self, dev: &str) -> Option<bool> {
+        self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.passkey.is_some())
+    }
+
+    /// May this session hear its phone's news (held sends' outcomes)? Without a passkey, yes; with
+    /// one, only once it proved it and the proof hasn't lapsed (I4). Reading doesn't count as use.
+    fn may_hear(&self, ch: u64, dev: &str) -> bool {
+        match self.device_has_passkey(dev) {
+            None => false,
+            Some(false) => true,
+            Some(true) => {
+                let now = self.now();
+                self.auth.lock().unwrap().get(&ch).and_then(|s| s.verified).is_some_and(|(at, used)| {
+                    now <= used + VERIFIED_IDLE_SECS && now <= at + VERIFIED_MAX_SECS
+                })
+            }
+        }
+    }
+
+    /// The session proved the passkey just now: if it is still the session whose challenge was used.
+    fn mark_verified(&self, ch: u64, gen: u64) {
+        let now = self.now();
+        if let Some(s) = self.auth.lock().unwrap().get_mut(&ch).filter(|s| s.gen == gen) {
+            s.verified = Some((now, now));
+        }
+    }
+
+    /// `auth-start`: a fresh challenge for this session and purpose.
+    fn auth_start(&self, ch: u64, dev: &str, a: &Value) -> Result<Value, String> {
+        let purpose = a["for"].as_str().unwrap_or("");
+        if !matches!(purpose, "open" | "send" | "add" | "change") {
+            return Err("for is open, send, add or change".into());
+        }
+        let mut c = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut c);
+        let mut auth = self.auth.lock().unwrap();
+        let s = auth.get_mut(&ch).ok_or("no session")?;
+        s.challenges.insert(purpose.to_string(), (c, self.now() + CHALLENGE_SECS));
+        drop(auth);
+        let mut reply = json!({"challenge": crypto::b64u(&c)});
+        if let Some(k) = self.passkey_of(dev) {
+            reply["cred"] = json!(k.cred);
+        }
+        Ok(reply)
+    }
+
+    /// Check an assertion over this session's live challenge for `purpose`, which it uses up either
+    /// way. With the phone's stored passkey (its counter checked and updated under one lock, I3), or
+    /// `new_pk` (a passkey being added). The new counter, and the session generation it belongs to.
+    fn check_assertion(&self, ch: u64, dev: &str, purpose: &str, x: &Value, new_pk: Option<&[u8]>) -> Result<(u32, u64), String> {
+        let live = {
+            let mut auth = self.auth.lock().unwrap();
+            auth.get_mut(&ch).map(|s| (s.challenges.remove(purpose), s.gen))
+        };
+        let Some((Some((challenge, until)), gen)) = live else { return Err(ERR_AUTH_FAILED.into()) };
+        if self.now() > until {
+            return Err(ERR_AUTH_FAILED.into());
+        }
+        let (origin, rp_id) = webauthn::origin_for(&self.relay_url()).ok_or(ERR_AUTH_FAILED)?;
+        let part = |k: &str| crypto::unb64u(x[k].as_str().unwrap_or("")).map_err(|_| ERR_AUTH_FAILED.to_string());
+        let (ad, cdj, sig) = (part("ad")?, part("cdj")?, part("sig")?);
+        let check = |pk: &[u8], stored: u32| {
+            webauthn::verify(pk, &rp_id, &origin, &challenge, &ad, &cdj, &sig, stored).map_err(|_| ERR_AUTH_FAILED.to_string())
+        };
+        if let Some(pk) = new_pk {
+            return check(pk, 0).map(|c| (c, gen));
+        }
+        let mut devs = self.devices.lock().unwrap();
+        let key = devs.get_mut(dev).and_then(|d| d.passkey.as_mut()).ok_or("This phone has no Face ID set up.")?;
+        let count = check(&crypto::unb64u(&key.pk)?, key.count)?;
+        if count != key.count {
+            key.count = count;
+            self.store.save_devices(&devs)?;
+        }
+        Ok((count, gen))
+    }
+
+    /// `auth`: the session proves the phone's passkey.
+    fn auth_open(&self, ch: u64, dev: &str, a: &Value) -> Result<Value, String> {
+        let (_, gen) = self.check_assertion(ch, dev, "open", a, None)?;
+        self.mark_verified(ch, gen);
+        // The restart notices and held sends' outcomes it didn't hear before proving the passkey (I4, N1).
+        self.tell_restart(ch, dev);
+        self.replay_finals(ch, dev);
+        Ok(json!({}))
+    }
+
+    /// `passkey-add`: keep a new passkey once an assertion shows it works. Replacing one takes the old
+    /// one too, now: an assertion over a "change" challenge in `a.auth` (M1).
+    fn passkey_add(&self, ch: u64, dev: &str, a: &Value) -> Result<Value, String> {
+        if !self.verified(ch, dev) {
+            return Err(ERR_AUTH_NEEDED.into());
+        }
+        if self.passkey_of(dev).is_some() {
+            self.check_assertion(ch, dev, "change", &a["auth"], None)?;
+        }
+        let pk = crypto::unb64u(a["pk"].as_str().unwrap_or("")).map_err(|_| "bad key")?;
+        if pk.len() != 65 || p256::ecdsa::VerifyingKey::from_sec1_bytes(&pk).is_err() {
+            return Err("That isn't a P-256 passkey.".into());
+        }
+        let cred = a["cred"].as_str().unwrap_or("");
+        if !(1..=1023).contains(&crypto::unb64u(cred).map(|c| c.len()).unwrap_or(0)) {
+            return Err("bad credential id".into());
+        }
+        let sends = a["sends"].as_bool().unwrap_or(false);
+        let (count, gen) = self.check_assertion(ch, dev, "add", a, Some(&pk))?;
+        let key = store::Passkey { pk: crypto::b64u(&pk), cred: cred.to_string(), sends, count, added: self.now() };
+        self.with_device(dev, |d| d.passkey = Some(key))?;
+        self.mark_verified(ch, gen);
+        Ok(json!({}))
+    }
+
+    /// Desktop Settings: "Remove Face ID" for a phone that lost its passkey.
+    pub fn remove_passkey(&self, dev: &str) -> Result<(), String> {
+        self.with_device(dev, |d| d.passkey = None)
     }
 
     fn device_name(&self, dev: &str) -> String {
@@ -930,7 +1204,7 @@ impl Phone {
         let name = self.device_name(dev);
         let day = self.today();
         if !self.reserve(dev, sats, day) {
-            return Ok(self.hold(dev, &name, &address, sats, req, "limit"));
+            return self.hold_or_refuse(dev, &name, &address, sats, req, "limit");
         }
         let paid = {
             let _gate = self.wallet_gate.lock().await;
@@ -945,7 +1219,7 @@ impl Phone {
             // decides, and a send it confirms doesn't count against the limit.
             Err(Pay::Locked | Pay::WrongPassphrase) => {
                 self.release(dev, sats, day);
-                Ok(self.hold(dev, &name, &address, sats, req, "locked"))
+                self.hold_or_refuse(dev, &name, &address, sats, req, "locked")
             }
             Err(Pay::NotTried(e) | Pay::Failed(e)) => {
                 self.release(dev, sats, day);
@@ -953,6 +1227,25 @@ impl Phone {
                 Err(e)
             }
         }
+    }
+
+    /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody
+    /// is there to confirm it.
+    fn hold_or_refuse(&self, dev: &str, name: &str, address: &str, sats: u64, req: &Value, why: &str) -> Result<Value, String> {
+        if !self.background.load(Ordering::SeqCst) {
+            return Ok(self.hold(dev, name, address, sats, req, why));
+        }
+        self.log(dev, name, address, sats, "refused", json!({"why": why, "app": "closed"}));
+        Err(if why == "limit" { ERR_CLOSED_LIMIT } else { ERR_CLOSED_LOCKED }.into())
+    }
+
+    /// The background part runs this phone link (`background.rs`).
+    pub fn set_background(&self, on: bool) {
+        self.background.store(on, Ordering::SeqCst);
+    }
+
+    pub fn is_background(&self) -> bool {
+        self.background.load(Ordering::SeqCst)
     }
 
     /// Hold a send for the desktop. Returns the phone's reply.
@@ -967,6 +1260,7 @@ impl Phone {
             why: why.into(),
             req_id: req["id"].clone(),
             busy: false,
+            ch: 0,
         };
         self.held.lock().unwrap().push(h.clone());
         self.save_held();
@@ -1083,8 +1377,31 @@ impl Phone {
     fn final_reply(&self, h: &Held, key: &str, value: Value) {
         let mut reply = json!({"id": h.req_id, "pending": h.confirm});
         reply[key] = value;
+        let now = self.now();
+        {
+            let mut finals = self.finals.lock().unwrap();
+            finals.retain(|(_, until, _)| now < *until);
+            finals.push((h.device.clone(), now + self.held_ttl(), reply.clone()));
+        }
         for ch in self.channels_of(&h.device) {
-            self.send_sealed(ch, &reply);
+            // The session that asked always hears it; others only once they may (I4, N1).
+            if ch == h.ch || self.may_hear(ch, &h.device) {
+                self.send_sealed(ch, &reply);
+            }
+        }
+    }
+
+    /// Held sends' outcomes from the held time, to a session that reconnected (N1). The page takes only
+    /// the ones it is still waiting for.
+    fn replay_finals(&self, ch: u64, dev: &str) {
+        let now = self.now();
+        let replies: Vec<Value> = {
+            let mut finals = self.finals.lock().unwrap();
+            finals.retain(|(_, until, _)| now < *until);
+            finals.iter().filter(|(d, _, _)| d == dev).map(|(_, _, r)| r.clone()).collect()
+        };
+        for r in replies {
+            self.send_sealed(ch, &r);
         }
     }
 
@@ -1317,6 +1634,16 @@ impl Phone {
             drop(old);
             self.events.emit(EV_CHANGED, json!({}));
         }
+    }
+
+    /// A phone is paired: closing the app may keep it connected (background.rs).
+    pub fn has_phones(&self) -> bool {
+        !self.devices.lock().unwrap().devices.is_empty()
+    }
+
+    /// For the background part only (background.rs): a copy of the phone-send passphrase, if on.
+    pub fn passphrase_for_handover(&self) -> Option<Zeroizing<String>> {
+        self.pass.lock().unwrap().clone()
     }
 
     pub fn phone_send_is_on(&self) -> bool {

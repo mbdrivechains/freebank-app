@@ -88,7 +88,7 @@ pub async fn node_probe(mgr: State<'_, Mgr>) -> Result<detect::Probe, String> {
 #[tauri::command]
 pub async fn datadir_check(mgr: State<'_, Mgr>) -> Result<detect::DatadirCheck, String> {
     let s = mgr.settings.lock().await.clone();
-    Ok(detect::check_datadir(Path::new(&s.datadir)))
+    Ok(detect::setup_check(Path::new(&s.datadir), &s.created()))
 }
 
 #[tauri::command]
@@ -396,6 +396,10 @@ pub async fn node_set_keep_running(mgr: State<'_, Mgr>, on: bool) -> Result<Sett
     mgr.still_here()?;
     let mut s = mgr.settings.lock().await.clone();
     s.keep_running = on;
+    // Keeping the phone connected needs the node left running (code review 6).
+    if !on {
+        s.keep_phone = false;
+    }
     mgr.save_settings(s.clone()).await?;
     Ok(s)
 }

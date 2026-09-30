@@ -1,0 +1,28 @@
+name: Idea
+description: Something the FreeBank app could do, or do better.
+body:
+  - type: markdown
+    attributes:
+      value: Issues here are public, so leave out anything private.
+  - type: textarea
+    id: what
+    attributes:
+      label: Your idea
+      description: What you'd like, and what it would help you do.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: FreeBank app version
+      placeholder: "0.2.1"
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: "macOS 26.0 (aarch64)"
+  - type: input
+    id: node
+    attributes:
+      label: FreeBank node version
+      placeholder: "v0.2.17"

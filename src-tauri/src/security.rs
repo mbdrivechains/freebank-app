@@ -633,7 +633,7 @@ pub fn backups_check(backups: &[(PathBuf, WalletFile)], asides: &[(PathBuf, Wall
 
 /// The folders a restore or setup moved aside, once each: those Settings records (setup's moves of
 /// an older data folder, and a restore's of the wallet it replaced, recovery/job.rs) and any named
-/// <datadir>.old-<digits> beside the data folder, recorded or not.
+/// <datadir>.old-<time>[-n] beside the data folder, recorded or not.
 pub fn aside_folders(s: &Settings) -> Vec<PathBuf> {
     let datadir = PathBuf::from(&s.datadir);
     let mut found: Vec<PathBuf> = s.moved_aside.iter().map(PathBuf::from).collect();
@@ -645,8 +645,7 @@ pub fn aside_folders(s: &Settings) -> Vec<PathBuf> {
             .filter_map(|e| e.ok())
             .filter(|e| {
                 let n = e.file_name().to_string_lossy().into_owned();
-                n.strip_prefix(&prefix)
-                    .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                n.strip_prefix(&prefix).is_some_and(crate::node::aside_stamp)
             })
             .map(|e| e.path())
             .collect();
@@ -995,14 +994,11 @@ fn port_of(endpoint: &str) -> Option<u16> {
 type Mgr = Arc<NodeManager>;
 
 /// Where "Back up wallet" saves: Documents, else the home folder (node/commands.rs, wallet_backup).
+/// Both are searched: a backup made while there was no Documents folder is in the home folder.
 fn backup_folders(app: &AppHandle) -> Vec<PathBuf> {
     let path = app.path();
-    path.document_dir()
-        .ok()
-        .filter(|d| d.is_dir())
-        .or_else(|| path.home_dir().ok())
-        .into_iter()
-        .collect()
+    let docs = path.document_dir().ok().filter(|d| d.is_dir());
+    docs.into_iter().chain(path.home_dir().ok()).collect()
 }
 
 fn all_backups(app: &AppHandle, mgr: &NodeManager) -> Vec<PathBuf> {
