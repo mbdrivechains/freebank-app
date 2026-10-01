@@ -1,5 +1,5 @@
 //! The desktop side against the shared interop vectors (testdata/phone/kk-v1.json, a copy of
-//! freebank-distribution relay/testvectors/kk-v1.json written by the phone page's generator), and
+//! freebank-phone's relay/testvectors/kk-v1.json, written by the phone page's generator), and
 //! pairing, revoke, the limit ledger, held sends (expiry, held.json, restarts) and phone sends from
 //! an encrypted wallet, with a mocked node. The end-to-end run against the real relay is
 //! `relay_e2e`, and `page_host` serves the real phone page (both ignored; they need FB_RELAY_URL).
@@ -1020,9 +1020,10 @@ async fn held_send_declined_zero_limit_and_revoke() {
     );
     assert_eq!(sim.open(&h.next().await["d"]), json!({"id": 21, "pending": confirm, "err": "declined on the desktop"}));
     assert!(h.rpc.sends().is_empty());
+    // One line per send, with its latest state.
     let log = h.phone.store.recent_sends(10);
-    assert_eq!(log[0]["result"], "declined");
-    assert_eq!(log[1]["result"], "held");
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!((log[0]["result"].as_str(), log[0]["held"].as_str()), (Some("declined"), Some(confirm.as_str())));
 
     // A held send is dropped when the phone is revoked.
     ask(&mut h, &mut sim, 1, 22, "send", json!({"address": TO, "amount": 1.0})).await;
@@ -1178,7 +1179,8 @@ async fn restart_cancels_held_sends_and_tells_each_new_session() {
 
     // Restarting again within the 10 minutes still owes the notices; they aren't logged twice.
     h.restart();
-    assert_eq!(h.phone.store.recent_sends(3).iter().filter(|l| l["result"] == "cancelled").count(), 2);
+    let raw = std::fs::read_to_string(h.phone.store.dir.join("sends.log")).unwrap();
+    assert_eq!(raw.lines().filter(|l| l.contains(r#""result":"cancelled""#)).count(), 2, "{raw}");
     session(&mut h, &mut sim, 8).await;
     assert_eq!(sim.open(&h.next().await["d"]), want(41, &confirm));
     assert_eq!(sim.open(&h.next().await["d"]), want(42, &confirm2));

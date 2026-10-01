@@ -11,6 +11,7 @@
     onPhoneEvent,
     phone,
     when,
+    type HeldSend,
     type KeepInfo,
     type PhoneDevice,
     type PhoneSend,
@@ -252,6 +253,17 @@
     refused: "refused: FreeBank was closed",
   };
 
+  // A held send is listed once, with its latest state (src-tauri/src/phone/store.rs). Its "held" line says
+  // "waiting for you" only while it waits: lines from before v0.2.2 can list a held send twice.
+  function resultText(s: PhoneSend, held: HeldSend[]): string {
+    if (s.result === "held") {
+      const id = s.held ?? (s.detail as { confirm?: string } | null)?.confirm;
+      return held.some((h) => h.confirm === id) ? "waiting for you" : "was held for your answer";
+    }
+    if (s.result === "sent" && s.held) return "sent after you allowed it";
+    return RESULT_TEXT[s.result] ?? s.result;
+  }
+
   function mmss(s: number) {
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
@@ -275,7 +287,10 @@
 
   {#if pair}
     <div class="pair-box">
-      <p><strong>Scan this with your phone's camera.</strong> It opens FreeBank in the phone's browser.</p>
+      <p>
+        <strong>Scan this with your phone:</strong> with its Camera app, or in FreeBank on the phone, tap
+        <strong>Scan the code on your desktop</strong>.
+      </p>
       <QrCode text={pair.url} />
       <div class="address-display">
         <code>{pair.url}</code>
@@ -287,9 +302,12 @@
         your own phone.
       </p>
       <p class="hint">
-        For FreeBank on an iPhone's Home Screen, copy the link instead and tap <strong>Paste pairing link</strong> in
-        the Home Screen app: the icon keeps its own storage, apart from Safari's. A Mac's Universal Clipboard passes the
-        link to your iPhone.
+        <strong>On an iPhone,</strong> FreeBank belongs on the Home Screen. The first time, scan this code with the
+        Camera app: the page it opens shows how to add FreeBank to the Home Screen. Then open FreeBank there and tap
+        <strong>Scan the code on your desktop</strong>. The Home Screen app keeps its own storage, apart from Safari, so
+        it needs its own pairing, even if Safari has one, and shows here as a second phone. If its camera won't open,
+        click Copy and tap <strong>Paste pairing link</strong> there: a Mac's Universal Clipboard passes the link to
+        your iPhone.
       </p>
       <div class="row-actions">
         <button class="secondary" on:click={() => (pair = null)}>Close</button>
@@ -429,7 +447,7 @@
       {#each sends as s}
         <li>
           <span>{s.name}: {s.amount} {BASE_TICKER} to <code>{s.address}</code></span>
-          <span class="muted small">{when(s.time)} · {RESULT_TEXT[s.result] ?? s.result}</span>
+          <span class="muted small">{when(s.time)} · {resultText(s, status?.held ?? [])}</span>
         </li>
       {/each}
     </ul>

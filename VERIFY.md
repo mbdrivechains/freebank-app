@@ -1,0 +1,192 @@
+# Verifying a FreeBank app release
+
+This page is for anyone, or anyone's AI assistant, who wants to answer two questions before running the FreeBank
+app. The app keeps your 24 recovery words (encrypted) and runs the node that holds your coins, so both matter:
+
+1. **Is the source safe?** Does it contain exploits, backdoors, phone-home code, or a way to leak your recovery words
+   or steer your coins?
+2. **Was the package you downloaded built from that source,** and from nothing else?
+
+For the second, you can check that GitHub built each package from the public tag, and that the maintainer published
+it. You can't yet rebuild a package byte for byte yourself. The first question can only be answered by reviewing the
+code. This page shows how to do both, and what neither of them proves.
+
+## What you can and cannot check
+
+| Claim | How you check it | Holds for |
+|---|---|---|
+| The source at the tag is what you reviewed | `git checkout <tag>` | every release |
+| The package is the one GitHub built from the public tag | GitHub attestation (step 3) | v0.2.0 and later |
+| The files are the ones the maintainer published | signed `SHA256SUMS` (step 3) | v0.2.0 and later |
+| The phone page at app.ecxfreebank.com is its public source, built | rebuild it and compare (freebank-phone's README) | since 2026-10-01 |
+| Your own build gives the same bytes | not yet possible | |
+| The code is free of exploits | nobody can prove this; review reduces the risk (step 2) | |
+
+FreeBank is **experimental, pre-audit software**. A clean review, by an AI or a person, is evidence, not a
+guarantee.
+
+## Step 1: get the source at the release tag
+
+```sh
+git clone https://github.com/mbdrivechains/freebank-app
+cd freebank-app
+git checkout v0.2.2             # the release you are checking (this page first shipped in v0.2.2)
+git rev-parse HEAD              # note the commit
+```
+
+Since v0.1.1, each release is one commit on `main`, so `git diff v0.2.1 v0.2.2` shows everything a release changed.
+
+## Step 2: review the source
+
+FreeBank is a [Tauri 2](https://tauri.app) desktop app. The Rust side in `src-tauri/src/` does everything that
+touches keys, files, processes and the network. The screens in `src/` (Svelte) ask it through Tauri commands. The app
+runs your own FreeBank node (`freebankd`) and talks to it over JSON-RPC. Below, `<app data>` is
+`~/.local/share/com.ecxfreebank.freebank` on Linux and `~/Library/Application Support/com.ecxfreebank.freebank` on
+macOS.
+
+**Where the secrets are:**
+- **The 24 recovery words:** `src-tauri/src/seed.rs`. They are standard BIP39 words. Their entropy is kept at
+  `<app data>/wallet/seed.enc`, encrypted with the wallet passphrase (Argon2id, then XChaCha20-Poly1305). The
+  passphrase itself is never stored. The node's wallet key comes from the words by BIP85 (the HD-Seed WIF
+  application, index 0, in `seed.rs`) and goes to the node with `sethdseed` (`src-tauri/src/recovery/job.rs`).
+- **The passphrase:** `src-tauri/src/wallet.rs` unlocks and locks the node's wallet. Every screen that signs goes
+  through `withUnlock` (`src/lib/wallet.ts`): it asks in `UnlockPrompt.svelte`, unlocks for 30 seconds, then locks
+  again. `src-tauri/src/recovery/` sets it (`encryptwallet`), changes it (`walletpassphrasechange`), opens `seed.enc`
+  with it to show the words or the xprv, and restores from the words or a backup file.
+- **The node's RPC login:** its `.cookie` file, or `rpcuser` and `rpcpassword` from `freebank.conf`
+  (`src-tauri/src/node/detect.rs`), or the password typed in the connect form. It is kept in memory only
+  (`src-tauri/src/rpc/`) and sent to the node as HTTP Basic auth.
+- **Phone sends:** with "Let my phone send" on, `src-tauri/src/phone/mod.rs` keeps the passphrase in memory while the
+  app is open. `src-tauri/src/phone/background.rs` hands it over a pipe to the background part that keeps your phone
+  connected after the window closes.
+- **The phone link's keys:** `<app data>/phone/`, readable by your user only. It holds `desktop.key`, the desktop's
+  pairing key (P-256, not encrypted with the passphrase), each paired phone's public keys (`devices.json`), the
+  relay's address (`config.json`), held sends (`held.json`) and the log of phone sends (`sends.log`). The crypto is
+  in `src-tauri/src/phone/crypto.rs` (P-256 ECDH and ECDSA, HKDF-SHA256, AES-256-GCM). Face ID passkeys are checked
+  on the desktop, in `src-tauri/src/phone/webauthn.rs`.
+- **Copying the words to the clipboard:** `src-tauri/src/clipboard.rs`.
+- **The screens that show or take the words:** `src/components/RecoveryWords.svelte`, `WalletFlow.svelte` and
+  `WalletSettings.svelte` (Show recovery words, and Show xprv: the wallet's master extended private key, derived from
+  the words, after the passphrase). The passphrase is typed in `UnlockPrompt.svelte`, `PassphraseFields.svelte`,
+  `PhoneSettings.svelte` and `PhoneAlerts.svelte`.
+
+**Every network contact:**
+- **Your node:** JSON-RPC on 127.0.0.1, or on another computer if you point the app at one (`src-tauri/src/rpc/`).
+- **GitHub:**
+  - the FreeBank node's releases (`api.github.com/repos/mbdrivechains/freebank/releases`, at each start when the app
+    installed the node, at most every 30 minutes; downloads from `github.com/mbdrivechains/freebank/releases`, which
+    redirect to GitHub's file host, `*.githubusercontent.com`). A node is installed only if its `SHA256SUMS`
+    signature checks against the key pinned in `src-tauri/src/node/release_key.rs`;
+  - grpcurl 1.9.4 from `github.com/fullstorydev/grpcurl`, pinned by sha256 in `src-tauri/src/node/install.rs`, only
+    when no grpcurl is found on this computer (below).
+- **explorer.ecxfreebank.com:** the chain's tip height, for Setup's sync progress and the Node tab
+  (`src-tauri/src/node/process.rs`, `mod.rs`).
+- **app.ecxfreebank.com:**
+  - the phone relay (`wss://app.ecxfreebank.com/ws`, or another set in Settings > Phone > Relay), over WebSocket,
+    only while a phone is paired or you are pairing one (`src-tauri/src/phone/link.rs`, `Phone::wanted` in
+    `mod.rs`). Messages are end-to-end encrypted: the relay only passes sealed messages along. The relay and the
+    phone page are in [mbdrivechains/freebank-phone](https://github.com/mbdrivechains/freebank-phone). The page uses
+    the phone's camera only to read a FreeBank pairing QR code, when you tap Scan the code on your desktop; the
+    pictures stay on the phone (`phone/src/lib/scan.ts` there);
+  - the report desk (`POST /feedback`), only when you send a report (`src-tauri/src/feedback.rs`).
+- **The eCash node and its enforcer** that run beside FreeBank, at the addresses found or entered at setup.
+- **This computer's own addresses:** Settings > Security tries a few TCP connections to them, to see which of the
+  node's ports other computers could reach (`src-tauri/src/security.rs`). They stay on this computer.
+- **Links** (the explorer, GitHub, BitWindow's site) open in your browser, not in the app. The allowed ones are
+  listed in `src/lib/node.ts` and `src-tauri/tauri.conf.json`.
+
+The window's content security policy (`src-tauri/tauri.conf.json`: `default-src 'self'`) stops the screens from
+contacting anything themselves. It doesn't cover opening links: those go through the allowed list above, in the
+browser. `src/lib/api.ts` can also run the screens in an ordinary browser (see the README); the
+desktop app doesn't use that mode.
+
+**What the app asks the node:**
+- **Wallet calls** each have their own command on the Rust side:
+  - sending: `sendtoaddress`, or `createrawtransaction`, `fundrawtransaction`, `signrawtransactionwithwallet` and
+    `sendrawtransaction`;
+  - `bumpfee` (Speed up);
+  - the passphrase: `encryptwallet`, `walletpassphrase`, `walletlock`, `walletpassphrasechange`;
+  - `sethdseed` (the key from the words), `backupwallet`, `rescanblockchain` and `stop`;
+  - `getnewaddress` (Receive, a phone's Receive, and moving coins to new words).
+- **Read-only calls** the Rust side makes for itself: the balance, history, fees, the node's status, Settings >
+  Security and the phone link.
+- **Everything else the screens ask** goes through one command, `rpc_call`. It allows only the calls listed in
+  `RPC_ALLOWED` (`src-tauri/src/security.rs`): read-only calls, `getdepositaddress`, and FreeBank's notes, houses,
+  pools and bills, including credit actions that sign with the wallet and move coins or notes (`transfernote`,
+  `swapnote`, `addpoolliquidity`, `issuebill` and others). A locked wallet refuses those until you give the
+  passphrase.
+- The app never calls `dumpprivkey` or `dumpwallet`. Only a test calls `dumpwallet`, against a scratch node. It can
+  show the wallet's master xprv (Settings > Wallet > Show xprv, after the passphrase), derived from the words: the
+  key `dumpwallet` would print.
+
+**The programs the app starts:**
+- `freebankd`, from `<app data>/releases/`, after its signature has checked (`src-tauri/src/node/install.rs` and
+  `process.rs`);
+- `freebankd -version`, to read an installed node's version;
+- grpcurl, to test the enforcer; freebankd uses it too (`-grpcurlbin`). It is the one used before, BitWindow's, one
+  on your PATH, or else the app's own 1.9.4 download (`find_grpcurl` in `src-tauri/src/node/install.rs`). Only the
+  app's own download is checked against its pinned hash; each one found is run once with `-version`;
+- the app itself, as the phone link's background part (`--phone-background`);
+- on macOS also `xattr` (to clear a download's quarantine), `/bin/ps` and `/usr/bin/sw_vers`;
+- your system's link opener, for the allowed links (Tauri's shell plugin).
+
+**Third-party code:** the Rust crates are pinned by `src-tauri/Cargo.lock`, and the npm packages by
+`package-lock.json`. The QR code encoder is the app's own (`src/lib/qr.ts`).
+
+[`SECURITY.md`](SECURITY.md) says how to report a problem privately.
+
+### A prompt for an AI reviewer
+
+Give your assistant the checked-out tree and something like this:
+
+> You are reviewing the FreeBank desktop app, a Tauri 2 app (Rust in `src-tauri/src/`, Svelte screens in `src/`), at
+> commit `<commit>`, for a person deciding whether to run it. It keeps the person's 24 recovery words, encrypted with
+> their passphrase, and runs their FreeBank node, which holds their coins. VERIFY.md, step 2, maps where the secrets
+> are handled, every network contact, and what the app asks the node. Check that map against the code, then look
+> for:
+> (1) the recovery words, the passphrase, the node's keys or the wallet's files leaving the computer, being logged,
+> or being written anywhere the map doesn't say;
+> (2) any network contact not in the map, including from the screens (check the content security policy and the
+> shell plugin's `open` list in `src-tauri/tauri.conf.json`, and `src-tauri/capabilities/`);
+> (3) node calls that could move coins, export keys or change the wallet without the person asking, including
+> through `rpc_call` and its allowlist in `src-tauri/src/security.rs`, and through any Tauri command registered in
+> `src-tauri/src/lib.rs`;
+> (4) anything that lets a paired phone, the relay or a web page do more than the documented limits (the daily
+> limit, approval on the desktop, Face ID; `src-tauri/src/phone/`);
+> (5) downloads or processes started from untrusted input, and whether the node's signature and grpcurl's hash are
+> checked before either runs (a grpcurl already on the computer is used without a hash check);
+> (6) dependencies in `src-tauri/Cargo.lock` or `package-lock.json` that look out of place or come from outside the
+> usual registries.
+> For each finding give the file and line, what an attacker needs, and the impact. Say plainly what you did not
+> check.
+
+## Step 3: check the signature and GitHub's attestation
+
+- **Signature:** `SHA256SUMS` is signed with the FreeBank release key, the same key that signs the FreeBank node's
+  releases. The key and the commands are in the README, under [Verify your download](README.md#verify-your-download).
+- **GitHub attestation:** this repository's release workflow builds each release tag on GitHub, and GitHub records a
+  signed attestation naming the workflow, the tag and each package's hash. With a recent GitHub CLI, logged in
+  (`gh auth login`):
+
+  ```sh
+  gh attestation verify freebank_<version>_amd64.deb --repo mbdrivechains/freebank-app \
+    --signer-workflow mbdrivechains/freebank-app/.github/workflows/release.yml \
+    --source-ref refs/tags/v<version>
+  ```
+
+  The same works for the AppImage and the `.dmg`. If the attestation verifies and the hash matches `SHA256SUMS`,
+  GitHub built exactly these bytes from the tag's source, with `.github/workflows/release.yml`. (`--source-ref`
+  pins the tag: the workflow can also be started by hand, though it records attestations only for tags.)
+
+## What this does not cover
+
+- **Your own build won't match yet.** The packages can't be rebuilt byte for byte, so you trust GitHub's build
+  machines, which the attestation names. A reproducible Linux build is planned.
+- **macOS** packages are not notarised yet; macOS asks you to allow the app the first time (README, Install).
+- **Releases before v0.2.0** have neither a signature nor an attestation.
+- **The FreeBank node** (`freebankd`) is a separate program. The app installs it only if its signature checks; to
+  verify it yourself, see "Verify your download" in [mbdrivechains/freebank](https://github.com/mbdrivechains/freebank).
+- **The relay's own binary** at app.ecxfreebank.com can't be checked yet; the page it serves can (above). The relay
+  only passes sealed messages along, and the desktop decides everything a phone may do (its daily limit, your
+  approval, Face ID).
+- **Other software you run with FreeBank** (the eCash node, the enforcer, BitWindow) is not covered here.

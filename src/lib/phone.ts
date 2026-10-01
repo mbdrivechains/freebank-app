@@ -74,6 +74,8 @@ export interface PhoneSend {
   /** "sent" | "held" | "declined" | "failed" | "expired" | "cancelled" | "refused" (FreeBank was closed) */
   result: string;
   detail: unknown;
+  /** A held send's id, on each of its lines (since v0.2.2): it is listed once, with its latest state. */
+  held?: string;
 }
 
 /** "Keep your phone connected when FreeBank is closed" (src-tauri/src/phone/background.rs). */

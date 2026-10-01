@@ -296,11 +296,29 @@ impl Store {
         }
     }
 
-    /// The last `n` lines of sends.log, newest first.
+    /// The last `n` sends in sends.log, newest first. A held send is listed once, with its latest state:
+    /// its lines carry its id (`held`). Before v0.2.2 only its "held" and "expired" lines had the id.
     pub fn recent_sends(&self, n: usize) -> Vec<serde_json::Value> {
         let s = std::fs::read_to_string(self.dir.join("sends.log")).unwrap_or_default();
-        s.lines().rev().filter_map(|l| serde_json::from_str(l).ok()).take(n).collect()
+        let mut seen = std::collections::HashSet::new();
+        s.lines()
+            .rev()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| held_id(v).map_or(true, |id| seen.insert(id)))
+            .take(n)
+            .collect()
     }
+}
+
+/// A held send's id, on any of its lines in sends.log.
+fn held_id(v: &serde_json::Value) -> Option<String> {
+    let id = match v["result"].as_str() {
+        _ if v["held"].is_string() => &v["held"],
+        Some("held") => &v["detail"]["confirm"],
+        Some("expired") => &v["detail"],
+        _ => return None,
+    };
+    id.as_str().map(String::from)
 }
 
 #[cfg(test)]
@@ -392,6 +410,41 @@ mod tests {
             let m = std::fs::metadata(s.dir.join("desktop.key")).unwrap().permissions().mode();
             assert_eq!(m & 0o777, 0o600);
         }
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn a_held_send_is_listed_once_with_its_latest_state() {
+        use serde_json::json;
+        let tmp = std::env::temp_dir().join(format!("fb-phone-sends-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let s = Store::new(&tmp);
+        let line = |t: u64, result: &str, detail: serde_json::Value, held: Option<&str>| {
+            let mut v = json!({"time": t, "device": "a", "name": "n", "address": "x", "amount": 1.0,
+                               "result": result, "detail": detail});
+            if let Some(h) = held {
+                v["held"] = json!(h);
+            }
+            s.log_send(&v);
+        };
+        // Before v0.2.2, a held send's "held" line and its "expired" line had its id; nothing else did.
+        line(1, "held", json!({"confirm": "c1", "why": "limit"}), None);
+        line(2, "expired", json!("c1"), None);
+        line(3, "held", json!({"confirm": "c2", "why": "limit"}), None);
+        line(4, "sent", json!("t2"), None);
+        // Since v0.2.2, every line of a held send carries it.
+        line(5, "held", json!({"confirm": "c3", "why": "locked"}), Some("c3"));
+        line(6, "sent", json!("t0"), None);
+        line(7, "sent", json!("t3"), Some("c3"));
+        line(8, "held", json!({"confirm": "c4", "why": "limit"}), Some("c4"));
+        let got: Vec<(u64, String)> = s
+            .recent_sends(10)
+            .iter()
+            .map(|v| (v["time"].as_u64().unwrap(), v["result"].as_str().unwrap().to_string()))
+            .collect();
+        let want = [(8, "held"), (7, "sent"), (6, "sent"), (4, "sent"), (3, "held"), (2, "expired")];
+        assert_eq!(got, want.map(|(t, r)| (t, r.to_string())));
+        assert_eq!(s.recent_sends(2).len(), 2, "n counts the lines shown");
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 

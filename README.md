@@ -42,6 +42,8 @@ attestation for each. Check one with GitHub CLI 2.49 or later, logged in (`gh au
 gh attestation verify freebank_<version>_amd64.deb --repo mbdrivechains/freebank-app
 ```
 
+To review the source, and for what these checks do and don't prove, see [VERIFY.md](VERIFY.md).
+
 ## Model: your own node, your own keys
 
 Your wallet lives in your own `freebankd` node, and the app runs it for you.

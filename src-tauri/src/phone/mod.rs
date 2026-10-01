@@ -1,4 +1,4 @@
-//! The desktop side of the FreeBank phone relay (relay/PROTOCOL.md in freebank-distribution):
+//! The desktop side of the FreeBank phone relay (relay/PROTOCOL.md in mbdrivechains/freebank-phone):
 //! the desktop key D and its room, pairing, the KK session handshake, the narrow door (balance,
 //! history, receive, send, status), held sends, phone sends from an encrypted wallet, and the
 //! outbound link to the relay.
@@ -759,7 +759,7 @@ impl Phone {
         self.cancelled.lock().unwrap().retain(|c| c.device != id);
         self.save_held();
         for h in dropped {
-            self.log(&h.device, &h.name, &h.address, h.sats, "declined", json!("phone revoked"));
+            self.log_held(&h, "declined", json!("phone revoked"));
         }
         // With no phone left, "Let my phone send while FreeBank is open" serves no one, and Settings
         // no longer shows its switch: the passphrase goes, so a phone paired later starts with phone
@@ -1161,10 +1161,21 @@ impl Phone {
     }
 
     fn log(&self, dev: &str, name: &str, address: &str, sats: u64, result: &str, detail: Value) {
-        let entry = json!({
+        self.write_log(json!({
             "time": self.now(), "device": dev, "name": name, "address": address,
             "amount": to_ecx(sats), "result": result, "detail": detail,
-        });
+        }));
+    }
+
+    /// A held send's lines carry its id, so Settings lists it once, with its latest state.
+    fn log_held(&self, h: &Held, result: &str, detail: Value) {
+        self.write_log(json!({
+            "time": self.now(), "device": h.device, "name": h.name, "address": h.address,
+            "amount": to_ecx(h.sats), "result": result, "detail": detail, "held": h.confirm,
+        }));
+    }
+
+    fn write_log(&self, entry: Value) {
         self.store.log_send(&entry);
         self.events.emit(EV_SEND, entry);
     }
@@ -1264,7 +1275,7 @@ impl Phone {
         };
         self.held.lock().unwrap().push(h.clone());
         self.save_held();
-        self.log(dev, name, address, sats, "held", json!({"confirm": h.confirm, "why": why}));
+        self.log_held(&h, "held", json!({"confirm": h.confirm, "why": why}));
         self.events.emit(EV_HELD, serde_json::to_value(h.view(self.held_ttl())).unwrap());
         json!({"pending": h.confirm, "why": why})
     }
@@ -1296,7 +1307,7 @@ impl Phone {
             had
         };
         for h in &saved {
-            self.log(&h.device, &h.name, &h.address, h.sats, "cancelled", json!(ERR_RESTARTED));
+            self.log_held(h, "cancelled", json!(ERR_RESTARTED));
         }
         if had {
             self.save_held();
@@ -1328,7 +1339,7 @@ impl Phone {
         let msg = expired_text(ttl);
         for h in &gone {
             self.final_reply(h, "err", json!(msg));
-            self.log(&h.device, &h.name, &h.address, h.sats, "expired", json!(h.confirm));
+            self.log_held(h, "expired", json!(h.confirm));
         }
         if !gone.is_empty() {
             self.events.emit(EV_CHANGED, json!({}));
@@ -1454,7 +1465,7 @@ impl Phone {
         self.expire();
         if !allow {
             let h = self.take_held(confirm)?;
-            self.log(&h.device, &h.name, &h.address, h.sats, "declined", Value::Null);
+            self.log_held(&h, "declined", Value::Null);
             self.final_reply(&h, "err", json!(ERR_DECLINED));
             self.events.emit(EV_CHANGED, json!({}));
             return Ok(Confirmed { txid: None, need_passphrase: false });
@@ -1487,12 +1498,12 @@ impl Phone {
         self.save_held();
         let result = match paid {
             Ok(txid) => {
-                self.log(&h.device, &h.name, &h.address, h.sats, "sent", txid.clone());
+                self.log_held(&h, "sent", txid.clone());
                 self.final_reply(&h, "ok", json!({"txid": txid}));
                 Ok(Confirmed { txid: txid.as_str().map(String::from), need_passphrase: false })
             }
             Err(e) => {
-                self.log(&h.device, &h.name, &h.address, h.sats, "failed", json!(e));
+                self.log_held(&h, "failed", json!(e));
                 self.final_reply(&h, "err", json!(e));
                 Err(e)
             }

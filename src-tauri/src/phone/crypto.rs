@@ -1,4 +1,4 @@
-//! The phone relay's crypto (relay/PROTOCOL.md in freebank-distribution, "Keys and crypto",
+//! The phone relay's crypto (relay/PROTOCOL.md in mbdrivechains/freebank-phone, "Keys and crypto",
 //! "Pairing", "The comparison code", "Session handshake", "The relay"): P-256 ECDH, HKDF-SHA256,
 //! AES-256-GCM, SHA-256, and ECDSA for the relay proof. Every function takes its keys explicitly so
 //! the test vectors can drive it.

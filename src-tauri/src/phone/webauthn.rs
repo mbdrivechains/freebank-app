@@ -1,4 +1,4 @@
-//! Checking a phone's passkey (WebAuthn) assertion: freebank-distribution relay/PROTOCOL.md, "Face ID:
+//! Checking a phone's passkey (WebAuthn) assertion: freebank-phone's relay/PROTOCOL.md, "Face ID:
 //! passkeys". The phone's platform authenticator signs `authenticatorData || SHA-256(clientDataJSON)`
 //! with an ES256 key the phone added; the desktop checks every part before it trusts the session.
 
