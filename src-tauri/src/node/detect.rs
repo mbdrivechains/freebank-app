@@ -128,13 +128,17 @@ pub enum RpcState {
 pub struct Probe {
     pub state: RpcState,
     pub message: String,
+    /// Warming only because the node answered too late (busy connecting blocks), not because it is starting.
+    pub busy: bool,
     pub blocks: Option<u64>,
     pub headers: Option<u64>,
 }
 
 pub async fn probe(http: &reqwest::Client, s: &Settings) -> Probe {
     let c = local_client(http, s);
-    let (state, message, info) = match c.call_typed("getblockchaininfo", vec![]).await {
+    let r = c.call_typed("getblockchaininfo", vec![]).await;
+    let busy = matches!(r, Err(RpcError::Busy));
+    let (state, message, info) = match r {
         Ok(v) => (RpcState::Up, String::new(), Some(v)),
         Err(RpcError::Rpc { code, message }) if code == RPC_IN_WARMUP => {
             (RpcState::Warming, message, None)
@@ -154,6 +158,7 @@ pub async fn probe(http: &reqwest::Client, s: &Settings) -> Probe {
         Err(e) => (RpcState::Locked, e.to_string(), None),
     };
     Probe {
+        busy,
         state,
         message,
         blocks: info.as_ref().and_then(|v| v["blocks"].as_u64()),
@@ -333,26 +338,38 @@ pub struct ConnCheck {
     pub detail: String,
 }
 
-/// The enforcer's tip through grpcurl, read-only (ValidatorService/GetChainTip): (height, hash).
-async fn enforcer_tip(grpcurl: &Path, enforcer: &str) -> Result<(u64, String), String> {
-    let out = tokio::time::timeout(
-        Duration::from_secs(20),
-        tokio::process::Command::new(grpcurl)
-            .args(["-plaintext", "-max-time", "10", "-d", "{}", enforcer])
-            .arg("cusf.mainchain.v1.ValidatorService/GetChainTip")
-            .stdin(std::process::Stdio::null())
-            .output(),
-    )
-    .await
-    .map_err(|_| "no answer within 20 seconds".to_string())?
-    .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let line = err.lines().next().unwrap_or("no answer").trim();
-        return Err(line.chars().take(160).collect());
+/// The enforcer's tip, read-only (ValidatorService/GetChainTip): (height, hash). Over the Connect protocol, as
+/// freebankd (v0.2.17 on) asks it by default: a plain HTTP/1.1 POST of proto3 JSON to the enforcer's own port, so no
+/// grpcurl is needed (v0.2.5). Its own client: no redirects (a 307 would send the POST elsewhere), and at most 64 KiB
+/// read (security review L7).
+async fn enforcer_tip(enforcer: &str) -> Result<(u64, String), String> {
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut resp = http
+        .post(format!("http://{}/cusf.mainchain.v1.ValidatorService/GetChainTip", enforcer))
+        .header("Content-Type", "application/json")
+        .header("Connect-Protocol-Version", "1")
+        .body("{}")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("no answer ({})", e.without_url()))?;
+    let status = resp.status();
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("no full answer ({})", e.without_url()))? {
+        if body.len() + chunk.len() > 64 * 1024 {
+            return Err("an answer too long to be the enforcer's".into());
+        }
+        body.extend_from_slice(&chunk);
     }
-    let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|_| "an answer FreeBank couldn't read".to_string())?;
+    let v: serde_json::Value = serde_json::from_slice(&body).map_err(|_| format!("an answer FreeBank couldn't read (HTTP {})", status.as_u16()))?;
+    if !status.is_success() {
+        // Connect's error body: {"code": "...", "message": "..."}.
+        let msg = v["message"].as_str().or(v["code"].as_str()).unwrap_or("an error");
+        return Err(msg.chars().take(160).collect());
+    }
     let info = &v["blockHeaderInfo"];
     let height = info["height"]
         .as_u64()
@@ -390,12 +407,7 @@ async fn on_rest_chain(http: &reqwest::Client, rest: &str, hash: &str) -> Option
 }
 
 /// "Test connection" under Advanced: the checks freebankd makes at startup, in plain words.
-pub async fn test_connection(
-    http: &reqwest::Client,
-    grpcurl: Option<&Path>,
-    rest: &str,
-    enforcer: &str,
-) -> Vec<ConnCheck> {
+pub async fn test_connection(http: &reqwest::Client, rest: &str, enforcer: &str) -> Vec<ConnCheck> {
     let mut checks = Vec::new();
     let mut add = |label: &str, ok: bool, detail: String| {
         checks.push(ConnCheck {
@@ -430,11 +442,7 @@ pub async fn test_connection(
         add("Enforcer answers", false, format!("nothing at {}", enforcer));
         return checks;
     }
-    let Some(grpcurl) = grpcurl else {
-        add("Enforcer answers", true, "port open; the full check needs grpcurl, which comes with the install".into());
-        return checks;
-    };
-    match enforcer_tip(grpcurl, enforcer).await {
+    match enforcer_tip(enforcer).await {
         Err(e) => add("Enforcer answers", false, e),
         Ok((height, hash)) => {
             add("Enforcer answers", true, format!("block {}", grouped(height)));
@@ -547,5 +555,45 @@ mod tests {
         assert_eq!(c.kind, "new");
         assert!(c.message.is_empty());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A one-request HTTP server: the request line and headers it got, and its answer.
+    fn answer_once(status: &str, body: &str) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (status, body) = (status.to_string(), body.to_string());
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap();
+            tx.send(String::from_utf8_lossy(&buf[..n]).into_owned()).unwrap();
+            let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        });
+        (addr, rx)
+    }
+
+    /// v0.2.5: the enforcer's tip over the Connect protocol, as freebankd asks it, with no grpcurl.
+    #[tokio::test]
+    async fn the_enforcer_is_asked_over_connect() {
+        let hash = "00".repeat(32);
+        let (addr, got) = answer_once("200 OK", &format!(r#"{{"blockHeaderInfo":{{"blockHash":{{"hex":"{hash}"}},"height":"967812"}}}}"#));
+        let tip = enforcer_tip(&addr).await;
+        assert_eq!(tip, Ok((967_812, hash)));
+        let req = got.recv().unwrap().to_ascii_lowercase();
+        assert!(req.starts_with("post /cusf.mainchain.v1.validatorservice/getchaintip http/1.1"), "{req}");
+        assert!(req.contains("connect-protocol-version: 1") && req.contains("content-type: application/json"));
+        // An error comes back as Connect's {"code", "message"}.
+        let (addr, _kept) = answer_once("503 Service Unavailable", r#"{"code":"unavailable","message":"not synced"}"#);
+        assert_eq!(enforcer_tip(&addr).await, Err("not synced".to_string()));
+        // A redirect isn't followed (security review L7), and an answer that isn't JSON says its HTTP status.
+        let (addr, _kept) = answer_once("307 Temporary Redirect\r\nLocation: http://192.0.2.1/x", "");
+        assert_eq!(enforcer_tip(&addr).await, Err("an answer FreeBank couldn't read (HTTP 307)".to_string()));
+        let (addr, _kept) = answer_once("404 Not Found", "nothing here");
+        assert_eq!(enforcer_tip(&addr).await, Err("an answer FreeBank couldn't read (HTTP 404)".to_string()));
+        // Nor is an endless answer read.
+        let (addr, _kept) = answer_once("200 OK", &" ".repeat(70 * 1024));
+        assert_eq!(enforcer_tip(&addr).await, Err("an answer too long to be the enforcer's".to_string()));
     }
 }

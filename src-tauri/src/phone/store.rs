@@ -26,6 +26,11 @@ pub fn day_of(unix: u64) -> u64 {
     unix / 86_400
 }
 
+/// "2026-10-03" (UTC), for an approval's text.
+pub fn day_text(unix: u64) -> String {
+    crate::send::iso_utc(unix as i64).chars().take(10).collect()
+}
+
 /// ECX (a JSON number) to sats, refusing anything that isn't a sane positive amount.
 pub fn to_sats(ecx: f64) -> Result<u64, String> {
     if !ecx.is_finite() || ecx < 0.0 || ecx > MAX_ECX {
@@ -56,19 +61,20 @@ pub fn decimal_to_sats(s: &str) -> Result<u64, String> {
     if int.is_empty() && frac.is_empty() || !int.chars().chain(frac.chars()).all(|c| c.is_ascii_digit()) {
         return Err(bad());
     }
-    // digits × 10^(exp - frac.len()) ECX = digits × 10^(exp - frac.len() + 8) sats
+    // digits × 10^(exp - frac.len()) ECX = digits × 10^(exp - frac.len() + 8) sats. Checked: the exponent is the
+    // sender's text.
     let digits = format!("{int}{frac}");
     let digits = digits.trim_start_matches('0');
-    let shift = exp - frac.len() as i32 + 8;
+    let shift = i32::try_from(frac.len()).ok().and_then(|n| exp.checked_sub(n)).and_then(|v| v.checked_add(8)).ok_or_else(bad)?;
     let sats: u128 = if digits.is_empty() {
         0
     } else if shift >= 0 {
-        if digits.len() as i32 + shift > 18 {
+        if i32::try_from(digits.len()).ok().and_then(|n| n.checked_add(shift)).is_none_or(|n| n > 18) {
             return Err("amount out of range".into());
         }
         digits.parse::<u128>().map_err(|_| bad())? * 10u128.pow(shift as u32)
     } else {
-        let cut = (-shift) as usize;
+        let cut = shift.unsigned_abs() as usize;
         let (keep, drop) = if cut >= digits.len() { ("", digits) } else { digits.split_at(digits.len() - cut) };
         if drop.chars().any(|c| c != '0') {
             return Err(bad());
@@ -176,11 +182,28 @@ impl Devices {
 #[serde(default)]
 pub struct Config {
     pub relay_url: String,
+    /// "Approve sends on my phone" (v0.2.5): once the desktop's payments in a day would come to more than this many
+    /// sats, a phone's Face ID first. None: off.
+    #[serde(default)]
+    pub approve_over: Option<u64>,
+    /// The desktop's payments that counted against it, (unix seconds, sats), the last day's only. Approved ones don't.
+    #[serde(default)]
+    pub desk_spent: Vec<(u64, u64)>,
+    /// A change made with the recovery words instead of a phone: it waits a day, and a phone can cancel it.
+    #[serde(default)]
+    pub scheduled: Option<Scheduled>,
+}
+
+/// A weaker "Approve sends on my phone" (`over`, None: off), due at unix second `due`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scheduled {
+    pub over: Option<u64>,
+    pub due: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { relay_url: DEFAULT_RELAY.into() }
+        Self { relay_url: DEFAULT_RELAY.into(), approve_over: None, desk_spent: Vec::new(), scheduled: None }
     }
 }
 

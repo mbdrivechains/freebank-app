@@ -26,7 +26,6 @@ pub const PIN_HASH: &str = "00000000000000030101ba5cfea54b22becc79f95dc6040beb76
 pub const EXPLORER: &str = "https://explorer.ecxfreebank.com";
 pub const RELEASES_URL: &str = "https://api.github.com/repos/mbdrivechains/freebank/releases?per_page=50";
 pub const RELEASE_DOWNLOAD: &str = "https://github.com/mbdrivechains/freebank/releases/download";
-pub const GRPCURL_VERSION: &str = "1.9.4";
 /// The FreeBank seed's own coinbase tag; users pick their own.
 pub const SEED_TAG: &str = "ecxfreebank.com";
 pub const DEFAULT_RPC_PORT: u16 = 8454;

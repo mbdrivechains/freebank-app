@@ -65,6 +65,11 @@ macOS.
   relay's address (`config.json`), held sends (`held.json`) and the log of phone sends (`sends.log`). The crypto is
   in `src-tauri/src/phone/crypto.rs` (P-256 ECDH and ECDSA, HKDF-SHA256, AES-256-GCM). Face ID passkeys are checked
   on the desktop, in `src-tauri/src/phone/webauthn.rs`.
+- **Approve sends on my phone** (v0.2.5): `src-tauri/src/phone/mod.rs`, "Approve on my phone". `config.json` keeps the
+  amount, the day's counted payments and a change the recovery words made that waits its day. What asks: `send.rs`
+  (`approve_first`), `commands.rs` (`rpc_call`, with `phone::credit_payment` for the credit calls' costs),
+  `Phone::clear_held` (a phone's held payment confirmed here) and `recovery/commands.rs` (`wallet_reveal`). Someone who
+  can change your files can change `config.json` too: it guards the app, not the files.
 - **Copying the words to the clipboard:** `src-tauri/src/clipboard.rs`.
 - **The screens that show or take the words:** `src/components/RecoveryWords.svelte`, `WalletFlow.svelte` and
   `WalletSettings.svelte` (Show recovery words, and Show xprv: the wallet's master extended private key, derived from
@@ -78,8 +83,6 @@ macOS.
     installed the node, at most every 30 minutes; downloads from `github.com/mbdrivechains/freebank/releases`, which
     redirect to GitHub's file host, `*.githubusercontent.com`). A node is installed only if its `SHA256SUMS`
     signature checks against the key pinned in `src-tauri/src/node/release_key.rs`;
-  - grpcurl 1.9.4 from `github.com/fullstorydev/grpcurl`, pinned by sha256 in `src-tauri/src/node/install.rs`, only
-    when no grpcurl is found on this computer (below);
   - the app's own releases (v0.2.4, `src-tauri/src/app_update.rs`): `SHA256SUMS` and `SHA256SUMS.sig` from
     `github.com/mbdrivechains/freebank-app/releases/latest/download/`, 15 seconds after the app starts and every 12
     hours while it runs (an answer is reused for 6 hours), and when you press Check for updates; the new package from
@@ -151,9 +154,9 @@ another address and key from the environment, for the update's end-to-end test; 
 - `freebankd`, from `<app data>/releases/`, after its signature has checked (`src-tauri/src/node/install.rs` and
   `process.rs`);
 - `freebankd -version`, to read an installed node's version;
-- grpcurl, to test the enforcer; freebankd uses it too (`-grpcurlbin`). It is the one used before, BitWindow's, one
-  on your PATH, or else the app's own 1.9.4 download (`find_grpcurl` in `src-tauri/src/node/install.rs`). Only the
-  app's own download is checked against its pinned hash; each one found is run once with `-version`;
+- no grpcurl any more (v0.2.5): Setup checks the enforcer over the Connect protocol, a plain HTTP request to the
+  enforcer's own port (`enforcer_tip` in `src-tauri/src/node/detect.rs`), as freebankd (v0.2.17 on) talks to it. The
+  app neither downloads nor runs grpcurl, nor names one to freebankd;
 - the app itself, as the phone link's background part (`--phone-background`), and again after an update (the
   restart);
 - on macOS also `xattr` (to clear a download's quarantine), `/bin/ps`, `/usr/bin/sw_vers`, and `touch` on the app
@@ -182,9 +185,9 @@ Give your assistant the checked-out tree and something like this:
 > through `rpc_call` and its allowlist in `src-tauri/src/security.rs`, and through any Tauri command registered in
 > `src-tauri/src/lib.rs`;
 > (4) anything that lets a paired phone, the relay or a web page do more than the documented limits (the daily
-> limit, approval on the desktop, Face ID; `src-tauri/src/phone/`);
-> (5) downloads or processes started from untrusted input, and whether the node's signature and grpcurl's hash are
-> checked before either runs (a grpcurl already on the computer is used without a hash check);
+> limit, approval on the desktop, Face ID; `src-tauri/src/phone/`), and any app path that pays or shows the recovery
+> words without "Approve sends on my phone" asking while it is on;
+> (5) downloads or processes started from untrusted input, and whether the node's signature is checked before it runs;
 > (6) dependencies in `src-tauri/Cargo.lock` or `package-lock.json` that look out of place or come from outside the
 > usual registries.
 > For each finding give the file and line, what an attacker needs, and the impact. Say plainly what you did not

@@ -27,6 +27,18 @@ fn menu_with_report<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::R
     if let Some(MenuItemKind::Submenu(help)) = menu.get(HELP_SUBMENU_ID) {
         help.append(&MenuItem::with_id(handle, "report", "Report a Problem or Suggest Something…", true, None::<&str>)?)?;
     }
+    // ⌘Q asks what to stop, as closing the window does (v0.2.5; operator 2026-10-03: "when i command (or ctrl ) Q from
+    // app .. what gets shutdown"): our own Quit item in place of the standard one, which quits at once. A Mac shutdown
+    // or logout doesn't go through the menu, so it still quits without asking.
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        let items = app_menu.items()?;
+        let quit = items.iter().position(|i| matches!(i, MenuItemKind::Predefined(p) if p.text().is_ok_and(|t| t.starts_with("Quit"))));
+        if let Some(at) = quit {
+            app_menu.remove_at(at)?;
+            let name = handle.package_info().name.clone();
+            app_menu.insert(&MenuItem::with_id(handle, "quit", format!("Quit {name}"), true, Some("CmdOrCtrl+Q"))?, at)?;
+        }
+    }
     Ok(menu)
 }
 
@@ -35,6 +47,8 @@ fn on_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: tauri::menu::Men
     use tauri::Emitter;
     if event.id() == "report" {
         let _ = app.emit("report-open", ());
+    } else if event.id() == "quit" {
+        node::background::quit_asked(app);
     }
 }
 
@@ -116,7 +130,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_balance,
             commands::get_new_address,
-            commands::send_transaction,
             commands::get_transactions,
             commands::connect_node,
             commands::get_connection_status,
@@ -185,12 +198,17 @@ pub fn run() {
             node::commands::wallet_backup,
             node::commands::obliterate,
             node::commands::app_quit,
+            node::commands::app_quit_asked,
             // v0.2.0 node
             node::commands::node_set_keep_running,
             node::commands::node_restart,
             node::commands::refetch_start,
             phone::commands::phone_pair_start,
             phone::commands::phone_pair_answer,
+            phone::commands::phone_approve_info,
+            phone::commands::phone_approve_set,
+            phone::commands::phone_approval_cancel,
+            phone::commands::phone_approve_cancel_scheduled,
             phone::commands::phone_devices,
             phone::commands::phone_revoke,
             phone::commands::phone_set_limit,

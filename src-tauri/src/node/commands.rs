@@ -183,11 +183,8 @@ pub async fn test_connection(
     rest: String,
     enforcer: String,
 ) -> Result<Vec<detect::ConnCheck>, String> {
-    let saved = mgr.settings.lock().await.grpcurl.clone();
-    let grpcurl = install::find_grpcurl(&mgr.app_dir, saved.as_deref()).map(|(p, _)| p);
     Ok(detect::test_connection(
         &mgr.http,
-        grpcurl.as_deref(),
         &detect::normalize_endpoint(&rest),
         &detect::normalize_endpoint(&enforcer),
     )
@@ -368,8 +365,12 @@ pub async fn wallet_backup(app: AppHandle, mgr: State<'_, Mgr>) -> Result<Vec<St
 pub async fn obliterate(
     app: AppHandle,
     mgr: State<'_, Mgr>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
     ticks: Vec<obliterate::Tick>,
 ) -> Result<obliterate::Outcome, String> {
+    // It takes the phone link's settings with it, and the wallet may stay (security re-review H2).
+    crate::phone::commands::approve_change(&phone, &mgr.app_dir, "Obliterate: remove FreeBank from this computer, with \
+         \"Approve sends on my phone\" and your paired phones").await?;
     let places = obliterate_places(&app, &mgr).await;
     obliterate::run(&mgr, places, ticks).await
 }
@@ -379,6 +380,12 @@ pub async fn obliterate(
 #[tauri::command]
 pub fn app_quit(app: AppHandle) {
     app.exit(0);
+}
+
+/// Ctrl+Q in the window (Linux windows have no menu bar): ask what to stop, as ⌘Q does on a Mac (background.rs).
+#[tauri::command]
+pub fn app_quit_asked(app: AppHandle) {
+    super::background::quit_asked(&app);
 }
 
 #[tauri::command]
@@ -402,7 +409,12 @@ pub async fn connect_local(
     if !c.configure_local(&format!("http://127.0.0.1:{}", s.rpc_port), s.datadir.clone().into()) {
         return Err(format!("No RPC cookie in {} yet.", s.datadir));
     }
-    c.call("getblockchaininfo", vec![]).await.map(|_| true)
+    // A node busy connecting blocks answers late (it took 35-40 s once): the client is set up, and the screens ask
+    // again, so "Continue while it syncs" doesn't wait for it (v0.2.5).
+    match tokio::time::timeout(std::time::Duration::from_secs(3), c.call("getblockchaininfo", vec![])).await {
+        Ok(r) => r.map(|_| true),
+        Err(_) => Ok(true),
+    }
 }
 
 /// "Keep FreeBank's node running after I close the app" (Settings).

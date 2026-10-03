@@ -61,7 +61,11 @@ Your wallet lives in your own `freebankd` node, and the app runs it for you.
   keeps the words only encrypted with your passphrase, and never stores the passphrase.
 - **Your phone as a remote** (v0.2.0). Pair it in Settings > Phone. It reaches this computer through the relay at
   app.ecxfreebank.com, end-to-end encrypted: the relay only passes sealed messages along. The phone has a daily
-  sending limit, and bigger payments wait for you here.
+  sending limit, and bigger payments wait for you here. It shows your house notes and the houses, and sends, redeems
+  or demands notes under the same limit (v0.2.5).
+- **Approve sends on my phone** (v0.2.5, opt in). Once this computer's payments in a day come to more than an amount
+  you set, your phone approves the next one with Face ID. It guards the app, not the node: someone with this computer
+  and your wallet passphrase could still use the node directly.
 - Advanced: the app can also connect to your own node on another computer, over Tailscale.
 
 ## First run (desktop)
@@ -85,7 +89,8 @@ the app just connects to it.
   passphrase
 - **Security** (Settings): the wallet's passphrase, the node's ports, old unencrypted backups, file permissions and
   the node program's signature, with red items on Home until fixed
-- **Phone remote**: pair a phone, set its daily limit, allow or refuse bigger payments here
+- **Phone remote**: pair a phone, set its daily limit, allow or refuse bigger payments here; notes and houses on the
+  phone; approve this computer's bigger payments on the phone
 - Keep the node running after you close the app
 - **Notes** — hold / mint / send / redeem / demand, per issuing house
 - **Houses** — directory, registration, reserve attestation

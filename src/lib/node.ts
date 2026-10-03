@@ -48,6 +48,8 @@ export type RpcState = "down" | "warming" | "up" | "locked" | "busy";
 export interface Probe {
   state: RpcState;
   message: string;
+  /** Warming only because the node answered too late (busy connecting blocks). */
+  busy?: boolean;
   blocks: number | null;
   headers: number | null;
 }
@@ -318,6 +320,8 @@ export const node = {
   walletBackup: () => tauriInvoke("wallet_backup") as Promise<string[]>,
   obliterate: (ticks: WipeTick[]) => tauriInvoke("obliterate", { ticks }) as Promise<Obliterated>,
   quit: () => tauriInvoke("app_quit") as Promise<void>,
+  /** Ctrl+Q (Linux): ask what to stop, as ⌘Q does on a Mac; quits at once when there is nothing to ask. */
+  quitAsked: () => tauriInvoke("app_quit_asked") as Promise<void>,
   setKeepRunning: (on: boolean) => tauriInvoke("node_set_keep_running", { on }) as Promise<Settings>,
   restart: () => tauriInvoke("node_restart") as Promise<void>,
   refetchStart: () => tauriInvoke("refetch_start") as Promise<void>,

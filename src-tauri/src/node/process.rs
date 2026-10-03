@@ -173,9 +173,6 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     if let Some(u) = lock::in_use(Path::new(&s.datadir), &[]) {
         return Err(format!("{} Stop it first, or choose another data folder under Advanced.", u.say()));
     }
-    let grpcurl = install::find_grpcurl(&mgr.app_dir, s.grpcurl.as_deref())
-        .map(|(p, _)| p)
-        .ok_or("grpcurl is missing; please install again.")?;
     if detect::port_busy(s.rpc_port) {
         return Err(format!(
             "Something is already using port {}. If it is another FreeBank node, stop it first, \
@@ -212,7 +209,6 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
         .arg(format!("-mainchainrest={}", s.rest))
         .arg("-mainchainchain=main")
         .arg(format!("-mainchainblockpin={}:{}", PIN_HEIGHT, PIN_HASH))
-        .arg(format!("-grpcurlbin={}", grpcurl.display()))
         // Always explicit, so an rpcport= line in freebank.conf can't hide the node from us.
         .arg(format!("-rpcport={}", s.rpc_port))
         .arg(format!("-port={}", s.p2p_port))

@@ -1,6 +1,45 @@
 // The phone relay (desktop app only): typed wrappers over the Rust phone_* commands and its events.
 
 import { tauriInvoke } from "./api";
+import { BASE_TICKER } from "./brand";
+
+/** A phone payment (v0.2.5): ECX, or a house's notes sent, redeemed or demanded. */
+export type PaymentKind = "send" | "note-send" | "note-redeem" | "note-demand";
+
+interface Payment {
+  kind?: PaymentKind;
+  house?: number | null;
+  amount: number;
+}
+
+/** What a phone's payment does, in a few words: "send 0.5 ECX", "redeem 0.5 ECX of house #3's notes". */
+export function paymentWhat(p: Payment): string {
+  const amt = `${p.amount} ${BASE_TICKER}`;
+  const notes = `${amt} of house #${p.house}'s notes`;
+  switch (p.kind ?? "send") {
+    case "note-send":
+      return `send ${notes}`;
+    case "note-redeem":
+      return `redeem ${notes}`;
+    case "note-demand":
+      return `demand ${notes}`;
+    default:
+      return `send ${amt}`;
+  }
+}
+
+/** The same, done: "Sent 0.5 ECX", "Redeemed 0.5 ECX of house #3's notes". */
+export function paymentDone(p: Payment): string {
+  const w = paymentWhat(p);
+  const done: Record<string, string> = { send: "Sent", redeem: "Redeemed", demand: "Demanded" };
+  const [verb, ...rest] = w.split(" ");
+  return [done[verb] ?? verb, ...rest].join(" ");
+}
+
+/** The button that does it: Send, Redeem or Demand. */
+export function paymentButton(p: Payment): string {
+  return p.kind === "note-redeem" ? "Redeem" : p.kind === "note-demand" ? "Demand" : "Send";
+}
 
 export interface PhoneDevice {
   id: string;
@@ -17,6 +56,27 @@ export interface PhoneDevice {
   face_id_sends: boolean;
 }
 
+/** An approval the desktop is waiting for on a phone (v0.2.5, "Approve sends on my phone"). */
+export interface Approval {
+  id: string;
+  /** "Send 2.5 ECX to X…", or the change it would make */
+  text: string;
+  /** unix seconds */
+  expires: number;
+}
+
+export interface ApproveInfo {
+  /** ECX: once this computer's payments in a day would come to more than this, a phone's Face ID first; null: off. */
+  over: number | null;
+  /** ECX this computer can still pay today without asking */
+  left: number | null;
+  /** paired phones with Face ID, which can approve */
+  approvers: number;
+  waiting: Approval[];
+  /** A change the recovery words made, waiting its day: the new amount (null: off), due at unix seconds. */
+  scheduled: { over: number | null; due: number } | null;
+}
+
 export interface PairAsk {
   /** this request; answers name it */
   id: string;
@@ -31,13 +91,18 @@ export interface HeldSend {
   confirm: string;
   device: string;
   name: string;
+  /** Empty for a redeem or a demand. */
   address: string;
   amount: number;
+  kind?: PaymentKind;
+  house?: number | null;
   /** unix seconds: when it was held, and when it stops waiting */
   at: number;
   expires: number;
   /** "limit": over the phone's daily limit; "locked": the wallet is locked and phone sends are off */
   why: string;
+  /** The phone's own Face ID signed it (v0.2.5). */
+  face_id?: boolean;
 }
 
 export interface PhoneWallet {
@@ -71,6 +136,9 @@ export interface PhoneSend {
   name: string;
   address: string;
   amount: number;
+  /** v0.2.5: a note action and its house (absent for a send). */
+  kind?: PaymentKind;
+  house?: number | null;
   /** "sent" | "held" | "declined" | "failed" | "expired" | "cancelled" | "refused" (FreeBank was closed) */
   result: string;
   detail: unknown;
@@ -101,6 +169,14 @@ export const phone = {
   keepConnectedQuit: () => tauriInvoke("phone_keep_connected_quit") as Promise<void>,
   pairStart: () => tauriInvoke("phone_pair_start") as Promise<{ url: string; expires: number }>,
   pairAnswer: (id: string, allow: boolean) => tauriInvoke("phone_pair_answer", { id, allow }) as Promise<void>,
+  approveInfo: () => tauriInvoke("phone_approve_info") as Promise<ApproveInfo>,
+  /** `over` in ECX (null: off). Off or a higher amount waits for a phone's Face ID; with `words`, it happens a day
+   * later instead (the answer: when, unix seconds), unless a phone or this computer cancels it. */
+  approveSet: (over: number | null, words?: string) =>
+    tauriInvoke("phone_approve_set", { over, words }) as Promise<number | null>,
+  /** Cancel the change the recovery words made, while it waits. */
+  approveCancelScheduled: () => tauriInvoke("phone_approve_cancel_scheduled") as Promise<void>,
+  approvalCancel: (id: string) => tauriInvoke("phone_approval_cancel", { id }) as Promise<void>,
   devices: () => tauriInvoke("phone_devices") as Promise<PhoneDevice[]>,
   revoke: (id: string) => tauriInvoke("phone_revoke", { id }) as Promise<void>,
   /** "Remove Face ID", for a phone that lost its passkey. */
@@ -118,7 +194,7 @@ export const phone = {
   recentSends: () => tauriInvoke("phone_recent_sends") as Promise<PhoneSend[]>,
 };
 
-const EVENTS = ["phone-pair-request", "phone-held-send", "phone-send", "phone-changed"];
+const EVENTS = ["phone-pair-request", "phone-held-send", "phone-send", "phone-changed", "phone-approval"];
 
 /** Call `cb` on any phone event. Returns a function that stops listening. */
 export async function onPhoneEvent(cb: (name: string, payload: unknown) => void): Promise<() => void> {

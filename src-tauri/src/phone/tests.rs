@@ -172,6 +172,38 @@ impl Rpc for MockRpc {
                         Ok(json!(format!("txid-{n}")))
                     }
                 }
+                // House notes (v0.2.5): house 3 is open, house 4 suspended (10% a year on demands).
+                "listmynotes" => {
+                    let w = self.wallet.lock().unwrap();
+                    if w.pass.is_some() && w.unlocked_until <= now {
+                        return Err(RpcFail::rpc(-13, LOCKED_MSG));
+                    }
+                    Ok(json!([
+                        {"house_id": 3, "units": 5_000_000, "demanded_units": 0, "coins": 2, "house_status": "o",
+                         "redeemable": true, "redeemable_units": 5_000_000, "demandable": true},
+                        {"house_id": 4, "units": 2_000_000, "demanded_units": 500_000, "coins": 1, "house_status": "d",
+                         "redeemable": true, "redeemable_units": 500_000, "demandable": true}
+                    ]))
+                }
+                "listhouses" => Ok(json!([
+                    {"id": 3, "classid": "Bank of Leith", "tier": 1, "effective_status": "open", "mintedunits": 90_000_000,
+                     "attestedratiobps": 12_500, "lastattestreserves": 1.2, "lastattestheight": 110, "defer_interest_bps": 1000},
+                    {"id": 4, "classid": "Ayr Bank", "tier": 1, "effective_status": "deferred", "mintedunits": 40_000_000,
+                     "attestedratiobps": 6_000, "lastattestreserves": 0.24, "lastattestheight": 100, "defer_interest_bps": 1000}
+                ])),
+                "transfernote" | "redeemnote" | "demandnote" => {
+                    let locked = {
+                        let w = self.wallet.lock().unwrap();
+                        w.pass.is_some() && w.unlocked_until <= now
+                    };
+                    if locked {
+                        Err(RpcFail::rpc(-13, LOCKED_MSG))
+                    } else if self.fail_send.load(Ordering::SeqCst) {
+                        Err(RpcFail::rpc(-4, "no single holder's coins sum exactly to the amount"))
+                    } else {
+                        Ok(json!({"txid": format!("txid-{n}")}))
+                    }
+                }
                 _ => Err(RpcFail::rpc(-32601, "Method not found")),
             }
         })
@@ -861,7 +893,10 @@ async fn door_methods_and_replay() {
     assert_eq!(lt, vec![json!("*"), json!(50)], "count capped at 50");
 
     let r = ask(&mut h, &mut sim, 7, 3, "status", json!({})).await;
-    assert_eq!(r["ok"], json!({"blocks": 120, "synced": true, "limit_left": 0.1, "face_id": false, "face_id_sends": false}));
+    assert_eq!(
+        r["ok"],
+        json!({"blocks": 120, "synced": true, "limit_left": 0.1, "face_id": false, "face_id_sends": false, "credit": true, "add_asks": false})
+    );
 
     let r = ask(&mut h, &mut sim, 7, 4, "dumpprivkey", json!({})).await;
     assert_eq!(r, json!({"id": 4, "err": "unknown method"}));
@@ -959,7 +994,7 @@ async fn held_send_confirmed_on_the_desktop() {
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
     let id = h.phone.devices()[0].id.clone();
-    h.phone.set_limit(&id, 0.05).unwrap();
+    h.phone.set_limit(&id, 0.05).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 11, "send", json!({"address": TO, "amount": 0.06})).await;
     let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
     assert_eq!(r, json!({"id": 11, "ok": {"pending": confirm, "why": "limit"}}));
@@ -995,7 +1030,7 @@ async fn with_the_app_closed_over_the_limit_is_refused() {
     paired(&mut h, &mut sim, 1).await;
     h.phone.set_background(true);
     let id = h.phone.devices()[0].id.clone();
-    h.phone.set_limit(&id, 0.05).unwrap();
+    h.phone.set_limit(&id, 0.05).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 11, "send", json!({"address": TO, "amount": 0.06})).await;
     assert_eq!(r, json!({"id": 11, "err": ERR_CLOSED_LIMIT}));
     assert!(h.phone.held().is_empty() && h.rpc.sends().is_empty());
@@ -1011,7 +1046,7 @@ async fn held_send_declined_zero_limit_and_revoke() {
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
     let id = h.phone.devices()[0].id.clone();
-    h.phone.set_limit(&id, 0.0).unwrap();
+    h.phone.set_limit(&id, 0.0).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 21, "send", json!({"address": TO, "amount": 0.00000001})).await;
     let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
     assert_eq!(
@@ -1388,7 +1423,7 @@ async fn unlocks_keep_clear_of_the_nodes_relock() {
     assert!(!h.rpc.deadlocked());
     // A confirm on the desktop as that relock comes due waits too.
     let id = h.phone.devices()[0].id.clone();
-    h.phone.set_limit(&id, 0.0).unwrap();
+    h.phone.set_limit(&id, 0.0).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 3, "send", json!({"address": TO, "amount": 0.02})).await;
     let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_secs(SEND_UNLOCK_SECS) - t1.elapsed() - Duration::from_millis(100)).await;
@@ -1518,7 +1553,7 @@ async fn confirming_uses_the_phone_send_passphrase_when_it_is_on() {
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
     let id = h.phone.devices()[0].id.clone();
-    h.phone.set_limit(&id, 0.0).unwrap();
+    h.phone.set_limit(&id, 0.0).await.unwrap();
     h.rpc.encrypt(PASS);
     h.phone.phone_send_on(Zeroizing::new(PASS.into())).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 2, "send", json!({"address": TO, "amount": 0.5})).await;
@@ -1828,7 +1863,7 @@ async fn host_command(phone: &Arc<Phone>, line: &str, pass_file: Option<&str>) -
             "limit" => {
                 let ecx: f64 = arg(0).parse().map_err(|_| "limit <ecx>")?;
                 for d in phone.devices() {
-                    phone.set_limit(&d.id, ecx)?;
+                    phone.set_limit(&d.id, ecx).await?;
                 }
                 Ok(json!({}))
             }
@@ -2186,7 +2221,7 @@ async fn a_held_outcome_survives_the_proofs_lapse() {
     let fid = Authenticator::new(7);
     assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, false).await["ok"].is_object());
     let id = h.phone.devices()[0].id.clone();
-    h.phone.set_limit(&id, 0.05).unwrap();
+    h.phone.set_limit(&id, 0.05).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 11, "send", json!({"address": TO, "amount": 0.06})).await;
     let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
     // The walk to the desktop takes over 5 minutes: the proof lapses meanwhile.
@@ -2231,4 +2266,683 @@ async fn daemon_mode_wakes_on_a_paired_phones_request() {
     h.feed(1, f);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(woken.load(Ordering::SeqCst), 2);
+}
+
+// ----- house notes on the phone (v0.2.5) -----------------------------------------------------
+
+#[tokio::test]
+async fn the_phone_sees_its_notes_and_the_houses() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    assert_eq!(ask(&mut h, &mut sim, 1, 1, "status", json!({})).await["ok"]["credit"], true);
+
+    let r = ask(&mut h, &mut sim, 1, 2, "notes", json!({})).await;
+    assert_eq!(
+        r["ok"][0],
+        json!({"house": 3, "name": "Bank of Leith", "state": "o", "state_name": "Open", "amount": 0.05, "demanded": 0.0,
+               "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000})
+    );
+    // Suspended: only the demanded notes can be redeemed, with their interest.
+    assert_eq!(r["ok"][1]["state_name"], "Suspended");
+    assert_eq!(r["ok"][1]["redeemable"], 0.005);
+    assert_eq!(r["ok"][1]["demanded"], 0.005);
+
+    let r = ask(&mut h, &mut sim, 1, 3, "houses", json!({})).await;
+    assert_eq!(
+        r["ok"][1],
+        json!({"house": 4, "name": "Ayr Bank", "state": "d", "state_name": "Suspended", "ratio_bps": 6000,
+               "outstanding": 0.4, "reserves": 0.24, "attested_at": 100, "rate_bps": 1000})
+    );
+}
+
+#[tokio::test]
+async fn notes_need_the_wallet_unlocked_for_a_moment() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.rpc.encrypt(PASS);
+    // Locked, and phone sends off: the phone hears how to allow it, and nothing is unlocked.
+    let r = ask(&mut h, &mut sim, 1, 1, "notes", json!({})).await;
+    assert_eq!(r["err"], ERR_NOTES_LOCKED);
+    assert!(h.rpc.params_of("walletpassphrase").is_empty());
+    // With phone sends on: unlocked for the read, locked again.
+    h.phone.phone_send_on(Zeroizing::new(PASS.into())).await.unwrap();
+    h.rpc.forget_calls();
+    let r = ask(&mut h, &mut sim, 1, 2, "notes", json!({})).await;
+    assert_eq!(r["ok"].as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(h.rpc.methods(), ["getwalletinfo", "walletpassphrase", "listmynotes", "walletlock", "listhouses"]);
+    assert!(!h.rpc.unlocked());
+}
+
+#[tokio::test]
+async fn a_note_send_within_the_limit_goes_and_counts() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let r = ask(&mut h, &mut sim, 1, 1, "note-send", json!({"house": 3, "address": TO, "amount": 0.02})).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+    // freebankd's transfernote: house, units (1 unit is 1 sat), fee, address.
+    assert_eq!(h.rpc.params_of("transfernote"), vec![vec![json!(3), json!(2_000_000), json!(NOTE_FEE), json!(TO)]]);
+    // Notes count against the daily limit, with the fee and the carriers (0.02 + 0.001 + 0.00002).
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.07898).abs() < 1e-12);
+    let logged = h.ev.named(EV_SEND);
+    assert_eq!((logged[0]["kind"].clone(), logged[0]["house"].clone()), (json!("note-send"), json!(3)));
+    // A bad address, a missing house or nothing at all: refused before anything is reserved.
+    for (a, why) in [
+        (json!({"house": 3, "address": "1abc", "amount": 0.01}), "FreeBank address"),
+        (json!({"address": TO, "amount": 0.01}), "Which house"),
+        (json!({"house": 3, "address": TO, "amount": 0}), "more than zero"),
+    ] {
+        let r = ask(&mut h, &mut sim, 1, 2, "note-send", a).await;
+        assert!(r["err"].as_str().unwrap().contains(why), "{r}");
+    }
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.07898).abs() < 1e-12);
+}
+
+#[tokio::test]
+async fn a_redeem_over_the_limit_waits_for_the_desktop() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let r = ask(&mut h, &mut sim, 1, 7, "note-redeem", json!({"house": 3, "amount": 0.5})).await;
+    let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
+    assert_eq!(r["ok"]["why"], "limit");
+    assert!(h.rpc.params_of("redeemnote").is_empty());
+    let held = h.phone.held();
+    assert_eq!((held[0].kind, held[0].house, held[0].address.as_str()), (Kind::NoteRedeem, Some(3), ""));
+    assert_eq!(held[0].amount, 0.5);
+    // It survives a restart's held.json as a note redeem, and is cancelled there like any held send; here the desktop
+    // confirms it.
+    let c = h.phone.confirm_send(&confirm, true, None).await.unwrap();
+    let r = sim.open(&h.next().await["d"]);
+    assert_eq!(r, json!({"id": 7, "pending": confirm, "ok": {"txid": c.txid.unwrap()}}));
+    assert_eq!(h.rpc.params_of("redeemnote"), vec![vec![json!(3), json!(50_000_000), json!(NOTE_FEE)]]);
+}
+
+#[tokio::test]
+async fn a_demand_the_node_refuses_says_what_to_do() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.rpc.fail_send.store(true, Ordering::SeqCst);
+    let r = ask(&mut h, &mut sim, 1, 1, "note-demand", json!({"house": 4, "amount": 0.01})).await;
+    let e = r["err"].as_str().unwrap();
+    assert!(e.contains("sum exactly") && e.contains("one of your own addresses"), "{e}");
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.1).abs() < 1e-12, "a failed demand gives the limit back");
+}
+
+#[tokio::test]
+async fn note_actions_take_face_id_like_a_send() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let fid = Authenticator::new(7);
+    assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, true).await["ok"].is_object());
+    // Without an assertion over a send challenge, nothing is reserved or done.
+    for (id, m, a) in [
+        (3, "note-send", json!({"house": 3, "address": TO, "amount": 0.01})),
+        (4, "note-redeem", json!({"house": 3, "amount": 0.01})),
+        (5, "note-demand", json!({"house": 4, "amount": 0.01})),
+    ] {
+        assert_eq!(ask(&mut h, &mut sim, 1, id, m, a).await["err"], ERR_AUTH_FAILED, "{m}");
+    }
+    assert!(h.rpc.params_of("transfernote").is_empty() && h.rpc.params_of("redeemnote").is_empty());
+    assert_eq!(limit_left(&mut h, &mut sim, 1).await, 0.1);
+    let c = ask(&mut h, &mut sim, 1, 6, "auth-start", json!({"for": "send"})).await;
+    let a = json!({"house": 3, "amount": 0.01, "auth": fid.assert(&c["ok"]["challenge"])});
+    let r = ask(&mut h, &mut sim, 1, 7, "note-redeem", a).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+}
+
+#[tokio::test]
+async fn with_the_app_closed_a_held_note_action_is_refused() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.phone.set_background(true);
+    let r = ask(&mut h, &mut sim, 1, 1, "note-redeem", json!({"house": 3, "amount": 0.5})).await;
+    assert_eq!(r["err"], ERR_CLOSED_LIMIT);
+    assert!(h.phone.held().is_empty());
+}
+
+// ----- Approve on my phone (v0.2.5) -----------------------------------------------------------
+
+/// The next `n` frames to the phone on `ch`, opened.
+async fn opened(h: &mut H, sim: &mut Sim, n: usize) -> Vec<Value> {
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let f = h.next().await;
+        out.push(sim.open(&f["d"]));
+    }
+    out
+}
+
+/// A paired phone with Face ID on channel 1.
+async fn approver(h: &mut H, sim: &mut Sim, fid: &Authenticator) {
+    paired(h, sim, 1).await;
+    assert!(add_passkey(h, sim, 1, 1, fid, false).await["ok"].is_object());
+}
+
+#[tokio::test]
+async fn a_send_is_approved_with_face_id_on_the_phone() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.request_approval(Approve::Send { sats: 250_000_000, address: TO.into() }).await });
+    // The phone is shown what it approves, and the challenge its Face ID signs.
+    let m = opened(&mut h, &mut sim, 1).await.remove(0);
+    let ap = &m["approve"];
+    assert_eq!((ap["what"].clone(), ap["amount"].clone(), ap["address"].clone()), (json!("send"), json!(2.5), json!(TO)));
+    assert_eq!(ap["cred"], "Y3JlZC1pZA");
+    assert_eq!(h.ev.named(EV_APPROVAL)[0]["text"], format!("Send 2.5 ECX to {TO}"));
+    // Another key's proof: refused, and it keeps waiting.
+    let other = Authenticator::new(9);
+    h.feed(1, sim.req(10, "approve", json!({"id": ap["id"], "auth": other.assert(&ap["challenge"])})));
+    assert_eq!(opened(&mut h, &mut sim, 1).await[0]["err"], ERR_AUTH_FAILED);
+    assert!(!task.is_finished());
+    // Its own Face ID over that challenge: approved.
+    h.feed(1, sim.req(11, "approve", json!({"id": ap["id"], "auth": fid.assert(&ap["challenge"])})));
+    let frames = opened(&mut h, &mut sim, 2).await;
+    assert!(frames.iter().any(|f| f["id"] == 11 && f["ok"] == json!({})), "{frames:?}");
+    assert!(frames.iter().any(|f| f["approve-done"] == ap["id"]), "the card goes: {frames:?}");
+    assert_eq!(task.await.unwrap(), Ok(()));
+    // Used up: a second answer finds nothing.
+    let r = ask(&mut h, &mut sim, 1, 12, "approve", json!({"id": ap["id"], "auth": fid.assert(&ap["challenge"])})).await;
+    assert!(r["err"].as_str().unwrap().contains("no longer waiting"));
+}
+
+#[tokio::test]
+async fn a_decline_a_timeout_and_no_phone_with_face_id() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    // No phone with Face ID: nothing to ask.
+    assert_eq!(
+        h.phone.request_approval(Approve::Change { text: "x".into() }).await,
+        Err(ERR_NO_APPROVER.to_string())
+    );
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.request_approval(Approve::Send { sats: 1, address: TO.into() }).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    h.feed(1, sim.req(20, "approve", json!({"id": ap["id"], "decline": true})));
+    opened(&mut h, &mut sim, 2).await;
+    assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_DECLINED.to_string()));
+    // Nobody answers: it ends, and the phone's card goes.
+    h.phone.set_approve_secs(1);
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.request_approval(Approve::Send { sats: 1, address: TO.into() }).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_TIMEOUT.to_string()));
+    assert_eq!(opened(&mut h, &mut sim, 1).await[0]["approve-done"], ap["id"]);
+    // Cancel on the desktop.
+    h.phone.set_approve_secs(60);
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.request_approval(Approve::Send { sats: 1, address: TO.into() }).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    h.phone.cancel_approval(ap["id"].as_str().unwrap());
+    assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_CANCELLED.to_string()));
+}
+
+#[tokio::test]
+async fn a_phone_opening_later_hears_the_approval() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    // The phone's session ends; the desktop asks; the phone opens FreeBank again.
+    h.phone.handle_frame(json!({"ch": 1, "closed": true}));
+    h.phone.chans.lock().unwrap().clear();
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.request_approval(Approve::Send { sats: 5, address: TO.into() }).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let hello = sim.hello();
+    h.feed(2, hello);
+    let ok = h.next().await;
+    sim.hello_ok(&h.d_pub(), &ok["d"]);
+    // Nothing before the session's Face ID (security review L1): someone holding the unlocked phone sees nothing.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(h.quiet());
+    let c = ask(&mut h, &mut sim, 2, 28, "auth-start", json!({"for": "open"})).await;
+    h.feed(2, sim.req(29, "auth", fid.assert(&c["ok"]["challenge"])));
+    let frames = opened(&mut h, &mut sim, 2).await;
+    let ap = frames.iter().find(|f| f.get("approve").is_some()).expect("the approval, once it passed Face ID")["approve"].clone();
+    assert!(frames.iter().any(|f| f["id"] == 29 && f["ok"] == json!({})));
+    assert_eq!(ap["amount"], 0.00000005);
+    // The seconds left, for the phone to count from (its clock may differ, L6).
+    assert!(ap["secs"].as_u64().unwrap() <= APPROVE_SECS);
+    h.feed(2, sim.req(30, "approve", json!({"id": ap["id"], "auth": fid.assert(&ap["challenge"])})));
+    opened(&mut h, &mut sim, 2).await;
+    assert_eq!(task.await.unwrap(), Ok(()));
+}
+
+#[tokio::test]
+async fn a_decline_takes_the_sessions_face_id() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.request_approval(Approve::Send { sats: 5, address: TO.into() }).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    // A new session that hasn't passed Face ID can't decline it (L1).
+    session(&mut h, &mut sim, 1).await;
+    let r = ask(&mut h, &mut sim, 1, 50, "approve", json!({"id": ap["id"], "decline": true})).await;
+    assert_eq!(r["err"], ERR_AUTH_NEEDED);
+    assert!(!task.is_finished());
+    h.phone.cancel_approval(ap["id"].as_str().unwrap());
+    assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_CANCELLED.to_string()));
+}
+
+const ECX: u64 = 100_000_000;
+
+fn a_send(sats: u64) -> Approve {
+    Approve::Send { sats, address: TO.into() }
+}
+
+/// Approve the next approval card on `ch` with `fid`.
+async fn approve_next(h: &mut H, sim: &mut Sim, fid: &Authenticator, id: u64) -> Value {
+    let ap = opened(h, sim, 1).await.remove(0)["approve"].clone();
+    h.feed(1, sim.req(id, "approve", json!({"id": ap["id"], "auth": fid.assert(&ap["challenge"])})));
+    opened(h, sim, 2).await;
+    ap
+}
+
+#[tokio::test]
+async fn the_desktop_counts_a_days_payments_then_asks() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    // Off: nothing counts.
+    assert_eq!(h.phone.clear_desktop(5, a_send(5)).await, Ok(Cleared::Off));
+    assert_eq!(h.phone.desk_left(), None);
+    h.phone.set_approve_over(Some(ECX), false).await.unwrap();
+    // 0.6 and then 0.4 ECX: within 1 ECX a day, so they count and go.
+    assert!(matches!(h.phone.clear_desktop(60_000_000, a_send(60_000_000)).await, Ok(Cleared::Counted { sats: 60_000_000, .. })));
+    h.later(10);
+    let b = h.phone.clear_desktop(40_000_000, a_send(40_000_000)).await.unwrap();
+    assert_eq!(h.phone.desk_left(), Some(0));
+    // One sat more: the phone is asked, so splitting a payment doesn't get round it (security review H1).
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.clear_desktop(1, a_send(1)).await });
+    approve_next(&mut h, &mut sim, &fid, 60).await;
+    assert_eq!(task.await.unwrap(), Ok(Cleared::Approved));
+    assert_eq!(h.phone.desk_left(), Some(0), "an approved payment doesn't count");
+    // One that didn't go out gives its count back.
+    h.phone.uncount(b);
+    assert_eq!(h.phone.desk_left(), Some(40_000_000));
+    // Kept across a restart; after a day, forgotten.
+    h.restart();
+    assert_eq!(h.phone.desk_left(), Some(40_000_000));
+    h.later(DAY_SECS);
+    assert_eq!(h.phone.desk_left(), Some(ECX));
+    // Off clears the count.
+    h.phone.clear_desktop(30_000_000, a_send(30_000_000)).await.unwrap();
+    h.phone.set_approve_over(None, true).await.unwrap();
+    assert!(h.phone.config.lock().unwrap().desk_spent.len() == 1, "the words' way waits a day");
+}
+
+#[tokio::test]
+async fn a_held_payment_confirmed_here_counts_unless_its_phone_signed_it() {
+    // The phone asked for 0.5 ECX, over its limit of 0.1, without its own Face ID: the desktop's confirm asks a phone,
+    // as 0.5 ECX is more than the day's 0.3 (security review M1).
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    h.phone.set_approve_over(Some(30_000_000), false).await.unwrap();
+    let r = ask(&mut h, &mut sim, 1, 70, "send", json!({"address": TO, "amount": 0.5})).await;
+    let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
+    let p = h.phone.clone();
+    let c2 = confirm.clone();
+    let task = tokio::spawn(async move { p.confirm_send(&c2, true, None).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert_eq!((ap["what"].clone(), ap["amount"].clone()), (json!("send"), json!(0.5)));
+    assert!(h.rpc.params_of("sendtoaddress").is_empty(), "nothing paid before the approval");
+    h.feed(1, sim.req(71, "approve", json!({"id": ap["id"], "auth": fid.assert(&ap["challenge"])})));
+    let r = task.await.unwrap();
+    assert!(r.as_ref().is_ok_and(|c| c.txid.is_some()), "{r:?}");
+    assert_eq!(h.phone.desk_left(), Some(30_000_000), "approved: it doesn't count");
+    // The approval's answer, its card going, and the payment's outcome.
+    let frames = opened(&mut h, &mut sim, 3).await;
+    assert!(frames.iter().any(|f| f["id"] == 70 && f["ok"]["txid"].is_string()), "{frames:?}");
+    // A small one counts against the day's amount instead. Asked for the passphrase it still counts (and isn't
+    // asked again); declined, it gives the count back.
+    h.rpc.encrypt(PASS);
+    let r = ask(&mut h, &mut sim, 1, 72, "send", json!({"address": TO, "amount": 0.03})).await;
+    let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
+    let c = h.phone.confirm_send(&confirm, true, None).await.unwrap();
+    assert!(c.need_passphrase);
+    // 0.03 ECX, and 0.001 for the fee the node will choose.
+    assert_eq!(h.phone.desk_left(), Some(26_900_000));
+    assert!(h.phone.confirm_send(&confirm, true, None).await.unwrap().need_passphrase);
+    assert_eq!(h.phone.desk_left(), Some(26_900_000), "counted once");
+    h.phone.confirm_send(&confirm, false, None).await.unwrap();
+    assert_eq!(h.phone.desk_left(), Some(30_000_000));
+
+    // A phone that signs each payment with its own Face ID: its held payment needs no second ask.
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    assert!(add_passkey(&mut h, &mut sim, 1, 1, &fid, true).await["ok"].is_object());
+    h.phone.set_approve_over(Some(30_000_000), false).await.unwrap();
+    let c = ask(&mut h, &mut sim, 1, 80, "auth-start", json!({"for": "send"})).await;
+    let r = ask(&mut h, &mut sim, 1, 81, "send", json!({"address": TO, "amount": 0.5, "auth": fid.assert(&c["ok"]["challenge"])})).await;
+    let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
+    assert!(h.phone.held()[0].face_id);
+    let r = h.phone.confirm_send(&confirm, true, None).await.unwrap();
+    assert!(r.txid.is_some());
+    assert_eq!(h.phone.desk_left(), Some(30_000_000), "and it doesn't count");
+}
+
+#[tokio::test]
+async fn the_recovery_words_wait_a_day_and_a_phone_can_cancel() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    h.phone.set_approve_over(Some(ECX), false).await.unwrap();
+    // The words turn it off a day from now, not at once (security review H2).
+    let due = h.phone.set_approve_over(None, true).await.unwrap();
+    assert_eq!(due, Some(h.at() + WORDS_WAIT_SECS));
+    assert_eq!(h.phone.approve_over(), Some(ECX), "still on for now");
+    assert_eq!(h.phone.scheduled().map(|s| s.over), Some(None));
+    // The phone hears it. Declining cancels it.
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert_eq!((ap["what"].clone(), ap["secs"].clone()), (json!("scheduled"), json!(WORDS_WAIT_SECS)));
+    assert!(ap["text"].as_str().unwrap().contains("recovery words"));
+    h.feed(1, sim.req(90, "approve", json!({"id": ap["id"], "decline": true})));
+    let frames = opened(&mut h, &mut sim, 2).await;
+    assert!(frames.iter().any(|f| f["approve-done"] == ap["id"]), "{frames:?}");
+    assert_eq!((h.phone.scheduled(), h.phone.approve_over()), (None, Some(ECX)));
+    // Not on the desktop's waiting screen: Settings shows it.
+    h.phone.set_approve_over(Some(2 * ECX), true).await.unwrap();
+    assert!(h.phone.approvals_waiting().is_empty());
+    // A phone's Face ID makes it at once.
+    approve_next(&mut h, &mut sim, &fid, 91).await;
+    assert_eq!((h.phone.scheduled(), h.phone.approve_over()), (None, Some(2 * ECX)));
+    // The desktop can cancel it too.
+    h.phone.set_approve_over(None, true).await.unwrap();
+    opened(&mut h, &mut sim, 1).await;
+    h.phone.cancel_scheduled();
+    assert_eq!(opened(&mut h, &mut sim, 1).await[0]["approve-done"].as_str().map(|s| s.starts_with("words-")), Some(true));
+    assert_eq!(h.phone.approve_over(), Some(2 * ECX));
+    // Otherwise it waits out its day, also across a restart, and then happens. Turning it on again drops nothing.
+    h.phone.set_approve_over(None, true).await.unwrap();
+    h.restart();
+    h.later(WORDS_WAIT_SECS - 1);
+    assert_eq!(h.phone.approve_over(), Some(2 * ECX));
+    h.later(1);
+    assert_eq!(h.phone.approve_over(), None);
+    assert_eq!(h.phone.scheduled(), None);
+    // A stronger setting drops a waiting change.
+    h.phone.set_approve_over(Some(ECX), false).await.unwrap();
+    h.phone.set_approve_over(None, true).await.unwrap();
+    h.phone.set_approve_over(Some(ECX / 2), false).await.unwrap();
+    assert_eq!((h.phone.scheduled(), h.phone.approve_over()), (None, Some(ECX / 2)));
+}
+
+#[tokio::test]
+async fn a_phones_first_face_id_takes_another_phones_yes() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    h.phone.set_approve_over(Some(ECX), false).await.unwrap();
+    // A second phone, paired before: turning Face ID on would make it an approver (security review M2).
+    let mut sim2 = Sim::new();
+    paired(&mut h, &mut sim2, 2).await;
+    assert_eq!(ask(&mut h, &mut sim2, 2, 1, "status", json!({})).await["ok"]["add_asks"], true);
+    let r = ask(&mut h, &mut sim2, 2, 2, "auth-start", json!({"for": "add"})).await;
+    assert_eq!(r["err"], ERR_ADD_ASKED);
+    // The first phone is asked; asking again doesn't ask twice.
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert!(ap["text"].as_str().unwrap().contains("approve the desktop's payments too"), "{ap}");
+    assert_eq!(ask(&mut h, &mut sim2, 2, 3, "auth-start", json!({"for": "add"})).await["err"], ERR_ADD_ASKED);
+    assert!(h.quiet());
+    // Approved: the second phone may add its passkey for 10 minutes.
+    h.feed(1, sim.req(100, "approve", json!({"id": ap["id"], "auth": fid.assert(&ap["challenge"])})));
+    opened(&mut h, &mut sim, 2).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let fid2 = Authenticator::new(8);
+    assert_eq!(add_passkey(&mut h, &mut sim2, 2, 4, &fid2, false).await["ok"], json!({}));
+    assert_eq!(h.phone.approvers(), 2);
+    // With no phone left to say yes, it can't be done until the setting is off.
+    let mut sim3 = Sim::new();
+    paired(&mut h, &mut sim3, 3).await;
+    for d in h.phone.devices().iter().filter(|d| d.passkey.is_some()) {
+        h.phone.remove_passkey(&d.id).unwrap();
+    }
+    assert_eq!(ask(&mut h, &mut sim3, 3, 1, "auth-start", json!({"for": "add"})).await["err"], ERR_ADD_NO_APPROVER);
+}
+
+#[tokio::test]
+async fn a_note_actions_fee_counts_against_the_phones_limit() {
+    // 0.1 ECX a day: a note send of 0.09 costs 0.09 + 0.001 fee + 0.00002 in carriers (security review M3).
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let r = ask(&mut h, &mut sim, 1, 1, "note-send", json!({"house": 3, "address": TO, "amount": 0.09})).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.00898).abs() < 1e-12);
+    // A tiny one still costs its fee, so taps can't drain the wallet past the limit.
+    for i in 0..8 {
+        let r = ask(&mut h, &mut sim, 1, 10 + i, "note-send", json!({"house": 3, "address": TO, "amount": 0.00000001})).await;
+        assert!(r["ok"]["txid"].is_string(), "{r}");
+    }
+    let r = ask(&mut h, &mut sim, 1, 20, "note-send", json!({"house": 3, "address": TO, "amount": 0.00000001})).await;
+    assert!(r["ok"]["pending"].is_string(), "the ninth waits for the desktop: {r}");
+}
+
+#[test]
+fn the_credit_tabs_payments_cost_what_leaves_the_wallet() {
+    let cost = |m: &str, p: Value, bill: Option<u64>| credit_payment(m, p.as_array().unwrap(), bill).map(|(c, _)| c);
+    let fee = 100_000;
+    assert_eq!(cost("listhouses", json!([]), None), None, "a read pays nothing");
+    assert_eq!(cost("transfernote", json!([3, 5_000_000, 0.001, TO]), None), Some(5_000_000 + 2_000 + fee));
+    assert_eq!(cost("transfernote", json!([3, 5_000_000, 0.001, ""]), None), Some(2_000 + fee), "to this wallet");
+    assert_eq!(cost("swapnote", json!([1, "btxfornote", 700, 1, 0.001]), None), Some(700 + fee));
+    assert_eq!(cost("createpool", json!([1, 10, 20, 30, 0.001]), None), Some(30 + fee));
+    assert_eq!(cost("addpoolliquidity", json!([1, 10, 20, 0.001]), None), Some(30 + fee));
+    assert_eq!(cost("issuebill", json!(["00", 2.0, 0.5, 900, 1008, 0.001]), None), Some(50_000_000 + fee));
+    assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), Some(70)), Some(70 + fee));
+    assert_eq!(cost("redeemnote", json!([3, 9, 0.001]), None), Some(2_000 + fee));
+    assert_eq!(cost("attesthouse", json!([3, 0.001]), None), Some(fee));
+    // A house's pledges are locked away from this wallet's spending (re-review L1).
+    assert_eq!(cost("registerhouse", json!([1, 1, "leith", 1000, [1.5, 0.5], 0.001]), None), Some(2 * ECX + fee));
+    // What can't be read counts as more than any day's amount: a phone is asked.
+    assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), None), Some(u64::MAX));
+    assert_eq!(cost("swapnote", json!([1, "btxfornote", "lots", 1, 0.001]), None), Some(u64::MAX));
+    let (_, what) = credit_payment("transfernote", json!([3, 5_000_000, 0.001, TO]).as_array().unwrap(), None).unwrap();
+    assert_eq!(what, Approve::Action { text: format!("Send 0.05 ECX of house #3's notes to {TO}"), sats: Some(5_102_000) });
+}
+
+#[tokio::test]
+async fn weakening_the_setting_takes_the_phone_or_the_words() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    // On needs a phone with Face ID.
+    assert!(h.phone.set_approve_over(Some(100_000_000), false).await.is_err());
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    h.phone.set_approve_over(Some(100_000_000), false).await.unwrap();
+    assert_eq!(h.phone.approve_over(), Some(100_000_000));
+    // A lower amount: at once.
+    h.phone.set_approve_over(Some(50_000_000), false).await.unwrap();
+    // Off: the phone is asked, and nothing changes until it approves.
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.set_approve_over(None, false).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert_eq!(ap["what"], "change");
+    assert!(ap["text"].as_str().unwrap().starts_with("Turn \"Approve sends on my phone\" off"));
+    assert_eq!(h.phone.approve_over(), Some(50_000_000));
+    h.feed(1, sim.req(40, "approve", json!({"id": ap["id"], "decline": true})));
+    opened(&mut h, &mut sim, 2).await;
+    assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_DECLINED.to_string()));
+    assert_eq!(h.phone.approve_over(), Some(50_000_000), "declined: still on");
+    // With the recovery words (checked by the command), no phone is asked: it happens a day later.
+    h.phone.set_approve_over(None, true).await.unwrap();
+    opened(&mut h, &mut sim, 1).await;
+    h.later(WORDS_WAIT_SECS);
+    assert_eq!(h.phone.approve_over(), None);
+    // Kept across a restart.
+    h.phone.set_approve_over(Some(7), false).await.unwrap();
+    h.restart();
+    assert_eq!(h.phone.approve_over(), Some(7));
+}
+
+// ----- house notes against a real node (ignored; FB_CREDIT_RPC) ---------------------------------
+
+/// freebankd's JSON-RPC with a user and password (a local test chain's).
+struct RealRpc {
+    url: String,
+    user: String,
+    pass: String,
+    http: reqwest::Client,
+}
+
+impl Rpc for RealRpc {
+    fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>> {
+        Box::pin(async move {
+            let body = json!({"jsonrpc": "1.0", "id": "t", "method": method, "params": params});
+            let r = self.http.post(&self.url).basic_auth(&self.user, Some(&self.pass)).json(&body).send().await;
+            let v: Value = match r {
+                Ok(r) => r.json().await.map_err(|e| RpcFail::rpc(-1, e.to_string()))?,
+                Err(e) => return Err(RpcFail::rpc(-1, e.to_string())),
+            };
+            if !v["error"].is_null() {
+                return Err(RpcFail::rpc(v["error"]["code"].as_i64().unwrap_or(-1), v["error"]["message"].as_str().unwrap_or("").to_string()));
+            }
+            Ok(v["result"].clone())
+        })
+    }
+}
+
+/// The phone's notes, houses and note actions against a real freebankd whose wallet holds 2.0 ECX of house 1's notes
+/// (a local test chain). FB_CREDIT_RPC=http://127.0.0.1:<port> (user t, password t); blocks are made by the caller
+/// between runs. `cargo test credit_real_node -- --ignored --nocapture`
+#[tokio::test]
+#[ignore]
+async fn credit_real_node() {
+    let url = std::env::var("FB_CREDIT_RPC").expect("FB_CREDIT_RPC");
+    let rpc = Arc::new(RealRpc { url, user: "t".into(), pass: "t".into(), http: reqwest::Client::new() });
+    let mut h = harness(None);
+    let n2 = h.now.clone();
+    let (phone, rx) = Phone::new(&h.dir, rpc.clone(), h.ev.clone(), Arc::new(move || n2.load(Ordering::SeqCst))).unwrap();
+    h.phone = phone;
+    h.rx = rx;
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    assert_eq!(ask(&mut h, &mut sim, 1, 1, "status", json!({})).await["ok"]["credit"], true);
+
+    let notes = ask(&mut h, &mut sim, 1, 2, "notes", json!({})).await;
+    println!("notes: {}", notes["ok"]);
+    let n = &notes["ok"][0];
+    assert_eq!((n["house"].clone(), n["name"].clone(), n["state_name"].clone()), (json!(1), json!("leith"), json!("Open")));
+    let held_before = n["amount"].as_f64().unwrap();
+    let houses = ask(&mut h, &mut sim, 1, 3, "houses", json!({})).await;
+    println!("houses: {}", houses["ok"]);
+    assert_eq!(houses["ok"][0]["name"], "leith");
+
+    // Within the limit: 0.01 ECX of notes to a fresh address of the same wallet.
+    let to = rpc.call("getnewaddress", vec![json!(""), json!("legacy")]).await.unwrap();
+    let r = ask(&mut h, &mut sim, 1, 4, "note-send", json!({"house": 1, "address": to, "amount": 0.01})).await;
+    println!("note-send: {r}");
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+
+    // A redeem whose amount no single holder's coins sum to: the node refuses, and the phone hears what to do.
+    let r = ask(&mut h, &mut sim, 1, 5, "note-redeem", json!({"house": 1, "amount": 0.05})).await;
+    println!("note-redeem 0.05: {r}");
+    let e = r["err"].as_str().unwrap_or_default();
+    assert!(e.contains("sum exactly") && e.contains("one of your own addresses"), "{r}");
+
+    // Over the limit, held, then confirmed on the desktop: the 0.01 coin, redeemed whole... no: the rest, 1.99.
+    let rest = ((held_before - 0.01) * 1e8).round() / 1e8;
+    let r = ask(&mut h, &mut sim, 1, 6, "note-redeem", json!({"house": 1, "amount": rest})).await;
+    println!("note-redeem {rest}: {r}");
+    let confirm = r["ok"]["pending"].as_str().expect("held").to_string();
+    let c = h.phone.confirm_send(&confirm, true, None).await;
+    println!("confirmed: {:?}", c.as_ref().map(|c| c.txid.clone()));
+    let f = sim.open(&h.next().await["d"]);
+    println!("final: {f}");
+    assert!(f["ok"]["txid"].is_string(), "{f}");
+}
+
+#[tokio::test]
+async fn while_on_a_higher_phone_limit_or_removing_face_id_asks_a_phone() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    let mut sim2 = Sim::new();
+    paired(&mut h, &mut sim2, 2).await;
+    let ipad = h.phone.devices().iter().find(|d| d.passkey.is_none()).unwrap().id.clone();
+    h.phone.set_approve_over(Some(ECX), false).await.unwrap();
+    // Lower: at once. Higher: within it the phone pays without the desktop, so a phone approves (re-review H1).
+    h.phone.set_limit(&ipad, 0.05).await.unwrap();
+    let p = h.phone.clone();
+    let id = ipad.clone();
+    let task = tokio::spawn(async move { p.set_limit(&id, 100_000.0).await });
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert!(ap["text"].as_str().unwrap().contains("pay up to 100000 ECX a day"), "{ap}");
+    h.feed(1, sim.req(110, "approve", json!({"id": ap["id"], "decline": true})));
+    opened(&mut h, &mut sim, 2).await;
+    assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_DECLINED.to_string()));
+    assert_eq!(h.phone.devices().iter().find(|d| d.id == ipad).unwrap().limit_sats, 5_000_000);
+    // The desktop's "Remove Face ID" asks too: that phone would then pay without it.
+    let me = h.phone.devices().iter().find(|d| d.passkey.is_some()).unwrap().id.clone();
+    let p = h.phone.clone();
+    let task = tokio::spawn(async move { p.remove_passkey_asked(&me).await });
+    approve_next(&mut h, &mut sim, &fid, 111).await;
+    assert_eq!(task.await.unwrap(), Ok(()));
+    assert_eq!(h.phone.approvers(), 0);
+}
+
+#[tokio::test]
+async fn a_scheduled_card_answers_only_its_own_change_and_asks_rest_after_a_no() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    let fid = Authenticator::new(7);
+    approver(&mut h, &mut sim, &fid).await;
+    h.phone.set_approve_over(Some(ECX), false).await.unwrap();
+    h.phone.set_approve_over(None, true).await.unwrap();
+    let old = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    // Replaced by another change: the old card's Face ID makes nothing (re-review nit).
+    h.later(5);
+    h.phone.set_approve_over(Some(3 * ECX), true).await.unwrap();
+    opened(&mut h, &mut sim, 2).await; // the old card goes, the new one comes
+    let r = ask(&mut h, &mut sim, 1, 120, "approve", json!({"id": old["id"], "auth": fid.assert(&old["challenge"])})).await;
+    assert_eq!(r["err"], ERR_APPROVE_GONE);
+    assert_eq!(h.phone.approve_over(), Some(ECX));
+
+    // A phone's first Face ID: declined, it isn't asked again for 10 minutes (re-review L6).
+    h.phone.cancel_scheduled();
+    opened(&mut h, &mut sim, 1).await;
+    let mut sim2 = Sim::new();
+    paired(&mut h, &mut sim2, 2).await;
+    assert_eq!(ask(&mut h, &mut sim2, 2, 1, "auth-start", json!({"for": "add"})).await["err"], ERR_ADD_ASKED);
+    let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
+    assert!(ap["text"].as_str().unwrap().contains("paired 20"), "says when it was paired: {ap}");
+    h.feed(1, sim.req(121, "approve", json!({"id": ap["id"], "decline": true})));
+    opened(&mut h, &mut sim, 2).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(ask(&mut h, &mut sim2, 2, 2, "auth-start", json!({"for": "add"})).await["err"], ERR_ADD_REFUSED);
+    assert!(h.quiet());
+    h.later(601);
+    assert_eq!(ask(&mut h, &mut sim2, 2, 3, "auth-start", json!({"for": "add"})).await["err"], ERR_ADD_ASKED);
+}
+
+#[test]
+fn a_phone_link_that_failed_to_start_refuses_while_the_setting_is_on() {
+    let dir = temp_dir("guard");
+    let state = commands::PhoneState(Err("broken".into()));
+    assert!(matches!(state.guard(&dir), Ok(None)), "off: nothing to ask");
+    let store = Store::new(&dir);
+    store.save_config(&Config { approve_over: Some(5), ..Config::default() }).unwrap();
+    assert!(state.guard(&dir).err().is_some_and(|e| e.contains("didn't start")));
+    let _ = std::fs::remove_dir_all(&dir);
 }

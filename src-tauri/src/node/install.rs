@@ -1,11 +1,11 @@
 //! Installing freebankd: pick the newest C++ release, check that its SHA256SUMS carries a good
 //! signature from FreeBank's release key (SHA256SUMS.sig, pinned key in release_key.rs; releases
 //! before v0.2.16 have none and are refused) before anything else is downloaded, download it and
-//! check it against its line there, unpack it into the app's data folder, find or fetch grpcurl,
-//! and write freebank.conf. Update takes the same path.
+//! check it against its line there, unpack it into the app's data folder, and write freebank.conf. Update takes the
+//! same path. (grpcurl isn't fetched any more: freebankd talks to the enforcer without it since v0.2.17.)
 
 use super::{
-    detect, home, platform, release_key, NodeManager, DATADIR_MARK, GRPCURL_VERSION, RELEASES_URL,
+    detect, platform, release_key, NodeManager, DATADIR_MARK, RELEASES_URL,
     RELEASE_DOWNLOAD, SEED_TAG,
 };
 use rand::Rng;
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// What the install screen shows. Stages run in order:
-/// release, signature, download, verify, unpack, grpcurl, config, start.
+/// release, signature, download, verify, unpack, config, start.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct InstallProgress {
     pub running: bool,
@@ -231,71 +231,6 @@ fn unquarantine(p: &Path) {
 }
 #[cfg(not(target_os = "macos"))]
 fn unquarantine(_: &Path) {}
-
-/// grpcurl, in order of preference: the one we used last time, BitWindow's, PATH, our own copy.
-pub fn find_grpcurl(app_dir: &Path, saved: Option<&str>) -> Option<(PathBuf, &'static str)> {
-    let bitwindow = if cfg!(target_os = "macos") {
-        home().join("Library/Application Support/bitwindow/assets/bin/grpcurl")
-    } else {
-        home().join(".local/share/bitwindow/assets/bin/grpcurl")
-    };
-    let on_path = std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join("grpcurl"))
-            .find(|f| f.is_file())
-    });
-    let candidates = [
-        (saved.map(PathBuf::from), "the grpcurl FreeBank used before"),
-        (Some(bitwindow), "BitWindow's grpcurl"),
-        (on_path, "grpcurl from your PATH"),
-        (Some(app_dir.join("tools/grpcurl")), "FreeBank's own grpcurl"),
-    ];
-    candidates
-        .into_iter()
-        .filter_map(|(p, why)| p.map(|p| (p, why)))
-        .find(|(p, _)| p.is_file() && runs(p))
-}
-
-/// The SHA-256 of grpcurl's release archives, pinned with its version (GRPCURL_VERSION), so a
-/// download is checked against these rather than a checksum file from the same place. Taken
-/// 2026-09-29 from github.com/fullstorydev/grpcurl v1.9.4: both archives were downloaded and hashed,
-/// and matched grpcurl_1.9.4_checksums.txt.
-const GRPCURL_SHA256: &[(&str, &str)] = &[
-    ("grpcurl_1.9.4_linux_x86_64.tar.gz", "97e13d58d2733a0e62cd2571d1d5f0c02823f0d25282f08bddedf1ad9c5d1736"),
-    ("grpcurl_1.9.4_osx_arm64.tar.gz", "e0df111350acf8ee38f453f4e97e0474cfe1a987ee0c368ebe5383e6a4bccf25"),
-    ("grpcurl_1.9.4_osx_x86_64.tar.gz", "0c1b24a82097862027af6abe88f362db73e4846859a3ceda2dd466e4dc971a06"),
-];
-
-/// The pinned SHA-256 of a grpcurl archive, by its file name.
-fn grpcurl_hash(asset: &str) -> Option<&'static str> {
-    GRPCURL_SHA256.iter().find(|(name, _)| *name == asset).map(|(_, h)| *h)
-}
-
-async fn fetch_grpcurl(http: &reqwest::Client, app_dir: &Path, tmp: &Path) -> Result<PathBuf, String> {
-    let (_, os_arch) = platform()?;
-    let asset = format!("grpcurl_{v}_{os_arch}.tar.gz", v = GRPCURL_VERSION);
-    let want = grpcurl_hash(&asset).ok_or("FreeBank has no checksum for grpcurl on this machine.")?;
-    let base = format!(
-        "https://github.com/fullstorydev/grpcurl/releases/download/v{}",
-        GRPCURL_VERSION
-    );
-    let archive = tmp.join(&asset);
-    download(http, &format!("{}/{}", base, asset), &archive, |_, _| {}).await?;
-    if want != sha256_file(&archive)? {
-        return Err("grpcurl's download didn't match the checksum FreeBank has for it. Nothing was installed.".into());
-    }
-    let unpacked = tmp.join("grpcurl-unpacked");
-    untar_gz(&archive, &unpacked)?;
-    let tools = app_dir.join("tools");
-    std::fs::create_dir_all(&tools).map_err(|e| e.to_string())?;
-    let dest = tools.join("grpcurl");
-    std::fs::copy(unpacked.join("grpcurl"), &dest).map_err(|e| e.to_string())?;
-    unquarantine(&dest);
-    if !runs(&dest) {
-        return Err("The downloaded grpcurl doesn't run on this machine.".into());
-    }
-    Ok(dest)
-}
 
 /// Written into releases/<tag>/ once its archive has passed the signature and hash checks; it holds
 /// the archive's SHA-256. Only a release with it is run or reused (NodeManager::verified). One
@@ -653,21 +588,6 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
     fetch_release(mgr, &tag, &p, &tmp).await?;
 
     set(&p, |s| {
-        s.stage = "grpcurl".into();
-        s.note = None;
-    });
-    let grpcurl = match find_grpcurl(&mgr.app_dir, settings.grpcurl.as_deref()) {
-        Some((path, why)) => {
-            set(&p, |s| s.note = Some(format!("Using {}.", why)));
-            path
-        }
-        None => {
-            set(&p, |s| s.note = Some(format!("Downloading grpcurl {}.", GRPCURL_VERSION)));
-            fetch_grpcurl(&mgr.http, &mgr.app_dir, &tmp).await?
-        }
-    };
-
-    set(&p, |s| {
         s.stage = "config".into();
         s.note = None;
     });
@@ -677,7 +597,6 @@ async fn install(mgr: &Arc<NodeManager>, tag_name: &str, move_aside: bool) -> Re
     write_conf(&datadir, tag_name)?;
     let mut s2 = mgr.settings.lock().await.clone();
     s2.installed_tag = Some(tag.clone());
-    s2.grpcurl = Some(grpcurl.to_string_lossy().into_owned());
     record_folder(&mut s2, &settings.datadir, creates_datadir, moved);
     mgr.save_settings(s2).await?;
     let _ = std::fs::remove_dir_all(&tmp);
@@ -909,19 +828,6 @@ mod tests {
         assert_eq!(c, "rpcuser=u\nrpcpassword=not-a-real-one\ncoinbasetag=third\n");
         assert!(!d.join("freebank.conf.new").exists());
         std::fs::remove_dir_all(&d).unwrap();
-    }
-
-    /// grpcurl is checked against hashes pinned here, one per machine FreeBank runs on.
-    #[test]
-    fn grpcurl_hashes_are_pinned() {
-        for os_arch in ["linux_x86_64", "osx_arm64", "osx_x86_64"] {
-            let asset = format!("grpcurl_{}_{}.tar.gz", GRPCURL_VERSION, os_arch);
-            let h = grpcurl_hash(&asset).unwrap_or_else(|| panic!("no pinned hash for {}", asset));
-            assert!(h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{}", h);
-        }
-        assert_eq!(grpcurl_hash("grpcurl_1.9.3_linux_x86_64.tar.gz"), None);
-        let (_, os_arch) = platform().unwrap();
-        assert!(grpcurl_hash(&format!("grpcurl_{}_{}.tar.gz", GRPCURL_VERSION, os_arch)).is_some());
     }
 
     /// Finding 7: the folder is acted on only as the user saw it before the download.

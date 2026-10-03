@@ -37,6 +37,7 @@ pub async fn wallet_setup_start(
     client: State<'_, ClientState>,
     mgr: State<'_, Mgr>,
     guard: State<'_, RelockState>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
     passphrase: String,
     words: Option<String>,
     fresh: bool,
@@ -60,6 +61,13 @@ pub async fn wallet_setup_start(
             return Err("Your wallet already has its passphrase and recovery words.".into());
         }
     }
+    // New words would answer "Lost your phone?" for an attacker's wallet in this one's place (security re-review M1).
+    let text = match (fresh, restore.is_some()) {
+        (true, true) => "Put a wallet from recovery words in place of this one",
+        (true, false) => "Make a new wallet in place of this one",
+        (false, _) => "Give this wallet new recovery words",
+    };
+    crate::phone::commands::approve_change(&phone, &mgr.app_dir, text).await?;
     job::start(mgr.inner().clone(), guard.inner().clone(), Job::Setup { passphrase, restore, fresh })
 }
 
@@ -108,17 +116,30 @@ pub fn seed_check_words(words: String) -> seed::WordsCheck {
 }
 
 /// Show the recovery words ("words") or the FreeBank wallet's master xprv ("xprv"), after the
-/// passphrase opens FreeBank's copy of the words.
+/// passphrase opens FreeBank's copy of the words. While "Approve sends on my phone" is on, a phone
+/// approves it too: whoever sees them could take everything elsewhere (v0.2.5 security review H2).
 #[tauri::command]
 pub async fn wallet_reveal(
     client: State<'_, ClientState>,
     mgr: State<'_, Mgr>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
     passphrase: String,
     what: String,
 ) -> Result<ops::Revealed, String> {
     let passphrase = Zeroizing::new(passphrase);
-    let mut c = client.lock().await;
-    ops::reveal(&mgr.app_dir, &mut c, passphrase, &what).await
+    let r = {
+        let mut c = client.lock().await;
+        ops::reveal(&mgr.app_dir, &mut c, passphrase, &what).await?
+    };
+    if let Some(p) = phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some()) {
+        let text = if what == "xprv" {
+            "Show this wallet's master key (xprv) on the desktop"
+        } else {
+            "Show this wallet's recovery words on the desktop"
+        };
+        p.request_approval(crate::phone::Approve::Change { text: text.into() }).await?;
+    }
+    Ok(r)
 }
 
 /// walletpassphrasechange, and FreeBank's copy of the words sealed again under the new passphrase.
@@ -189,8 +210,14 @@ pub async fn wallet_restore_file_check(mgr: State<'_, Mgr>, data: String) -> Res
 /// Put the checked backup in the wallet's place: stop the node, move the current wallet aside, copy
 /// the backup in, start, scan the chain. Refused while another program runs the node.
 #[tauri::command]
-pub async fn wallet_restore_file_start(mgr: State<'_, Mgr>, guard: State<'_, RelockState>, token: String) -> Result<(), String> {
+pub async fn wallet_restore_file_start(
+    mgr: State<'_, Mgr>,
+    guard: State<'_, RelockState>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
+    token: String,
+) -> Result<(), String> {
     mgr.still_here()?;
+    crate::phone::commands::approve_change(&phone, &mgr.app_dir, "Put a wallet from a backup file in place of this one").await?;
     let upload = ops::claim_upload(&token)?;
     job::start(mgr.inner().clone(), guard.inner().clone(), Job::RestoreFile { upload })
 }

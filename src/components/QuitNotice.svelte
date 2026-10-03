@@ -66,9 +66,19 @@
   function stay() {
     if (!busy) ask = null;
   }
+
+  // Ctrl+Q: Linux windows have no menu bar, so the page asks the app to put the quit question, as ⌘Q does on a Mac
+  // (v0.2.5). Escape keeps FreeBank open.
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && ask) stay();
+    else if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "q") {
+      e.preventDefault();
+      node.quitAsked().catch(() => {});
+    }
+  }
 </script>
 
-<svelte:window on:keydown={(e) => e.key === "Escape" && ask && stay()} />
+<svelte:window on:keydown={onKey} />
 
 {#if ask}
   <div class="quit-back">

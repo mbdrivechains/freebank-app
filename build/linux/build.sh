@@ -5,7 +5,7 @@ set -eu
 : "${SOURCE_DATE_EPOCH:?the commit time}"
 cp -a /src /build && cd /build
 export CARGO_TERM_COLOR=never
-npm ci --no-audit --no-fund
+npm ci --ignore-scripts --no-audit --no-fund  # no install scripts: none is needed for a build (v0.2.5)
 # BUNDLES=deb,appimage also makes the AppImage. Its tools are downloaded at build time and set a library path in its
 # copy of the program, so the AppImage isn't reproducible yet; the program and the .deb are.
 npx tauri build --bundles "${BUNDLES:-deb}" -- --locked

@@ -248,6 +248,8 @@ struct Held {
     quote: Prepared,
     hex: String,
     made: Instant,
+    /// How "Approve sends on my phone" let it through: a try again after the passphrase doesn't ask, or count, twice.
+    cleared: Option<crate::phone::Cleared>,
 }
 
 impl Book {
@@ -287,6 +289,39 @@ impl Book {
         match self.held.lock().unwrap().remove(id) {
             Some(h) if h.made.elapsed() < self.hold => Ok(h),
             _ => Err(EXPIRED.into()),
+        }
+    }
+
+    /// A prepared send's address, amount and total with its fee (sats), and how "Approve sends on my phone" let it
+    /// through already; None once it doesn't hold.
+    pub fn peek(&self, id: &str) -> Option<(String, i64, i64, Option<crate::phone::Cleared>)> {
+        let m = self.held.lock().unwrap();
+        m.get(id).filter(|h| h.made.elapsed() < self.hold).map(|h| (h.quote.address.clone(), h.quote.amount, h.quote.total, h.cleared))
+    }
+
+    /// Forget how "Approve sends on my phone" let a prepared send through when it counted (its count was given back);
+    /// a phone's approval stays with it.
+    pub fn clear_mark(&self, id: &str) {
+        if let Some(h) = self.held.lock().unwrap().get_mut(id) {
+            if matches!(h.cleared, Some(crate::phone::Cleared::Counted { .. })) {
+                h.cleared = None;
+            }
+        }
+    }
+
+    /// What Speed up at `speed` adds to `txid`'s fee (sats), while its quote holds.
+    pub fn speed_up_extra(&self, txid: &str, speed: Speed) -> Option<i64> {
+        self.quote(txid)?.choices.iter().find(|c| c.speed == speed && c.ok).map(|c| c.extra)
+    }
+
+    /// How "Approve sends on my phone" let this prepared send through. False when it no longer holds.
+    pub fn mark_cleared(&self, id: &str, c: crate::phone::Cleared) -> bool {
+        match self.held.lock().unwrap().get_mut(id) {
+            Some(h) => {
+                h.cleared = Some(c);
+                true
+            }
+            None => false,
         }
     }
 
@@ -599,7 +634,7 @@ pub async fn prepare(book: &Book, c: &mut FreeBankClient, req: SendRequest) -> R
         label: req.speed.label(),
         expires_in: book.hold.as_secs(),
     };
-    book.keep(&id, Held { quote: quote.clone(), hex, made: Instant::now() });
+    book.keep(&id, Held { quote: quote.clone(), hex, made: Instant::now(), cleared: None });
     Ok(quote)
 }
 
@@ -662,8 +697,34 @@ pub async fn confirm(book: &Book, c: &mut FreeBankClient, id: &str, log: Option<
     })
 }
 
+/// A locked wallet answers the node's "enter the passphrase" error before "Approve sends on my phone" asks or counts
+/// anything, so the screen's unlock prompt comes first.
+pub(crate) async fn locked_first(client: &ClientState) -> Result<(), String> {
+    let mut c = client.lock().await;
+    if c.call_ui("getwalletinfo", vec![]).await?["unlocked_until"].as_u64() == Some(0) {
+        return Err(LOCKED.into());
+    }
+    Ok(())
+}
+
+/// "Approve sends on my phone": prepared send `id`, fee included, counts against the day's amount, or over it waits for
+/// a paired phone's approval. Once: how it was let through is kept with it. The answer is that, for giving a count back
+/// if the send doesn't go out.
+pub async fn approve_first(book: &Book, phone: &crate::phone::Phone, id: &str) -> Result<Option<crate::phone::Cleared>, String> {
+    let Some((address, amount, total, cleared)) = book.peek(id) else { return Ok(None) };
+    if cleared.is_some() {
+        return Ok(cleared);
+    }
+    let c = phone.clear_desktop(total.max(0) as u64, crate::phone::Approve::Send { sats: amount.max(0) as u64, address }).await?;
+    if !book.mark_cleared(id, c) {
+        phone.uncount(c);
+        return Err(EXPIRED.into());
+    }
+    Ok(Some(c))
+}
+
 /// What the node says when a locked wallet is asked to sign (RPC_WALLET_UNLOCK_NEEDED).
-const LOCKED: &str = "RPC error -13: Error: Please enter the wallet passphrase with walletpassphrase first.";
+pub(crate) const LOCKED: &str = "RPC error -13: Error: Please enter the wallet passphrase with walletpassphrase first.";
 
 async fn sign_and_send(c: &mut FreeBankClient, hex: &str) -> Result<String, String> {
     let signed = c.call_ui("signrawtransactionwithwallet", vec![json!(hex)]).await?;
@@ -1195,10 +1256,31 @@ pub async fn send_prepare(
 
 /// Sign and send what `send_prepare` built. Wrap it in withUnlock.
 #[tauri::command]
-pub async fn send_confirm(client: State<'_, ClientState>, mgr: State<'_, Arc<NodeManager>>, id: String) -> Result<Sent, String> {
+pub async fn send_confirm(
+    client: State<'_, ClientState>,
+    mgr: State<'_, Arc<NodeManager>>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
+    id: String,
+) -> Result<Sent, String> {
     let log = log_of(&mgr);
+    // "Approve sends on my phone" (v0.2.5): counted against the day's amount, or over it a paired phone's Face ID first.
+    // A locked wallet is said first, so the passphrase comes before the phone is asked or anything counts.
+    let guard = phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some());
+    let cleared = match guard {
+        Some(p) => {
+            locked_first(&client).await?;
+            approve_first(&BOOK, p, &id).await?
+        }
+        None => None,
+    };
     let mut c = client.lock().await;
     let r = confirm(&BOOK, &mut c, &id, log.as_ref()).await;
+    drop(c);
+    // A send that didn't go out no longer counts.
+    if let (Err(_), Some(cl), Some(p)) = (&r, cleared, guard) {
+        p.uncount(cl);
+        BOOK.clear_mark(&id);
+    }
     // Only a send that failed: one that went through could be picked out on the explorer by its time.
     if let Err(e) = &r {
         crate::activity::note(&format!("send: not sent: {}", crate::activity::mask_numbers(e)));
@@ -1228,12 +1310,28 @@ pub async fn speed_up_quote(client: State<'_, ClientState>, mgr: State<'_, Arc<N
 pub async fn send_speed_up(
     client: State<'_, ClientState>,
     mgr: State<'_, Arc<NodeManager>>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
     txid: String,
     speed: Speed,
 ) -> Result<Bumped, String> {
     let log = log_of(&mgr);
+    // Its extra fee counts against "Approve sends on my phone"'s day too (security re-review L2).
+    let guard = phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some());
+    let cleared = match (guard, BOOK.speed_up_extra(&txid, speed)) {
+        (Some(p), Some(extra)) => {
+            locked_first(&client).await?;
+            let extra = extra.max(0) as u64;
+            let text = format!("Speed up a payment: {} ECX more in fees", crate::phone::store::to_ecx(extra));
+            Some(p.clear_desktop(extra, crate::phone::Approve::Action { text, sats: Some(extra) }).await?)
+        }
+        _ => None,
+    };
     let mut c = client.lock().await;
-    speed_up(&BOOK, &mut c, log.as_ref(), &txid, speed).await
+    let r = speed_up(&BOOK, &mut c, log.as_ref(), &txid, speed).await;
+    if let (Err(_), Some(cl), Some(p)) = (&r, cleared, guard) {
+        p.uncount(cl);
+    }
+    r
 }
 
 /// A page of History (0 = the newest), newest first.

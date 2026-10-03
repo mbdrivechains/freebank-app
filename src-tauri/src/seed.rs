@@ -455,6 +455,29 @@ pub fn open(file: &[u8], passphrase: &str) -> Result<(Entropy, [u8; 20]), OpenEr
     Ok((e, h.key_id))
 }
 
+/// `words` are this wallet's recovery words: their key id is the one FreeBank's sealed copy of the words records (read
+/// without the passphrase). For turning "Approve sends on my phone" off without the phone (v0.2.5); the caller checks
+/// the node's own key id too (`words_key_id_hex`), as the sealed copy's header could have been swapped.
+pub fn words_are_this_wallets(app_dir: &Path, words: &str) -> Result<bool, String> {
+    let file = read_file(&seed_path(app_dir))?.ok_or("This wallet has no recovery words in FreeBank to check them against.")?;
+    let recorded = file_key_id(&file).map_err(|_| "FreeBank's copy of the recovery words can't be read.".to_string())?;
+    Ok(words_key_id_hex(words)? == Some(key_id_hex(&recorded)))
+}
+
+/// The key id of the wallet that `words` make, as getwalletinfo's hdmasterkeyid shows it; None if they aren't 24
+/// recovery words.
+pub fn words_key_id_hex(words: &str) -> Result<Option<String>, String> {
+    let Ok(entropy) = parse_words(words) else { return Ok(None) };
+    let hd = freebank_hd_seed(&entropy)?;
+    Ok(Some(key_id_hex(&key_id(&hd)?)))
+}
+
+/// The key id FreeBank's sealed copy of the words records (hdmasterkeyid's form), if there is a readable copy.
+pub fn sealed_key_id_hex(app_dir: &Path) -> Option<String> {
+    let file = read_file(&seed_path(app_dir)).ok()??;
+    file_key_id(&file).ok().map(|id| key_id_hex(&id))
+}
+
 /// `<app data>/wallet/seed.enc`
 pub fn seed_path(app_dir: &Path) -> PathBuf {
     app_dir.join("wallet").join("seed.enc")
@@ -838,5 +861,28 @@ mod tests {
         assert!(open(&read_file(&path).unwrap().unwrap(), "correct horse").is_err());
         assert_ne!(*open(&read_file(&path).unwrap().unwrap(), "other horse").unwrap().0, *e);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// v0.2.5: turning "Approve sends on my phone" off with the recovery words takes this wallet's words.
+    #[test]
+    fn the_words_must_be_this_wallets() {
+        let dir = std::env::temp_dir().join(format!("fb-words-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No sealed copy yet: nothing to check against.
+        assert!(words_are_this_wallets(&dir, "abandon").is_err());
+        let e = new_entropy();
+        let id = key_id(&freebank_hd_seed(&e).unwrap()).unwrap();
+        write_private(&seed_path(&dir), &seal(&e, &id, "correct horse", QUICK).unwrap()).unwrap();
+        let mine = words(&e).join(" ");
+        assert_eq!(words_are_this_wallets(&dir, &mine), Ok(true));
+        let other = words(&new_entropy()).join(" ");
+        assert_eq!(words_are_this_wallets(&dir, &other), Ok(false));
+        assert_eq!(words_are_this_wallets(&dir, "not words at all"), Ok(false));
+        // The node's form of the same key id, for the second check.
+        assert_eq!(words_key_id_hex(&mine).unwrap(), Some(key_id_hex(&id)));
+        assert_eq!(sealed_key_id_hex(&dir), Some(key_id_hex(&id)));
+        assert_eq!(words_key_id_hex("not words").unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

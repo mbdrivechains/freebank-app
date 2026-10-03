@@ -290,13 +290,24 @@ pub struct QuitAsk {
 /// the window can always be closed. Some(outlives) when held. Called on the window's event loop,
 /// so it never waits for a lock.
 pub fn hold_close(mgr: &NodeManager) -> Option<bool> {
-    if mgr.obliterated.load(Ordering::SeqCst) || !mgr.settings.try_lock().ok()?.keep_running {
+    // The settings and the child are tokio locks, held only for moments: wait a little for them rather than quit
+    // without asking (security review nit).
+    fn soon<T>(f: impl Fn() -> Option<T>) -> Option<T> {
+        for _ in 0..40 {
+            if let Some(v) = f() {
+                return Some(v);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+    if mgr.obliterated.load(Ordering::SeqCst) || !soon(|| mgr.settings.try_lock().ok().map(|s| s.keep_running))? {
         return None;
     }
     let outlives = if adopted_running(mgr) {
         true
     } else {
-        let mut child = mgr.child.try_lock().ok()?;
+        let mut child = soon(|| mgr.child.try_lock().ok())?;
         if !child.as_mut().is_some_and(|c| c.try_wait().ok().flatten().is_none()) {
             return None;
         }
@@ -311,20 +322,46 @@ pub fn hold_close(mgr: &NodeManager) -> Option<bool> {
     Some(outlives)
 }
 
+/// What to ask before the app goes, when `hold_close` says to: the screen shows it ("quit-requested").
+fn quit_question<R: tauri::Runtime>(app: &tauri::AppHandle<R>, mgr: &NodeManager) -> Option<QuitAsk> {
+    use tauri::Manager;
+    let outlives = hold_close(mgr)?;
+    let keep_phone = mgr.settings.try_lock().is_ok_and(|s| s.keep_phone);
+    let phone = app.try_state::<crate::phone::commands::PhoneState>();
+    let phone = phone.as_ref().and_then(|p| p.0.as_ref().ok());
+    let paired = phone.is_some_and(|p| p.has_phones());
+    let phone_send = phone.is_some_and(|p| p.phone_send_is_on());
+    Some(QuitAsk { outlives, phone: keep_phone && paired, phone_send })
+}
+
 /// The window's close button (lib.rs): hold the close and tell the screen, when `hold_close` says so.
 pub fn on_close(window: &tauri::Window, api: &tauri::CloseRequestApi) {
     use tauri::{Emitter, Manager};
-    let Some(mgr) = window.try_state::<std::sync::Arc<NodeManager>>() else {
+    let app = window.app_handle();
+    let Some(mgr) = app.try_state::<std::sync::Arc<NodeManager>>() else {
         return;
     };
-    if let Some(outlives) = hold_close(&mgr) {
+    if let Some(ask) = quit_question(app, &mgr) {
         api.prevent_close();
-        let keep_phone = mgr.settings.try_lock().is_ok_and(|s| s.keep_phone);
-        let phone = window.try_state::<crate::phone::commands::PhoneState>();
-        let phone = phone.as_ref().and_then(|p| p.0.as_ref().ok());
-        let paired = phone.is_some_and(|p| p.has_phones());
-        let phone_send = phone.is_some_and(|p| p.phone_send_is_on());
-        let _ = window.emit("quit-requested", QuitAsk { outlives, phone: keep_phone && paired, phone_send });
+        let _ = window.emit("quit-requested", ask);
+    }
+}
+
+/// ⌘Q (the app's own menu item on a Mac) or Ctrl+Q (from the page, on Linux): ask what to stop, as the first close of
+/// the window does, or quit at once when there's nothing to ask. A second one within a minute quits.
+pub fn quit_asked<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::{Emitter, Manager};
+    let ask = app.try_state::<std::sync::Arc<NodeManager>>().and_then(|mgr| quit_question(app, &mgr));
+    match ask {
+        Some(ask) => {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            let _ = app.emit("quit-requested", ask);
+        }
+        None => app.exit(0),
     }
 }
 

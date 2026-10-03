@@ -112,36 +112,6 @@ pub async fn get_new_address(client: State<'_, ClientState>) -> Result<String, S
         .ok_or_else(|| "Invalid address response".to_string())
 }
 
-/// Send ECX to an address
-#[tauri::command]
-pub async fn send_transaction(
-    client: State<'_, ClientState>,
-    address: String,
-    amount: f64,
-) -> Result<String, String> {
-    // Validate address format (basic check)
-    if !address.starts_with('X') && !address.starts_with('x') {
-        return Err("Invalid FreeBank address - must start with 'X'".to_string());
-    }
-
-    if amount <= 0.0 {
-        return Err("Amount must be positive".to_string());
-    }
-
-    let mut c = client.lock().await;
-    let result = c
-        .call_ui(
-            "sendtoaddress",
-            vec![serde_json::json!(address), serde_json::json!(amount)],
-        )
-        .await?;
-
-    result
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "Failed to send transaction".to_string())
-}
-
 /// Get recent transactions
 #[tauri::command]
 pub async fn get_transactions(
@@ -177,13 +147,48 @@ pub async fn get_transactions(
 /// Only the calls on security.rs's allowlist go through: the screens' own calls and read-only ones.
 /// The wallet-sensitive calls have their own commands, so a script injected into the page can't
 /// reach them this way.
+///
+/// The credit tabs' payments go through "Approve sends on my phone" (security review M1): counted against the day's
+/// amount, or over it a phone's approval first, asked without holding the node client. A locked wallet is said first,
+/// so the unlock prompt comes before the phone is asked, and asked once.
 #[tauri::command]
 pub async fn rpc_call(
     client: State<'_, ClientState>,
+    mgr: State<'_, std::sync::Arc<crate::node::NodeManager>>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
     method: String,
     params: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     crate::security::allow_rpc(&method)?;
+    let guard = if crate::phone::CREDIT_PAYMENTS.contains(&method.as_str()) {
+        phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some())
+    } else {
+        None
+    };
+    let cleared = match guard {
+        Some(p) => {
+            let bill = {
+                let mut c = client.lock().await;
+                if c.call_ui("getwalletinfo", vec![]).await?["unlocked_until"].as_u64() == Some(0) {
+                    return Err(crate::send::LOCKED.into());
+                }
+                match (method.as_str(), params.first()) {
+                    ("endorsebill" | "retirebill", Some(id)) => match c.call_ui("getbill", vec![id.clone()]).await {
+                        Ok(b) => crate::phone::store::json_to_sats(&b["amount"]).ok(),
+                        Err(_) => None,
+                    },
+                    _ => None,
+                }
+            };
+            let (cost, what) = crate::phone::credit_payment(&method, &params, bill).expect("a credit payment");
+            Some((p, p.clear_desktop(cost, what).await?))
+        }
+        None => None,
+    };
     let mut c = client.lock().await;
-    c.call_ui(&method, params).await
+    let r = c.call_ui(&method, params).await;
+    if let (Err(_), Some((p, cl))) = (&r, cleared) {
+        p.uncount(cl);
+    }
+    r
 }

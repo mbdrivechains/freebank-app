@@ -29,7 +29,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - id: v
@@ -51,7 +51,7 @@ jobs:
     # VERIFY.md). The AppImage is packed in the same image, but not reproducibly yet (VERIFY.md says why).
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Build in the pinned image
@@ -62,7 +62,7 @@ jobs:
           test -f "out/freebank_${{ needs.version.outputs.version }}_amd64.deb"
           test -f "out/FreeBank_${{ needs.version.outputs.version }}_amd64.AppImage"
           ls -l out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux
           path: out/*
@@ -72,10 +72,10 @@ jobs:
     needs: version
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20.20.2
           cache: npm
@@ -87,7 +87,9 @@ jobs:
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
-      - run: npm ci
+      # No install scripts: only esbuild (it finds its binary without) and fsevents (a file watcher, not needed for a
+      # build) have one, and none runs with the build's rights (v0.2.5).
+      - run: npm ci --ignore-scripts
       # Ad-hoc signed only (bundle.macOS.signingIdentity "-"), not notarised: the first launch needs
       # System Settings > Privacy & Security > Open Anyway.
       - run: npx tauri build --target universal-apple-darwin --bundles app,dmg
@@ -105,7 +107,7 @@ jobs:
           if grep -q '\._' "$RUNNER_TEMP/app-files.txt"; then echo "::error::$app holds ._ files"; exit 1; fi
           tar -xzOf "$app" FreeBank.app/Contents/Info.plist | grep -q "<string>${V}</string>"
           ls -l out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos
           path: out/*
@@ -120,21 +122,21 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       # Only the packages, by name: the apt job's Pages artifact (artifact.tar) must never become a release asset
       # (it did in v0.2.0, when that job finished first; removed from the release by hand).
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux
           path: out
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: macos
           path: out
       - name: Record build attestations for the packages
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             out/*.deb
@@ -218,7 +220,7 @@ jobs:
       group: gh-pages
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check out the published site (gh-pages)
         run: |
           if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
@@ -227,7 +229,7 @@ jobs:
           else
             git worktree add --orphan -b gh-pages site
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux
           path: out
@@ -249,7 +251,7 @@ jobs:
           git add -A
           git diff --cached --quiet || git commit -m "apt: freebank ${{ needs.version.outputs.version }}"
           git push origin HEAD:gh-pages
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: site
 
@@ -264,4 +266,4 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

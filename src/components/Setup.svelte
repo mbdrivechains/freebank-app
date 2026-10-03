@@ -92,7 +92,6 @@
     ["download", "Download"],
     ["verify", "Check it against the signed checksums"],
     ["unpack", "Unpack"],
-    ["grpcurl", "Get grpcurl"],
     ["config", "Save your name"],
     ["start", "Start FreeBank"],
   ];
@@ -201,11 +200,20 @@
     }
   }
 
+  let finishing = false;
   async function finish() {
+    finishing = true;
     stopPolling();
     await node.connectLocal();
     dispatch("ready");
   }
+
+  // The sync screen keeps showing the last "Catching up" while the node is only busy connecting blocks (it answers
+  // late), instead of flicking back to "Starting FreeBank" (v0.2.5). A node that stops or rebuilds starts over.
+  let lastUp: NodeProgress | null = null;
+  $: if (prog?.rpc.state === "up") lastUp = prog;
+  $: if (prog && (prog.rpc.state === "down" || prog.reindexing || prog.exited)) lastUp = null;
+  $: view = prog?.rpc.state === "warming" && prog.rpc.busy && lastUp ? { ...lastUp, log_line: prog.log_line } : prog;
 
   async function startNode() {
     startError = "";
@@ -309,8 +317,8 @@
   }
 
   $: syncPct =
-    prog && prog.rpc.blocks != null && prog.explorer_tip
-      ? Math.min(100, (prog.rpc.blocks / prog.explorer_tip) * 100)
+    view && view.rpc.blocks != null && view.explorer_tip
+      ? Math.min(100, (view.rpc.blocks / view.explorer_tip) * 100)
       : 0;
 
   // Back from Settings: its changes (the data folder, the ports) may change what setup finds. A
@@ -562,14 +570,14 @@
   {:else if screen === "syncing"}
     {#if startedHere || startError}
       <button class="link-btn back-link" on:click={stopAndGoBack} disabled={stopping}>
-        {stopping ? "Stopping FreeBank…" : prog?.exited || !startedHere ? "← Back" : "← Stop FreeBank and go back"}
+        {stopping ? "Stopping FreeBank…" : view?.exited || !startedHere ? "← Back" : "← Stop FreeBank and go back"}
       </button>
     {/if}
     {#if backError}<p class="soft-error">{backError}</p>{/if}
     <div class="hero left">
-      <h2>{prog?.rpc.state === "up" ? "Catching up" : "Starting FreeBank"}</h2>
+      <h2>{view?.rpc.state === "up" ? "Catching up" : "Starting FreeBank"}</h2>
       <p class="lede">
-        {#if prog?.rpc.state === "up"}
+        {#if view?.rpc.state === "up"}
           Your node is fetching FreeBank blocks from its peers.
         {:else}
           The first start checks the eCash chain. This can take a few minutes.
@@ -581,26 +589,26 @@
       <div class="big-stat">
         <div>
           <div class="stat-cap">FreeBank block</div>
-          <div class="stat-num">{prog?.rpc.state === "up" ? fmt(prog.rpc.blocks) : "—"}</div>
+          <div class="stat-num">{view?.rpc.state === "up" ? fmt(view.rpc.blocks) : "—"}</div>
         </div>
         <div class="stat-right">
           <div class="stat-cap">Explorer tip</div>
-          <div class="stat-num dim">{fmt(prog?.explorer_tip)}</div>
+          <div class="stat-num dim">{fmt(view?.explorer_tip)}</div>
         </div>
       </div>
-      <span class="bar"><span class="bar-fill" class:indeterminate={prog?.rpc.state !== "up"} style="width:{prog?.rpc.state === 'up' ? syncPct : 100}%"></span></span>
+      <span class="bar"><span class="bar-fill" class:indeterminate={view?.rpc.state !== "up"} style="width:{view?.rpc.state === 'up' ? syncPct : 100}%"></span></span>
       <div class="sync-meta">
-        <span>{prog?.rpc.state === "up" ? `${prog.peers ?? 0} peer${prog.peers === 1 ? "" : "s"}` : "Warming up"}</span>
-        {#if prog?.rpc.state === "warming" && prog.rpc.message}<span>{prog.rpc.message}</span>{/if}
+        <span>{view?.rpc.state === "up" ? `${view.peers ?? 0} peer${view.peers === 1 ? "" : "s"}` : "Warming up"}</span>
+        {#if view?.rpc.state === "warming" && view.rpc.message}<span>{view.rpc.message}</span>{/if}
       </div>
-      {#if prog?.reindexing}
+      {#if view?.reindexing}
         <p class="hint">Your node is rebuilding its data from the blocks it already has. That takes a few minutes; your wallet stays as it is.</p>
       {/if}
-      {#if prog?.log_line && prog.rpc.state !== "up" && prog.log_line !== prog.rpc.message}
-        <p class="log-line">{prog.log_line}</p>
+      {#if view?.log_line && view.rpc.state !== "up" && view.log_line !== view.rpc.message}
+        <p class="log-line">{view.log_line}</p>
       {/if}
-      {#if prog?.rpc.state === "up"}
-        <button class="wide secondary" on:click={finish}>Continue while it syncs</button>
+      {#if view?.rpc.state === "up"}
+        <button class="wide secondary" on:click={finish} disabled={finishing}>{finishing ? "Opening FreeBank…" : "Continue while it syncs"}</button>
       {/if}
     </div>
 

@@ -18,8 +18,22 @@ use zeroize::Zeroizing;
 pub struct PhoneState(pub Result<Arc<Phone>, String>);
 
 impl PhoneState {
-    fn get(&self) -> Result<&Arc<Phone>, String> {
+    pub fn get(&self) -> Result<&Arc<Phone>, String> {
         self.0.as_ref().map_err(|e| format!("The phone relay isn't available: {e}"))
+    }
+
+    /// For what "Approve sends on my phone" guards: the phone link, or None when it isn't set up. One that failed to
+    /// start while its files say the setting is on refuses, rather than letting payments through (security re-review
+    /// L4).
+    pub fn guard(&self, app_dir: &Path) -> Result<Option<&Arc<Phone>>, String> {
+        match &self.0 {
+            Ok(p) => Ok(Some(p)),
+            Err(e) if super::store::Store::new(app_dir).load_config().approve_over.is_some() => Err(format!(
+                "\"Approve sends on my phone\" is on, but FreeBank's phone link didn't start ({e}), so it can't ask your \
+                 phone. Restart FreeBank."
+            )),
+            Err(_) => Ok(None),
+        }
     }
 
     /// At quit: the phone-send passphrase is wiped from memory.
@@ -196,8 +210,96 @@ pub fn phone_pair_start(phone: State<'_, PhoneState>) -> Result<PairStart, Strin
 
 /// Allow or deny one waiting pair request. Allowing it refuses the others.
 #[tauri::command]
-pub fn phone_pair_answer(phone: State<'_, PhoneState>, id: String, allow: bool) -> Result<(), String> {
-    phone.get()?.pair_answer(&id, allow)
+pub async fn phone_pair_answer(phone: State<'_, PhoneState>, id: String, allow: bool) -> Result<(), String> {
+    let p = phone.get()?.clone();
+    // While "Approve sends on my phone" is on, a new phone could approve sends: pairing one takes a paired phone's Face
+    // ID too (v0.2.5).
+    if allow && p.approve_over().is_some() {
+        let ask = p.pair_pending().into_iter().find(|a| a.id == id).ok_or("That phone is no longer waiting.")?;
+        let text = format!("Pair a new phone, \"{}\", with this desktop (it shows {})", ask.name, ask.code);
+        p.request_approval(super::Approve::Change { text }).await?;
+    }
+    p.pair_answer(&id, allow)
+}
+
+#[derive(Serialize)]
+pub struct ApproveInfo {
+    /// ECX: once the desktop's payments in a day would come to more than this, a phone's Face ID first; None when off.
+    pub over: Option<f64>,
+    /// ECX the desktop can still pay today without asking.
+    pub left: Option<f64>,
+    /// The paired phones with Face ID, which can approve.
+    pub approvers: usize,
+    /// Approvals the desktop is waiting for now: `{id, text, expires}`.
+    pub waiting: Vec<Value>,
+    /// A change the recovery words made, waiting its day: `{over (ECX, null: off), due (unix seconds)}`.
+    pub scheduled: Option<Value>,
+}
+
+/// "Approve sends on my phone" (v0.2.5): its amount, what is left today, and who can approve.
+#[tauri::command]
+pub fn phone_approve_info(phone: State<'_, PhoneState>) -> Result<ApproveInfo, String> {
+    let p = phone.get()?;
+    Ok(ApproveInfo {
+        over: p.approve_over().map(to_ecx),
+        left: p.desk_left().map(to_ecx),
+        approvers: p.approvers(),
+        waiting: p.approvals_waiting(),
+        scheduled: p.scheduled().map(|s| serde_json::json!({"over": s.over.map(to_ecx), "due": s.due})),
+    })
+}
+
+/// Set it: `over` in ECX, None to turn it off. Off or a higher amount takes a phone's Face ID at once, or the wallet's
+/// recovery `words` a day from now (the answer: when, unix seconds). The words must make the key the node's wallet
+/// uses, and match FreeBank's copy of them. Turning it on needs that copy: it is the way back from a lost phone.
+#[tauri::command]
+pub async fn phone_approve_set(
+    phone: State<'_, PhoneState>,
+    mgr: State<'_, Arc<crate::node::NodeManager>>,
+    over: Option<f64>,
+    words: Option<String>,
+) -> Result<Option<u64>, String> {
+    mgr.still_here()?;
+    let p = phone.get()?.clone();
+    let over = match over {
+        Some(v) if !(v > 0.0) || !v.is_finite() => return Err("Enter an amount in ECX above zero.".into()),
+        Some(v) => Some(super::store::json_to_sats(&serde_json::json!(v))?),
+        None => None,
+    };
+    if over.is_some() && p.approve_over().is_none() {
+        let node = p.hd_seed_id().await?;
+        if node.is_none() || crate::seed::sealed_key_id_hex(&mgr.app_dir) != node {
+            return Err("This needs your wallet's recovery words kept in FreeBank (Settings > Wallet): they are how you \
+                        turn it off if you lose your phone."
+                .into());
+        }
+    }
+    let words_ok = match words {
+        Some(w) => {
+            let w = Zeroizing::new(w);
+            let theirs = crate::seed::words_key_id_hex(&w)?;
+            if theirs.is_none() || theirs != p.hd_seed_id().await? || !crate::seed::words_are_this_wallets(&mgr.app_dir, &w)? {
+                return Err("Those aren't this wallet's recovery words.".into());
+            }
+            true
+        }
+        None => false,
+    };
+    p.set_approve_over(over, words_ok).await
+}
+
+/// "Cancel" on the change the recovery words made, while it waits its day.
+#[tauri::command]
+pub fn phone_approve_cancel_scheduled(phone: State<'_, PhoneState>) -> Result<(), String> {
+    phone.get()?.cancel_scheduled();
+    Ok(())
+}
+
+/// "Cancel" on the desktop's screen while it waits for a phone's approval.
+#[tauri::command]
+pub fn phone_approval_cancel(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
+    phone.get()?.cancel_approval(&id);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -243,13 +345,24 @@ pub fn phone_revoke(phone: State<'_, PhoneState>, id: String) -> Result<(), Stri
 
 /// "Remove Face ID": the phone's passkey goes (a phone that lost it can then open without it).
 #[tauri::command]
-pub fn phone_remove_passkey(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
-    phone.get()?.remove_passkey(&id)
+pub async fn phone_remove_passkey(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
+    phone.get()?.clone().remove_passkey_asked(&id).await
 }
 
 #[tauri::command]
-pub fn phone_set_limit(phone: State<'_, PhoneState>, id: String, limit: f64) -> Result<(), String> {
-    phone.get()?.set_limit(&id, limit)
+pub async fn phone_set_limit(phone: State<'_, PhoneState>, id: String, limit: f64) -> Result<(), String> {
+    phone.get()?.clone().set_limit(&id, limit).await
+}
+
+/// While "Approve sends on my phone" is on, a phone approves `text` first: something that would undo the setting or
+/// change the wallet under it (Obliterate, a new wallet or seed, a restore; security re-review H2, M1).
+pub async fn approve_change(phone: &PhoneState, app_dir: &Path, text: &str) -> Result<(), String> {
+    if let Some(p) = phone.guard(app_dir)? {
+        if p.approve_over().is_some() {
+            p.request_approval(super::Approve::Change { text: text.into() }).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Confirm (send) or decline a held send. When the wallet is locked, `passphrase` unlocks it for

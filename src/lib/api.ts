@@ -266,13 +266,11 @@ export const api = {
     }
   },
 
-  /** Send ECX to address */
+  /** Send ECX to address: the browser build only. The desktop sends through send_prepare and send_confirm, which
+   * "Approve sends on my phone" guards (it has no plain sendtoaddress command since v0.2.5). */
   async sendTransaction(address: string, amount: number): Promise<string> {
-    if (isTauri) {
-      return tauriInvoke('send_transaction', { address, amount }) as Promise<string>;
-    } else {
-      return rpcCall('sendtoaddress', [address, amount]) as Promise<string>;
-    }
+    if (isTauri) throw new Error('The desktop sends through Send.');
+    return rpcCall('sendtoaddress', [address, amount]) as Promise<string>;
   },
 
   /** Get recent transactions */

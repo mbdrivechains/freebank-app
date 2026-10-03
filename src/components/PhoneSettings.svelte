@@ -9,6 +9,7 @@
   import { BASE_TICKER } from "../lib/brand";
   import {
     onPhoneEvent,
+    paymentWhat,
     phone,
     when,
     type HeldSend,
@@ -17,6 +18,7 @@
     type PhoneSend,
     type PhoneWallet,
     type RelayStatus,
+    type ApproveInfo,
   } from "../lib/phone";
   import { node } from "../lib/node";
   import { nice } from "../lib/errors";
@@ -63,6 +65,73 @@
     } catch {
       keep = null;
     }
+    try {
+      approve = await phone.approveInfo();
+      if (approve.over !== null && !approveDirty) approveAmount = String(approve.over);
+    } catch {
+      approve = null;
+    }
+  }
+
+  // "Approve sends on my phone" (v0.2.5; operator 2026-10-02: "yes..opt in I assume"; reworked after the security
+  // review, operator 2026-10-03: "yes to that"): once this computer's payments in a day would come to more than the
+  // amount, a phone's Face ID first. Off, or a higher amount, takes the phone too, or the recovery words and a day.
+  let approve: ApproveInfo | null = null;
+  let approveAmount = "1";
+  let approveDirty = false;
+  let approveBusy = false;
+  let approveNote = "";
+  let withWords = false;
+  let words = "";
+  async function setApprove(over: number | null, useWords = false) {
+    approveBusy = true;
+    approveNote = "";
+    try {
+      const due = await phone.approveSet(over, useWords ? words : undefined);
+      words = "";
+      withWords = false;
+      approveDirty = false;
+      approveNote = due
+        ? `Done with your recovery words. It happens ${dueText(due)}, unless your phone declines it or you cancel it here.`
+        : over === null
+          ? "Off."
+          : `Your phone now approves payments once a day's come to more than ${over} ${BASE_TICKER}.`;
+    } catch (e) {
+      approveNote = String(e);
+    }
+    approveBusy = false;
+    load();
+  }
+  function dueText(due: number): string {
+    return `on ${new Date(due * 1000).toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" })}`;
+  }
+  async function cancelScheduled() {
+    approveNote = "";
+    try {
+      await phone.approveCancelScheduled();
+      approveNote = "Cancelled: nothing changes.";
+    } catch (e) {
+      approveNote = String(e);
+    }
+    load();
+  }
+  // Removing the last phone that can approve leaves payments over the day's amount, and pairing, blocked until the
+  // recovery words turn the setting off (a day later): said before it happens (security review L2).
+  $: approving = approve?.over != null;
+  $: approverCount = devices.filter((d) => d.face_id).length;
+  const LAST_APPROVER =
+    "It's your last phone that can approve. Without one, payments over the day's amount and pairing a phone can't be " +
+    "done until your recovery words turn approval off, a day later.";
+  // `on` and `count` passed in, so the warning redraws when they change.
+  const lastApprover = (gone: PhoneDevice[], on: boolean, count: number) =>
+    on && gone.some((d) => d.face_id) && gone.filter((d) => d.face_id).length >= count;
+  function saveApproveAmount() {
+    const v = Number(approveAmount);
+    if (!Number.isFinite(v) || v <= 0) {
+      approveNote = `Enter an amount in ${BASE_TICKER} above zero.`;
+      return;
+    }
+    setApprove(v, withWords);
   }
 
   // "Keep your phone connected when FreeBank is closed" (asked once, after the first phone pairs).
@@ -255,6 +324,32 @@
     }
   }
 
+  // The list (v0.2.5, operator 2026-10-03: "why all these iphone settings? how to manage"): the phone seen last first,
+  // one line each with its limit and Revoke behind Manage; names told apart by when they were paired; and phones not
+  // seen for a week removed in one go.
+  const WEEK = 7 * 24 * 3600;
+  let managing: string | null = null;
+  let tidying = false;
+  $: sorted = [...devices].sort((a, b) => (b.last_seen ?? b.added) - (a.last_seen ?? a.added));
+  $: stale = devices.filter((d) => !d.online && (d.last_seen ?? d.added) < Date.now() / 1000 - WEEK);
+  function label(d: PhoneDevice): string {
+    const same = devices.filter((x) => x.name === d.name).length > 1;
+    return same ? `${d.name} (paired ${new Date(d.added * 1000).toLocaleDateString(undefined, { dateStyle: "medium" })})` : d.name;
+  }
+  async function removeStale() {
+    error = "";
+    for (const d of stale) {
+      try {
+        await phone.revoke(d.id);
+        delete limits[d.id];
+      } catch (e) {
+        error = String(e);
+      }
+    }
+    tidying = false;
+    load();
+  }
+
   const STATE_TEXT: Record<string, string> = {
     off: "Not connected: no phone is paired.",
     connecting: "Connecting to the relay…",
@@ -339,15 +434,42 @@
   {/if}
 
   {#if devices.length}
+    {#if stale.length}
+      {#if tidying}
+        <div class="confirm-box">
+          <p>
+            Remove {stale.length} phone{stale.length === 1 ? "" : "s"} not seen for a week? Each is cut off at once; a
+            phone you still use can pair again.
+          </p>
+          {#if lastApprover(stale, approving, approverCount)}<p class="soft-error">{LAST_APPROVER}</p>{/if}
+          <div class="row-actions">
+            <button class="danger" on:click={removeStale}>Remove {stale.length}</button>
+            <button class="secondary" on:click={() => (tidying = false)}>Cancel</button>
+          </div>
+        </div>
+      {:else}
+        <button class="link-btn" on:click={() => (tidying = true)}>
+          Remove {stale.length} phone{stale.length === 1 ? "" : "s"} not seen for a week…
+        </button>
+      {/if}
+    {/if}
     <ul class="phone-list">
-      {#each devices as d (d.id)}
+      {#each sorted as d (d.id)}
         <li>
           <div class="phone-head">
-            <strong>{d.name}</strong>
+            <strong>{label(d)}</strong>
             {#if d.online}<span class="pill pill-ok">connected</span>{/if}
             {#if d.face_id}<span class="pill" title="The phone asks for Face ID{d.face_id_sends ? ' when it opens and before each send' : ' when it opens'}">Face ID</span>{/if}
+            {#if d.face_id && approving}<span class="pill" title="It approves this computer's payments over the day's amount">approves</span>{/if}
           </div>
-          <span class="muted small">Added {when(d.added)} · last seen {when(d.last_seen)}</span>
+          <span class="muted small">
+            Last seen {when(d.last_seen)} ·
+            <button class="link-btn inline" on:click={() => (managing = managing === d.id ? null : d.id)} aria-expanded={managing === d.id}>
+              {managing === d.id ? "Done" : "Manage"}
+            </button>
+          </span>
+          {#if managing === d.id}
+          <span class="muted small">Paired {when(d.added)}.</span>
           <label class="limit-row">
             <span class="small">Daily limit without asking</span>
             <span class="input-with-btn">
@@ -361,6 +483,7 @@
           {#if revoking === d.id}
             <div class="confirm-box">
               <p>{d.name} is cut off at once, and anything it has waiting for you is declined. To use it again, pair it again.</p>
+              {#if lastApprover([d], approving, approverCount)}<p class="soft-error">{LAST_APPROVER}</p>{/if}
               <div class="row-actions">
                 <button class="danger" on:click={() => revoke(d.id)}>Revoke</button>
                 <button class="secondary" on:click={() => (revoking = null)}>Cancel</button>
@@ -372,6 +495,7 @@
                 {d.name} opens without Face ID until it is turned on again there. Do this only for a phone that lost its
                 passkey (a new phone, or its passwords reset).
               </p>
+              {#if lastApprover([d], approving, approverCount)}<p class="soft-error">{LAST_APPROVER}</p>{/if}
               <div class="row-actions">
                 <button class="danger" on:click={() => removeFaceId(d.id)}>Remove Face ID</button>
                 <button class="secondary" on:click={() => (unlocking = null)}>Cancel</button>
@@ -382,6 +506,7 @@
               <button class="link-btn inline" on:click={() => (revoking = d.id)}>Revoke…</button>
               {#if d.face_id}<button class="link-btn inline" on:click={() => (unlocking = d.id)}>Remove Face ID…</button>{/if}
             </span>
+          {/if}
           {/if}
         </li>
       {/each}
@@ -472,12 +597,80 @@
     </div>
   {/if}
 
+  {#if devices.length && approve}
+    <div class="phone-send" data-testid="approve-sends">
+      <label class="toggle-row">
+        <input
+          type="checkbox"
+          checked={approve.over !== null}
+          disabled={approveBusy || (approve.over === null && approve.approvers === 0)}
+          on:change={(e) => (e.currentTarget.checked ? saveApproveAmount() : setApprove(null, withWords))}
+        />
+        <span>Approve sends on my phone</span>
+      </label>
+      <p class="hint">
+        Once this computer's payments in a day come to more than the amount, your phone approves the next one with Face
+        ID. Every payment FreeBank makes here counts, with its fee: Send, Speed up, notes, bills, pools and houses, and a
+        phone's payment you confirm here. Your phone also approves what would get round it: showing your recovery words,
+        a new wallet or a restore, Obliterate, pairing another phone, Face ID on another phone or removing it, a higher
+        daily limit for a phone, and turning this off or raising the amount. Lost your phone? Your recovery words turn
+        it off a day later; your phones can cancel that while FreeBank is open on them.
+      </p>
+      <p class="hint">
+        It guards FreeBank, not the node: someone with this computer and your wallet passphrase could still use the
+        node directly, copy the wallet, or change FreeBank's files or this computer's clock. A phone still pays within
+        its own daily limit without asking.
+      </p>
+      {#if approve.over === null && approve.approvers === 0}
+        <p class="hint">First turn Face ID on in FreeBank on your phone (its Settings).</p>
+      {:else}
+        <label class="limit-row">
+          <span class="small">Ask my phone once a day's payments come to more than</span>
+          <span class="input-with-btn">
+            <input type="number" min="0" step="0.01" bind:value={approveAmount} on:input={() => ((approveDirty = true), (approveNote = ""))} />
+            {#if approve.over !== null}
+              <button class="secondary" on:click|preventDefault={saveApproveAmount} disabled={approveBusy || !approveDirty}>Save</button>
+            {/if}
+          </span>
+        </label>
+      {/if}
+      {#if approve.over !== null && approve.left !== null}
+        <p class="muted small" data-testid="approve-left">
+          {approve.left} {BASE_TICKER} left today without asking.
+        </p>
+      {/if}
+      {#if approve.scheduled}
+        <div class="confirm-box" data-testid="approve-scheduled">
+          <p>
+            Your recovery words were used:
+            {approve.scheduled.over === null ? "this turns off" : `the amount goes up to ${approve.scheduled.over} ${BASE_TICKER}`}
+            {dueText(approve.scheduled.due)}, unless your phone declines it or you cancel it here.
+          </p>
+          <div class="row-actions">
+            <button class="secondary" on:click={cancelScheduled}>Cancel it</button>
+          </div>
+        </div>
+      {:else if approve.over !== null}
+        {#if withWords}
+          <label class="words-row">
+            <span class="small">Your 24 recovery words, instead of your phone. The change then waits a day.</span>
+            <textarea rows="3" bind:value={words} autocomplete="off" spellcheck="false"></textarea>
+          </label>
+        {:else}
+          <button class="link-btn inline" on:click={() => (withWords = true)}>Lost your phone? Use your recovery words instead</button>
+        {/if}
+      {/if}
+      {#if approveBusy}<p class="hint">Waiting for your phone…</p>{/if}
+      {#if approveNote}<p class="hint">{approveNote}</p>{/if}
+    </div>
+  {/if}
+
   {#if sends.length}
     <h4 class="phone-sub">Sends from phones</h4>
     <ul class="phone-sends">
       {#each sends as s}
         <li>
-          <span>{s.name}: {s.amount} {BASE_TICKER} to <code>{s.address}</code></span>
+          <span>{s.name}: {paymentWhat(s)}{#if s.address}{" "}to <code>{s.address}</code>{/if}</span>
           <span class="muted small">{when(s.time)} · {resultText(s, status?.held ?? [])}</span>
         </li>
       {/each}

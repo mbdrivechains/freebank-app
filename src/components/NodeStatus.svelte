@@ -8,6 +8,7 @@
   // signatures isn't started, and is downloaded and checked again from here.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import PathText from "./PathText.svelte";
+  import WhatsRunning from "./WhatsRunning.svelte";
   import {
     checkForUpdate,
     megabytes,
@@ -426,6 +427,8 @@
       {/if}
     </div>
   {/if}
+
+  <WhatsRunning {st} {external} />
 
   <div class="card quiet">
     <dl class="facts">
