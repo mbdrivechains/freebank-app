@@ -11,9 +11,18 @@ Download from the [releases page](https://github.com/mbdrivechains/freebank-app/
 - **Ubuntu 22.04+ / Debian 12+:** `freebank_<version>_amd64.deb`. Double-click it and the software installer does the
   rest (or `sudo apt install ./freebank_<version>_amd64.deb`).
 - **Other Linux:** the `.AppImage`. Make it executable (`chmod +x`), then run it.
-- **macOS (Apple Silicon and Intel):** the `.dmg`. Drag FreeBank to Applications. On Intel Macs the FreeBank node
-  itself comes with a later FreeBank release. This build is not notarised yet, so the first
+- **macOS (Apple Silicon and Intel):** the `.dmg`. Drag FreeBank to Applications. The FreeBank node needs macOS 14 or
+  later on Apple Silicon, and macOS 15 or later on Intel. This build is not notarised yet, so the first
   time macOS will refuse to open it: go to **System Settings → Privacy & Security** and choose **Open Anyway**.
+
+### Updates
+
+From v0.2.4 on, FreeBank says when a new version is out (and Settings > App updates checks on request). The AppImage
+and the Mac app update themselves: **Update and restart** downloads the new version, checks it and opens it. They take
+an update only when the release's `SHA256SUMS` carries the release key's signature (below) and the package matches its
+line there: the same check FreeBank makes before installing the node. The `.deb` updates with Software Updater once
+[FreeBank's apt repository](https://apt.ecxfreebank.com) is set up, or with the new `.deb` from the releases page. apt
+checks the repository's own signing key, which the release workflow holds, not the release key.
 
 ### Verify your download
 

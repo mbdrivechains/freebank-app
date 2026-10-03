@@ -10,6 +10,13 @@ use tokio::sync::Mutex;
 
 type Mgr = Arc<NodeManager>;
 
+/// While the app updates itself (app_update.rs), no node install or update starts: the app restarts in a moment. Each
+/// side sets its own flag and then looks at the other's, so the two never both go ahead.
+const APP_UPDATING: &str = "The FreeBank app is updating itself and restarts in a moment. Try again after that.";
+fn app_updating(mgr: &NodeManager) -> bool {
+    mgr.app_updating.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[derive(Debug, Serialize)]
 pub struct SetupInfo {
     pub settings: Settings,
@@ -120,6 +127,10 @@ pub async fn install_start(mgr: State<'_, Mgr>, tag: String, move_aside: bool) -
             stage: "release".into(),
             ..Default::default()
         };
+    }
+    if app_updating(&mgr) {
+        *mgr.install.lock().unwrap() = install::InstallProgress::default();
+        return Err(APP_UPDATING.into());
     }
     // Held while the task starts, so a "Cancel" right now finds it to stop.
     let mut slot = mgr.install_task.lock().unwrap();
@@ -235,6 +246,10 @@ pub fn update_start(mgr: State<'_, Mgr>) -> Result<(), String> {
             what: Some("update".into()),
             ..Default::default()
         };
+    }
+    if app_updating(&mgr) {
+        *mgr.update.lock().unwrap() = install::InstallProgress::default();
+        return Err(APP_UPDATING.into());
     }
     tauri::async_runtime::spawn(install::run_update(mgr.inner().clone()));
     Ok(())
@@ -396,9 +411,10 @@ pub async fn node_set_keep_running(mgr: State<'_, Mgr>, on: bool) -> Result<Sett
     mgr.still_here()?;
     let mut s = mgr.settings.lock().await.clone();
     s.keep_running = on;
-    // Keeping the phone connected needs the node left running (code review 6).
+    // Keeping the phone connected needs the node left running (code review 6), and so does starting at login.
     if !on {
         s.keep_phone = false;
+        crate::phone::login_item::set(&mgr.app_dir, false)?;
     }
     mgr.save_settings(s.clone()).await?;
     Ok(s)
@@ -426,6 +442,10 @@ pub fn refetch_start(mgr: State<'_, Mgr>) -> Result<(), String> {
             what: Some("refetch".into()),
             ..Default::default()
         };
+    }
+    if app_updating(&mgr) {
+        *mgr.update.lock().unwrap() = install::InstallProgress::default();
+        return Err(APP_UPDATING.into());
     }
     tauri::async_runtime::spawn(install::run_refetch(mgr.inner().clone()));
     Ok(())

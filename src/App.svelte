@@ -28,6 +28,8 @@
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
   import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
+  import { appUpdate, startAppUpdateChecks } from "./lib/appUpdate";
+  import AppUpdate from "./components/AppUpdate.svelte";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "./lib/amount";
   import { nice } from "./lib/errors";
   import { cancelUnlock, submitUnlock, unlockRequest, walletLocked, withUnlock } from "./lib/wallet";
@@ -635,6 +637,8 @@
   // The Mac's Help menu: "Report a Problem or Suggest Something…" (src-tauri/src/lib.rs).
   onMount(() => {
     if (isPWA) return;
+    // The app's own updates: a notice when a signed release is out (lib/appUpdate.ts).
+    startAppUpdateChecks();
     let stop: (() => void) | null = null;
     import("@tauri-apps/api/event")
       .then(({ listen }) => listen("report-open", () => openReport("problem")))
@@ -712,6 +716,8 @@
   {#if error && !connected}
     <Notice kind="error" message={error} on:dismiss={() => (error = "")} />
   {/if}
+
+  {#if !isPWA && !gone}<AppUpdate notice />{/if}
 
   {#if gone}
     <div class="card removed">
@@ -1380,7 +1386,7 @@
         </div>
         {#if !isPWA}<PhoneSettings />{/if}
       {/if}
-      {#if !isPWA}<SecuritySettings /><HelpSettings />{/if}
+      {#if !isPWA}<SecuritySettings /><AppUpdate /><HelpSettings />{/if}
     {/if}
   {/if}
 
@@ -1388,7 +1394,7 @@
 
   {#if $versions}
     <footer class="app-foot">
-      FreeBank app {$versions.app}{$versions.node ? ` · node ${$versions.node}` : ""}{#if $update?.available}<span class="avail">{$update.latest} available</span>{/if}
+      FreeBank app {$versions.app}{#if $appUpdate?.available}<span class="avail">{$appUpdate.latest} available</span>{/if}{$versions.node ? ` · node ${$versions.node}` : ""}{#if $update?.available}<span class="avail">{$update.latest} available</span>{/if}
     </footer>
   {/if}
 </main>

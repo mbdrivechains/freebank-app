@@ -199,7 +199,7 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
 
-    let mut cmd = tokio::process::Command::new(&bin);
+    let mut cmd = node_command(&bin);
     // Its own folder as working folder: not the app's, which in an AppImage is the AppImage's mount and would
     // keep it mounted as long as the node runs.
     if Path::new(&s.datadir).is_dir() {
@@ -268,6 +268,24 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
         (false, false) => "node: started",
     });
     Ok(())
+}
+
+/// The node's command. Daemon mode on Linux: when FreeBank runs from its autostart entry, systemd keeps whatever it
+/// starts in that entry's unit, which at logout gets SIGTERM and then SIGKILL after 5 seconds (and, before systemd
+/// 250, is stopped as soon as FreeBank's background part exits). So there the node gets a scope of its own, with time to
+/// shut down (`systemd-run --scope` runs it in place: the same process). Anywhere else, the node itself.
+fn node_command(bin: &Path) -> tokio::process::Command {
+    #[cfg(target_os = "linux")]
+    {
+        let autostart = std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| c.contains("autostart.service"));
+        let systemd_run = Path::new("/usr/bin/systemd-run");
+        if autostart && systemd_run.is_file() {
+            let mut cmd = tokio::process::Command::new(systemd_run);
+            cmd.args(["--user", "--scope", "--collect", "--quiet", "-p", "TimeoutStopSec=180", "--"]).arg(bin);
+            return cmd;
+        }
+    }
+    tokio::process::Command::new(bin)
 }
 
 /// Stop the node this app started: RPC `stop`, else SIGTERM (the RPC refuses during warm-up),
@@ -366,6 +384,16 @@ fn log_line_in(text: &str) -> Option<String> {
             .rev()
             .find(|m| !LOG_NOISE.iter().any(|n| m.contains(n)))
             .map(|m| m.chars().take(160).collect()),
+    }
+}
+
+/// The node this manager started (or recognised) still runs; Err with why once it has stopped (daemon mode's wake
+/// watches a node it started this way).
+pub async fn alive(mgr: &NodeManager) -> Result<(), String> {
+    let datadir = PathBuf::from(mgr.settings.lock().await.datadir.clone());
+    match reap(mgr, &datadir).await {
+        (true, _) => Ok(()),
+        (false, why) => Err(why.unwrap_or_else(|| "the node isn't running".into())),
     }
 }
 
@@ -731,6 +759,8 @@ pub struct Removed {
 /// Only paths inside the app's own data folder are touched; the node's data folder and wallet stay.
 pub async fn remove_programs(mgr: &NodeManager) -> Result<Removed, String> {
     mgr.still_here()?;
+    // Nothing to start at login once the programs are gone.
+    crate::phone::login_item::set(&mgr.app_dir, false)?;
     let _busy = mgr.busy("Removing FreeBank's programs…")?;
     stop(mgr).await?;
     for name in ["releases", "tools", "tmp"] {

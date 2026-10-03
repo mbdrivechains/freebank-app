@@ -12,6 +12,7 @@ pub mod background;
 pub mod commands;
 pub mod crypto;
 pub mod link;
+pub mod login_item;
 pub mod store;
 pub mod webauthn;
 #[cfg(test)]
@@ -39,6 +40,10 @@ pub const RPC_WALLET_INSUFFICIENT_FUNDS: i64 = -6;
 pub const RPC_WALLET_UNLOCK_NEEDED: i64 = -13;
 pub const RPC_WALLET_PASSPHRASE_INCORRECT: i64 = -14;
 pub const RPC_IN_WARMUP: i64 = -28;
+/// Daemon mode's own answers for a request that reached no node (`background.rs`): it is being started, or it couldn't
+/// be (the message says what to do). Never a code the node uses.
+pub const WAKE_STARTING: i64 = -32_901;
+pub const WAKE_FAILED: i64 = -32_902;
 
 /// A node call that failed.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,11 +63,18 @@ impl RpcFail {
         Self { code: None, message: message.into() }
     }
 
+    /// No node answered: unreachable, or still warming up.
+    pub fn unreachable(&self) -> bool {
+        matches!(self.code, None | Some(RPC_IN_WARMUP))
+    }
+
     /// In words for the wallet's owner.
     pub fn plain(&self) -> String {
         match self.code {
             None => "Your desktop can't reach its FreeBank node right now.".into(),
             Some(RPC_IN_WARMUP) => "Your desktop's FreeBank node is still starting up.".into(),
+            Some(WAKE_STARTING) => ERR_STARTING.into(),
+            Some(WAKE_FAILED) => self.message.clone(),
             Some(RPC_WALLET_INSUFFICIENT_FUNDS) => {
                 "Not enough ECX in your desktop wallet for this payment and its fee.".into()
             }
@@ -140,6 +152,9 @@ pub const SEND_UNLOCK_SECS: u64 = 10;
 pub const RELOCK_MARGIN: Duration = crate::wallet::RELOCK_MARGIN;
 
 pub const ERR_DECLINED: &str = "declined on the desktop";
+/// Daemon mode (`background.rs`, light): a paired phone asked, and the node is starting. The reply carries
+/// `"starting": true`, so the page says so and asks again (PROTOCOL.md, "Wake on demand").
+pub const ERR_STARTING: &str = "Your desktop is starting FreeBank. It answers in a minute or two.";
 pub const ERR_RESTARTED: &str = "the desktop app restarted; nothing was sent";
 pub const ERR_NOT_ENCRYPTED: &str =
     "This wallet has no passphrase, so phones already send up to their daily limit without one.";
@@ -332,6 +347,12 @@ pub struct Phone {
     /// Run by the background part with the app closed (`background.rs`): nobody can confirm a send,
     /// so one that would be held is refused instead.
     background: std::sync::atomic::AtomicBool,
+    /// Daemon mode: what to call when a paired phone asks for anything (it starts the node), and whether the node
+    /// is starting and can't answer yet (`background.rs`, light).
+    waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    starting: std::sync::atomic::AtomicBool,
+    /// Daemon mode: the last start failed; what the phone hears until it is tried again.
+    wake_failure: Mutex<Option<String>>,
     /// The wallet passphrase while "Let my phone send while FreeBank is open" is on. Memory only:
     /// never written, logged or handed to the screen, and wiped when it is let go.
     pass: Mutex<Option<Zeroizing<String>>>,
@@ -424,6 +445,9 @@ impl Phone {
             finals: Mutex::default(),
             held_ttl: AtomicU64::new(HELD_TTL_SECS),
             background: std::sync::atomic::AtomicBool::new(false),
+            waker: Mutex::new(None),
+            starting: std::sync::atomic::AtomicBool::new(false),
+            wake_failure: Mutex::new(None),
             pass: Mutex::new(None),
             wallet_gate: tokio::sync::Mutex::new(()),
             relock: Mutex::new(Arc::default()),
@@ -769,6 +793,10 @@ impl Phone {
         // sends off until they are turned on again.
         if none_left {
             self.forget_passphrase();
+            // No phone to wake the node for: the login item goes too (Settings hides its switch then).
+            if let Some(app_dir) = self.store.dir.parent() {
+                let _ = login_item::set(app_dir, false);
+            }
         }
         self.events.emit(EV_CHANGED, json!({}));
         self.wake.notify_one();
@@ -886,6 +914,7 @@ impl Phone {
             let reply = match me.serve(ch, &dev, &req).await {
                 Ok(v) => json!({"id": id, "ok": v}),
                 Err(e) if e == ERR_AUTH_NEEDED => json!({"id": id, "err": e, "auth": "open"}),
+                Err(e) if e == ERR_STARTING => json!({"id": id, "err": e, "starting": true}),
                 Err(e) => json!({"id": id, "err": e}),
             };
             me.send_sealed(ch, &reply);
@@ -908,6 +937,16 @@ impl Phone {
             "passkey-add" => return self.passkey_add(ch, dev, a),
             _ if !self.verified(ch, dev) => return Err(ERR_AUTH_NEEDED.into()),
             _ => {}
+        }
+        // A paired phone, past its session and Face ID: in daemon mode this starts the node.
+        self.wake();
+        if matches!(m, "balance" | "history" | "receive" | "status" | "send") {
+            if self.starting.load(Ordering::SeqCst) {
+                return Err(ERR_STARTING.into());
+            }
+            if let Some(why) = self.wake_failure.lock().unwrap().clone() {
+                return Err(why);
+            }
         }
         match m {
             // Changing Face ID takes Face ID again, over its own challenge (M1): a session proved
@@ -1265,6 +1304,28 @@ impl Phone {
 
     pub fn is_background(&self) -> bool {
         self.background.load(Ordering::SeqCst)
+    }
+
+    /// Daemon mode: `f` runs whenever a paired phone asks for anything, after its session and Face ID checked out.
+    pub fn set_waker(&self, f: Arc<dyn Fn() + Send + Sync>) {
+        *self.waker.lock().unwrap() = Some(f);
+    }
+
+    /// Daemon mode: the node is starting (requests that need it are answered `ERR_STARTING`), or answers again.
+    pub fn set_starting(&self, on: bool) {
+        self.starting.store(on, Ordering::SeqCst);
+    }
+
+    /// Daemon mode: the node couldn't be started; requests that need it hear `why` until the next try.
+    pub fn set_wake_failure(&self, why: Option<String>) {
+        *self.wake_failure.lock().unwrap() = why;
+    }
+
+    fn wake(&self) {
+        let f = self.waker.lock().unwrap().clone();
+        if let Some(f) = f {
+            f();
+        }
     }
 
     /// Hold a send for the desktop. Returns the phone's reply.

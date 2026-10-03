@@ -766,6 +766,43 @@ fn opener_scope_matches_the_frontend() {
     assert!(perms.contains("\"shell:allow-open\"") && !perms.contains("shell:allow-execute") && !perms.contains("shell:allow-spawn"));
 }
 
+// ---- The app updater ----
+
+#[test]
+fn the_updater_test_feature_never_reaches_a_release() {
+    // app_update.rs reads another address and key only with the `update-test` feature (and then only a server on this
+    // computer): no release build may enable it, by any route.
+    let cargo = include_str!("../../Cargo.toml");
+    for line in cargo.lines().filter(|l| l.contains("update-test")) {
+        let line = line.trim();
+        assert!(line.starts_with('#') || line == "update-test = []", "Cargo.toml turns it on: {line}");
+    }
+    // The Tauri CLI passes build.features to cargo, from tauri.conf.json and the files it merges in.
+    let conf: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+    assert!(conf["build"].get("features").is_none(), "tauri.conf.json sets build.features");
+    let src_tauri = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for other in ["tauri.linux.conf.json", "tauri.macos.conf.json", "tauri.windows.conf.json", "tauri.conf.json5", "Tauri.toml"] {
+        let text = std::fs::read_to_string(src_tauri.join(other)).unwrap_or_default();
+        assert!(!text.contains("features") && !text.contains("update-test"), "{other}");
+    }
+    for (name, text) in [
+        ("release.yml", include_str!("../../../.github/workflows/release.yml")),
+        ("build.sh", include_str!("../../../build/linux/build.sh")),
+        ("rebuild.sh", include_str!("../../../build/linux/rebuild.sh")),
+        ("Dockerfile", include_str!("../../../build/linux/Dockerfile")),
+        ("package.json", include_str!("../../../package.json")),
+    ] {
+        assert!(!text.contains("update-test") && !text.contains("--features") && !text.contains("--all-features"), "{name}");
+    }
+    // Cargo's config files could add it with rustflags.
+    for dir in [src_tauri.to_path_buf(), src_tauri.join("..")] {
+        for f in [".cargo/config", ".cargo/config.toml"] {
+            let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
+            assert!(!text.contains("update-test"), "{}", dir.join(f).display());
+        }
+    }
+}
+
 // ---- Sample reports for the screens' browser harness ----
 
 /// Prints two real reports as JSON between markers: a setup with every kind of problem, and a sound one.

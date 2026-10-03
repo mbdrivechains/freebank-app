@@ -8,8 +8,8 @@ fn main() {
     // window to keep the phone link up (phone/background.rs).
     // args_os: an argument that isn't UTF-8 must not stop the app from starting (code review 8).
     let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
-    if let Some(dir) = freebank::phone_background_requested(&args) {
-        std::process::exit(freebank::phone_background_main(dir));
+    if let Some((dir, light)) = freebank::phone_background_requested(&args) {
+        std::process::exit(freebank::phone_background_main(dir, light));
     }
     freebank::run()
 }

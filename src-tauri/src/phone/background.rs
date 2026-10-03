@@ -11,12 +11,21 @@
 //! - a send the open app would hold (over the limit, or with the wallet locked) is refused at once:
 //!   nobody is there to confirm it (`Phone::set_background`).
 //!
+//! **Daemon mode (v0.2.4, operator 2026-10-02: "yes.. 0.2.4. both ."):** "Start when I log in" adds a login item
+//! (`login_item.rs`) that starts this part with `--light` when the user logs in. Light, it reads no passphrase and
+//! starts no node; the node starts when a paired phone asks for something (after its session and Face ID checked
+//! out), and until the node answers the phone hears `ERR_STARTING`, as does a request that finds the node gone later
+//! (it is woken again). If the node can't start, the phone hears so for two minutes before the next try. A node it
+//! spawned stops again after `IDLE_STOP_SECS` with no phone asking. Without the app's passphrase, sends within the
+//! limit work only for a wallet without one. On Linux, from its autostart entry, the node gets a systemd scope of its
+//! own (`node::process::node_command`), so logging out gives it time to shut down.
+//!
 //! It writes `<app data>/phone.pid`. When the app opens, it takes the link back: it stops the
 //! background part (SIGTERM, and only a process whose command line is this one) and waits for it, so
 //! two desktops never take turns at the relay room. "Stop everything and close" stops the node and
 //! starts no background part. Never SIGKILL.
 
-use super::{commands::NodeRpc, link, unix_now, Events, Phone};
+use super::{commands::NodeRpc, link, unix_now, Events, Phone, RpcFail};
 use crate::rpc::FreeBankClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +40,12 @@ use zeroize::Zeroizing;
 pub const PID_FILE: &str = "phone.pid";
 /// The argument that starts the background part.
 pub const ARG: &str = "--phone-background";
+/// Started at login (daemon mode): the node starts when a paired phone asks.
+pub const LIGHT: &str = "--light";
+/// A node the light part started stops after this long with no phone asking.
+const IDLE_STOP_SECS: u64 = 30 * 60;
+/// How long the light part waits for a node it started to answer.
+const START_WAIT_SECS: u64 = 10 * 60;
 /// How long the app waits for the background part to stop when it takes the link back.
 const TAKE_BACK_WAIT: Duration = Duration::from_secs(10);
 /// This app already started the background part (the close notice's "Keep the phone connected").
@@ -43,10 +58,11 @@ pub struct PidFile {
     pub started: u64,
 }
 
-/// The app folder, when this process was started as the background part.
-pub fn requested(args: &[String]) -> Option<PathBuf> {
+/// The app folder, and whether it is light (started at login), when this process was started as the background part.
+pub fn requested(args: &[String]) -> Option<(PathBuf, bool)> {
     match args {
-        [_, a, d, dir] if a == ARG && d == "--app-dir" && !dir.is_empty() => Some(PathBuf::from(dir)),
+        [_, a, d, dir] if a == ARG && d == "--app-dir" && !dir.is_empty() => Some((PathBuf::from(dir), false)),
+        [_, a, d, dir, l] if a == ARG && d == "--app-dir" && !dir.is_empty() && l == LIGHT => Some((PathBuf::from(dir), true)),
         _ => None,
     }
 }
@@ -111,7 +127,7 @@ fn is_ours(pid: u32, app_dir: &Path) -> bool {
         let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else { return false };
         let args: Vec<String> = raw.split(|&b| b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
         let args: Vec<String> = args.into_iter().filter(|a| !a.is_empty()).collect();
-        requested(&args).is_some_and(|d| d.to_string_lossy() == dir)
+        requested(&args).is_some_and(|(d, _)| d.to_string_lossy() == dir)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -121,7 +137,8 @@ fn is_ours(pid: u32, app_dir: &Path) -> bool {
         };
         // The whole end of its command line, so a folder named "<dir>X" doesn't count (review I7).
         let line = String::from_utf8_lossy(&out.stdout);
-        line.trim_end().ends_with(&format!(" {ARG} --app-dir {dir}"))
+        let line = line.trim_end();
+        line.ends_with(&format!(" {ARG} --app-dir {dir}")) || line.ends_with(&format!(" {ARG} --app-dir {dir} {LIGHT}"))
     }
 }
 
@@ -161,7 +178,7 @@ impl Events for NoScreen {
 }
 
 /// The background part's whole life (main.rs). Its exit code.
-pub fn main(app_dir: PathBuf) -> i32 {
+pub fn main(app_dir: PathBuf, light: bool) -> i32 {
     // It may hold the wallet passphrase: no core dumps, and (Linux) no reading its memory from other
     // processes of the same user (security review L3).
     #[cfg(unix)]
@@ -178,9 +195,12 @@ pub fn main(app_dir: PathBuf) -> i32 {
         return 1;
     }
     // The passphrase, if the app handed one over: everything up to end of input, less the last new
-    // line, read into room enough that it never moves (a move would leave a copy behind).
+    // line, read into room enough that it never moves (a move would leave a copy behind). Started at
+    // login (light), nothing is handed over: stdin isn't read.
     let mut raw = Zeroizing::new(Vec::with_capacity(4097));
-    let _ = std::io::stdin().take(4096).read_to_end(&mut raw);
+    if !light {
+        let _ = std::io::stdin().take(4096).read_to_end(&mut raw);
+    }
     let pass = std::str::from_utf8(&raw)
         .ok()
         .map(|s| s.strip_suffix('\n').unwrap_or(s))
@@ -188,7 +208,7 @@ pub fn main(app_dir: PathBuf) -> i32 {
         .map(|s| Zeroizing::new(s.to_string()));
     drop(raw);
     let code = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
-        Ok(rt) => rt.block_on(run(app_dir.clone(), pass)),
+        Ok(rt) => rt.block_on(run(app_dir.clone(), pass, light)),
         Err(_) => 1,
     };
     if read_pid(&app_dir).is_some_and(|p| p.pid == me.pid) {
@@ -197,15 +217,46 @@ pub fn main(app_dir: PathBuf) -> i32 {
     code
 }
 
-async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>) -> i32 {
-    let s = crate::node::NodeManager::new(app_dir.clone()).settings.lock().await.clone();
+async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> i32 {
+    crate::activity::init(&app_dir);
+    let mgr = Arc::new(crate::node::NodeManager::new(app_dir.clone()));
+    let s = mgr.settings.lock().await.clone();
     let mut client = FreeBankClient::default();
     client.configure_local(&format!("http://127.0.0.1:{}", s.rpc_port), s.datadir.clone().into());
-    let Ok((phone, out)) = Phone::new(&app_dir, Arc::new(NodeRpc(Arc::new(Mutex::new(client)))), Arc::new(NoScreen), Arc::new(unix_now))
-    else {
+    let mut probe = FreeBankClient::default();
+    probe.configure_local(&format!("http://127.0.0.1:{}", s.rpc_port), s.datadir.clone().into());
+    let node = NodeRpc(Arc::new(Mutex::new(client)));
+    let waker = light.then(|| {
+        Arc::new(Waker {
+            st: std::sync::Mutex::new(WakeState::default()),
+            phone: std::sync::OnceLock::new(),
+            mgr: mgr.clone(),
+            probe: Arc::new(Mutex::new(probe)),
+            ops: Mutex::new(()),
+        })
+    });
+    let rpc: Arc<dyn super::Rpc> = match &waker {
+        Some(w) => Arc::new(WakingRpc { inner: node, waker: w.clone() }),
+        None => Arc::new(node),
+    };
+    let Ok((phone, out)) = Phone::new(&app_dir, rpc, Arc::new(NoScreen), Arc::new(unix_now)) else {
         return 1;
     };
     phone.set_background(true);
+    if let Some(w) = waker {
+        crate::activity::note("daemon: started at login; the node starts when a phone asks");
+        let _ = w.phone.set(Arc::downgrade(&phone));
+        {
+            let w = w.clone();
+            tokio::spawn(async move {
+                let up = answers(&w.probe).await;
+                w.st.lock().unwrap().answering = up;
+            });
+        }
+        let ws = w.clone();
+        phone.set_waker(Arc::new(move || ws.asked()));
+        tokio::spawn(w.idle_stop());
+    }
     if let Some(p) = pass {
         // Checked by unlocking once, as when it is turned on in the app; without it, sends wait for the app.
         let _ = phone.phone_send_on(p).await;
@@ -219,6 +270,162 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>) -> i32 {
     }
     phone.forget_passphrase();
     0
+}
+
+/// Daemon mode: start the node when a paired phone asks, report it starting until it answers (or why it couldn't
+/// start), and stop a node this part spawned after `IDLE_STOP_SECS` with no phone asking. All of its state is under
+/// one lock, so a wake finishing as a request arrives can't leave "starting" on (security review, v0.2.4).
+struct Waker {
+    st: std::sync::Mutex<WakeState>,
+    phone: std::sync::OnceLock<std::sync::Weak<Phone>>,
+    mgr: Arc<crate::node::NodeManager>,
+    probe: Arc<Mutex<FreeBankClient>>,
+    /// A wake or an idle stop is under way: one at a time.
+    ops: Mutex<()>,
+}
+
+#[derive(Default)]
+struct WakeState {
+    /// The node answered since a request last reached none.
+    answering: bool,
+    waking: bool,
+    /// The last start failed: when, and what the phone hears until it is tried again.
+    failed: Option<(Instant, String)>,
+    /// This part spawned the node that runs (an adopted or already running one is never idle-stopped).
+    spawned: bool,
+    last_ask: Option<Instant>,
+}
+
+/// After a failed start, the next try waits this long.
+const RETRY_AFTER: Duration = Duration::from_secs(120);
+const WAKE_FAILED_TEXT: &str = "Your desktop couldn't start FreeBank's node. Open FreeBank there to see why.";
+
+impl Waker {
+    fn phone(&self) -> Option<Arc<Phone>> {
+        self.phone.get().and_then(|w| w.upgrade())
+    }
+
+    /// A paired phone asked (from `serve()`, before its request runs): start the node unless it answers, a wake is
+    /// under way, or the last start failed a moment ago.
+    fn asked(self: &Arc<Self>) {
+        let mut s = self.st.lock().unwrap();
+        s.last_ask = Some(Instant::now());
+        if s.answering || s.waking || s.failed.as_ref().is_some_and(|(at, _)| at.elapsed() < RETRY_AFTER) {
+            return;
+        }
+        s.failed = None;
+        s.waking = true;
+        if let Some(p) = self.phone() {
+            p.set_wake_failure(None);
+            p.set_starting(true);
+        }
+        drop(s);
+        let me = self.clone();
+        tokio::spawn(async move { me.wake().await });
+    }
+
+    /// A request reached no node: it no longer answers. What that request answers instead.
+    fn unreachable(self: &Arc<Self>) -> RpcFail {
+        self.st.lock().unwrap().answering = false;
+        self.asked();
+        let s = self.st.lock().unwrap();
+        match &s.failed {
+            Some((_, why)) if !s.waking => RpcFail { code: Some(super::WAKE_FAILED), message: why.clone() },
+            _ => RpcFail { code: Some(super::WAKE_STARTING), message: String::new() },
+        }
+    }
+
+    async fn wake(self: Arc<Self>) {
+        let _one = self.ops.lock().await;
+        let outcome: Result<(), String> = async {
+            if answers(&self.probe).await {
+                return Ok(());
+            }
+            crate::activity::note("daemon: a phone asked; starting the node");
+            let had = self.mgr.child.lock().await.is_some();
+            crate::node::process::start(&self.mgr).await?;
+            if !had && self.mgr.child.lock().await.is_some() {
+                self.st.lock().unwrap().spawned = true;
+            }
+            let until = Instant::now() + Duration::from_secs(START_WAIT_SECS);
+            loop {
+                if answers(&self.probe).await {
+                    return Ok(());
+                }
+                // It started and stopped again (it may need -reindex, say).
+                crate::node::process::alive(&self.mgr).await?;
+                if Instant::now() >= until {
+                    return Err("it didn't answer within 10 minutes".into());
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        .await;
+        let mut s = self.st.lock().unwrap();
+        s.waking = false;
+        let phone = self.phone();
+        match outcome {
+            Ok(()) => {
+                s.answering = true;
+                s.failed = None;
+            }
+            Err(e) => {
+                crate::activity::note(&format!("daemon: the node didn't start: {e}"));
+                s.answering = false;
+                s.failed = Some((Instant::now(), WAKE_FAILED_TEXT.into()));
+            }
+        }
+        if let Some(p) = phone {
+            p.set_wake_failure(s.failed.as_ref().map(|(_, why)| why.clone()));
+            p.set_starting(false);
+        }
+    }
+
+    /// Every minute: a node this part spawned stops after `IDLE_STOP_SECS` with no phone asking.
+    async fn idle_stop(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Ok(_one) = self.ops.try_lock() else { continue };
+            let due = {
+                let s = self.st.lock().unwrap();
+                s.spawned && !s.waking && s.last_ask.is_none_or(|t| t.elapsed() >= Duration::from_secs(IDLE_STOP_SECS))
+            };
+            if !due {
+                continue;
+            }
+            {
+                let mut s = self.st.lock().unwrap();
+                s.answering = false;
+                s.spawned = false;
+            }
+            let _ = crate::node::process::stop(&self.mgr).await;
+            crate::activity::note("daemon: no phone for 30 minutes; the node stopped");
+        }
+    }
+}
+
+/// The node, for the light part: a call that reaches none wakes it, and answers "starting" (or why it couldn't start).
+struct WakingRpc {
+    inner: NodeRpc,
+    waker: Arc<Waker>,
+}
+
+impl super::Rpc for WakingRpc {
+    fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> futures_util::future::BoxFuture<'a, Result<Value, RpcFail>> {
+        Box::pin(async move {
+            match self.inner.call(method, params).await {
+                Err(e) if e.unreachable() => Err(self.waker.unreachable()),
+                r => r,
+            }
+        })
+    }
+}
+
+/// The node answers RPC (not just running: warm-up says no).
+async fn answers(probe: &Arc<Mutex<FreeBankClient>>) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async { probe.lock().await.call_fresh_typed("getblockcount", vec![]).await.is_ok() })
+        .await
+        .unwrap_or(false)
 }
 
 /// SIGTERM (the app taking the link back, or the system shutting down) or Ctrl-C.
@@ -245,7 +452,8 @@ mod tests {
     #[test]
     fn only_its_own_command_line_starts_it() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(requested(&a(&["freebank", ARG, "--app-dir", "/x/y z"])), Some(PathBuf::from("/x/y z")));
+        assert_eq!(requested(&a(&["freebank", ARG, "--app-dir", "/x/y z"])), Some((PathBuf::from("/x/y z"), false)));
+        assert_eq!(requested(&a(&["freebank", ARG, "--app-dir", "/x/y z", LIGHT])), Some((PathBuf::from("/x/y z"), true)));
         assert_eq!(requested(&a(&["freebank"])), None);
         assert_eq!(requested(&a(&["freebank", ARG])), None);
         assert_eq!(requested(&a(&["freebank", ARG, "--app-dir", ""])), None);
@@ -297,5 +505,33 @@ mod tests {
         assert_eq!(take_back(&d), Ok(None));
         assert!(!d.join(PID_FILE).exists());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Daemon mode: a node that can't start (here: none installed) is reported as such, not as "starting" for good, and
+    /// isn't tried again for a while (security review, v0.2.4).
+    #[tokio::test]
+    async fn a_node_that_cant_start_says_so_and_waits_before_trying_again() {
+        let dir = std::env::temp_dir().join(format!("fb-wake-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut probe = FreeBankClient::default();
+        probe.configure("http://127.0.0.1:1", "u", "p"); // nothing answers there
+        let w = Arc::new(Waker {
+            st: std::sync::Mutex::new(WakeState::default()),
+            phone: std::sync::OnceLock::new(),
+            mgr: Arc::new(crate::node::NodeManager::new(dir.clone())),
+            probe: Arc::new(Mutex::new(probe)),
+            ops: Mutex::new(()),
+        });
+        assert_eq!(w.unreachable().code, Some(super::super::WAKE_STARTING), "a wake is under way");
+        for _ in 0..200 {
+            if !w.st.lock().unwrap().waking {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let r = w.unreachable();
+        assert_eq!((r.code, r.plain()), (Some(super::super::WAKE_FAILED), WAKE_FAILED_TEXT.to_string()));
+        assert!(!w.st.lock().unwrap().waking, "not tried again at once");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

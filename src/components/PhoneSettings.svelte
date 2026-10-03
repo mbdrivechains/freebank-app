@@ -99,6 +99,25 @@
     }
   }
 
+  async function setLogin(box: HTMLInputElement) {
+    const on = box.checked;
+    keepBusy = true;
+    keepNote = "";
+    try {
+      await phone.loginSet(on);
+      keep = await phone.keepInfo();
+      const st = await node.status();
+      keepRestart = on && st.managed && !st.keeps_running;
+    } catch (e) {
+      keepNote = nice(e);
+      keep = await phone.keepInfo().catch(() => keep);
+    } finally {
+      // The box shows what is so, also after a refusal (one-way `checked` sees no change to redraw).
+      if (keep) box.checked = keep.at_login;
+      keepBusy = false;
+    }
+  }
+
   async function toggleSend(e: Event) {
     const box = e.currentTarget as HTMLInputElement;
     sendNote = "";
@@ -395,6 +414,18 @@
           awake; with phone sends on, it keeps your passphrase in memory too. Opening FreeBank takes the phone back. To
           stop it all, close FreeBank with "Stop everything and close".
         </p>
+        {#if keep.at_login_here}
+          <label class="toggle-row">
+            <input type="checkbox" checked={keep.at_login} disabled={keepBusy} on:change={(e) => setLogin(e.currentTarget)} />
+            <span>Start it when I log in</span>
+          </label>
+          <p class="hint">
+            Your phone reaches FreeBank whenever this computer is on, awake and logged in, even if you haven't opened
+            FreeBank since: the node starts when your phone asks (usually within a minute or two) and, until you open
+            FreeBank, stops again after half an hour without it. Until then a phone can see your balance and history and
+            get an address; it can send within its limit only if your wallet has no passphrase.
+          </p>
+        {/if}
       {/if}
       {#if keep.took_back}<p class="hint">Your phone stayed connected while FreeBank was closed, from {when(keep.took_back)}.</p>{/if}
       {#if keep.take_back_error}<p class="soft-error">{keep.take_back_error}</p>{/if}

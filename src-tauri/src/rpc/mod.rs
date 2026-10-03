@@ -95,8 +95,13 @@ impl FreeBankClient {
     }
 
     /// Configure for the node on this computer, whose credentials live in `datadir`.
+    /// Without a cookie yet (the node isn't running), it still remembers where the node will be, and the first call
+    /// after the node starts reads the cookie (`call_fresh_typed`); it says false and has no login until then.
     pub fn configure_local(&mut self, url: &str, datadir: PathBuf) -> bool {
         let Some((u, p)) = crate::node::detect::rpc_auth(&datadir) else {
+            self.url = Some(url.to_string());
+            self.auth = None;
+            self.local_datadir = Some(datadir);
             return false;
         };
         self.configure(url, &u, &p);
@@ -115,7 +120,8 @@ impl FreeBankClient {
         self.configure_local(&url, dir)
     }
 
-    /// Make a JSON-RPC call; if the local node refuses our (stale) cookie, re-read it once and retry.
+    /// Make a JSON-RPC call; if the local node refuses our (stale) cookie, or there was none yet, re-read it once and
+    /// retry.
     pub async fn call_fresh(&mut self, method: &str, params: Vec<Value>) -> Result<Value, String> {
         self.call_fresh_typed(method, params).await.map_err(|e| e.to_string())
     }
@@ -128,7 +134,9 @@ impl FreeBankClient {
     /// `call_fresh`, keeping the kind of failure (the phone relay acts on Core's error codes).
     pub async fn call_fresh_typed(&mut self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
         match self.call_typed(method, params.clone()).await {
-            Err(RpcError::Http(401)) if self.refresh_local_auth() => self.call_typed(method, params).await,
+            Err(RpcError::Http(401) | RpcError::NotConfigured) if self.refresh_local_auth() => {
+                self.call_typed(method, params).await
+            }
             r => r,
         }
     }

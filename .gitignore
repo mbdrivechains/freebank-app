@@ -31,3 +31,6 @@ src-tauri/WixTools/
 # Temporary
 tmp/
 temp/
+
+# Scratch folders the Rust tests make beside the source (removed when they pass)
+src-tauri/.fb-*/

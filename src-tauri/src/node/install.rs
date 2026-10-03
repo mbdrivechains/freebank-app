@@ -146,8 +146,13 @@ async fn download(
     Ok(())
 }
 
-/// A small file from a release, whole and byte for byte. Ok(None) when the release has no such file.
-async fn download_bytes(http: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>, String> {
+/// The most a small release file (SHA256SUMS, its signature) may be: they are a few kilobytes. The app's update check
+/// reads them unasked, so a huge one must never fill memory (security review of v0.2.4, M1).
+pub(crate) const SMALL_FILE_MAX: u64 = 64 * 1024;
+
+/// A small file from a release, whole and byte for byte, at most SMALL_FILE_MAX. Ok(None) when the release has no
+/// such file.
+pub(crate) async fn download_bytes(http: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>, String> {
     let failed = |e: reqwest::Error| format!("Download failed: {} ({})", url, e);
     let resp = http
         .get(url)
@@ -158,8 +163,19 @@ async fn download_bytes(http: &reqwest::Client, url: &str) -> Result<Option<Vec<
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let body = resp.error_for_status().map_err(failed)?.bytes().await.map_err(failed)?;
-    Ok(Some(body.to_vec()))
+    let mut resp = resp.error_for_status().map_err(failed)?;
+    let too_big = || format!("{} is far bigger than a checksums file, so it wasn't read.", url);
+    if resp.content_length().is_some_and(|n| n > SMALL_FILE_MAX) {
+        return Err(too_big());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(failed)? {
+        if (body.len() + chunk.len()) as u64 > SMALL_FILE_MAX {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Some(body))
 }
 
 /// SHA256SUMS as text, once its signature checks out: the very bytes that were verified.
@@ -181,7 +197,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 /// The hash listed for `name` in a sha256sum-style file ("<hash>  name" or "<hash> *name").
-fn listed_hash(sums: &str, name: &str) -> Option<String> {
+pub(crate) fn listed_hash(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|l| {
         let mut it = l.split_whitespace();
         let hash = it.next()?;

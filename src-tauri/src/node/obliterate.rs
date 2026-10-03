@@ -658,6 +658,9 @@ async fn refusal(mgr: &NodeManager) -> Option<String> {
     if updating {
         return Some("FreeBank is being updated. Let it finish first.".into());
     }
+    if mgr.app_updating.load(std::sync::atomic::Ordering::SeqCst) {
+        return Some("The FreeBank app is updating itself and restarts when it's done. Let it finish first.".into());
+    }
     if process::someone_elses_node(mgr).await {
         return Some("A FreeBank node started by another program is running. Stop it there first.".into());
     }
@@ -866,8 +869,10 @@ pub async fn run(mgr: &NodeManager, places: Places, ticks: Vec<Tick>) -> Result<
         .map_err(|e| e.to_string())??;
     process::stop(mgr).await?;
     let home = places.home.clone();
-    // The recent-activity log stops first, so a note can't bring the app's folder back while it goes.
+    // The recent-activity log stops first, so a note can't bring the app's folder back while it goes; and the login
+    // item goes, so nothing starts for a folder that is gone.
     crate::activity::stop();
+    let _ = crate::phone::login_item::set(&mgr.app_dir, false);
     let done = tokio::task::spawn_blocking(move || execute(&places, &ticks))
         .await
         .map_err(|e| e.to_string())??;

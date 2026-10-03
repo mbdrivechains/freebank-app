@@ -79,7 +79,11 @@ macOS.
     redirect to GitHub's file host, `*.githubusercontent.com`). A node is installed only if its `SHA256SUMS`
     signature checks against the key pinned in `src-tauri/src/node/release_key.rs`;
   - grpcurl 1.9.4 from `github.com/fullstorydev/grpcurl`, pinned by sha256 in `src-tauri/src/node/install.rs`, only
-    when no grpcurl is found on this computer (below).
+    when no grpcurl is found on this computer (below);
+  - the app's own releases (v0.2.4, `src-tauri/src/app_update.rs`): `SHA256SUMS` and `SHA256SUMS.sig` from
+    `github.com/mbdrivechains/freebank-app/releases/latest/download/`, 15 seconds after the app starts and every 12
+    hours while it runs (an answer is reused for 6 hours), and when you press Check for updates; the new package from
+    `github.com/mbdrivechains/freebank-app/releases/download/v<version>/` only when you press Update and restart.
 - **explorer.ecxfreebank.com:** the chain's tip height, for Setup's sync progress and the Node tab
   (`src-tauri/src/node/process.rs`, `mod.rs`).
 - **app.ecxfreebank.com:**
@@ -107,6 +111,23 @@ in the order the build machine's disk returns the files, which made builds diffe
 browser. `src/lib/api.ts` can also run the screens in an ordinary browser (see the README); the
 desktop app doesn't use that mode.
 
+**How the app updates itself** (v0.2.4, `src-tauri/src/app_update.rs`): it trusts only what the node installer
+trusts. A new version is offered only when the latest release's `SHA256SUMS` checks against the release key pinned in
+`src-tauri/src/node/release_key.rs`, and its version (read from the package names in that signed file) is higher than
+the app's. Update and restart downloads the package beside the running app and puts it in place only if its SHA-256 is
+the one on its line in the signed file: an AppImage is renamed over the running one; a Mac app
+(`FreeBank_<version>_universal.app.tar.gz`) is unpacked from that same checked file beside the running bundle, checked
+to be FreeBank at that version for a macOS this Mac has, and exchanged with the running bundle in one step (two renames
+where the disk can't). Then the app restarts the usual way. The `.deb` is never replaced by the app:
+Software Updater (with FreeBank's apt repository, which trusts the repository's own key, held by the release
+workflow) or a new `.deb` does that. Nothing GitHub holds can make an update the app accepts; only the release key can.
+But the AppImage and the Mac app don't rebuild byte for byte yet (below), so the key vouches for GitHub's build of them
+as checked before signing, not for more. The app also updates only where no other user could swap a file in (the
+login item's rule in `src-tauri/src/phone/login_item.rs`), waits until nothing is being done to the node before it
+restarts, and doesn't restart after Obliterate. A build with the `update-test` Cargo feature reads
+another address and key from the environment, for the update's end-to-end test; no release enables it
+(`src-tauri/src/security/tests.rs` checks the release workflow and build scripts).
+
 **What the app asks the node:**
 - **Wallet calls** each have their own command on the Rust side:
   - sending: `sendtoaddress`, or `createrawtransaction`, `fundrawtransaction`, `signrawtransactionwithwallet` and
@@ -133,8 +154,10 @@ desktop app doesn't use that mode.
 - grpcurl, to test the enforcer; freebankd uses it too (`-grpcurlbin`). It is the one used before, BitWindow's, one
   on your PATH, or else the app's own 1.9.4 download (`find_grpcurl` in `src-tauri/src/node/install.rs`). Only the
   app's own download is checked against its pinned hash; each one found is run once with `-version`;
-- the app itself, as the phone link's background part (`--phone-background`);
-- on macOS also `xattr` (to clear a download's quarantine), `/bin/ps` and `/usr/bin/sw_vers`;
+- the app itself, as the phone link's background part (`--phone-background`), and again after an update (the
+  restart);
+- on macOS also `xattr` (to clear a download's quarantine), `/bin/ps`, `/usr/bin/sw_vers`, and `touch` on the app
+  after an update (so Finder notices it);
 - your system's link opener, for the allowed links (Tauri's shell plugin).
 
 **Third-party code:** the Rust crates are pinned by `src-tauri/Cargo.lock`, and the npm packages by
@@ -181,7 +204,7 @@ Give your assistant the checked-out tree and something like this:
     --source-ref refs/tags/v<version>
   ```
 
-  The same works for the AppImage and the `.dmg`. If the attestation verifies and the hash matches `SHA256SUMS`,
+  The same works for the AppImage, the `.dmg` and the Mac app's update (`.app.tar.gz`). If the attestation verifies and the hash matches `SHA256SUMS`,
   GitHub built exactly these bytes from the tag's source, with `.github/workflows/release.yml`. (`--source-ref`
   pins the tag: the workflow can also be started by hand, though it records attestations only for tags.)
 

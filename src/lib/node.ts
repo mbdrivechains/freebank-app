@@ -273,11 +273,12 @@ export function randomTag(): string {
 }
 
 // The only links the app opens: the explorer, BitWindow's downloads, FreeBank's release pages (v0.2.0),
-// and the app's new-issue and private security-report pages on GitHub (v0.2.1, lib/report.ts).
+// the app's new-issue and private security-report pages on GitHub (v0.2.1, lib/report.ts), and the apt
+// repository's page (v0.2.4, lib/appUpdate.ts).
 // tauri.conf.json's plugins.shell.open holds the same pattern, and the shell plugin enforces it; this
 // copy keeps the browser build's window.open to them too. Keep the two alike (security/tests.rs checks).
 export const OPENABLE =
-  /^https:\/\/(explorer\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases|github\.com\/mbdrivechains\/freebank-app\/(issues\/new|security\/advisories\/new))([\/?][A-Za-z0-9._~%\/?=&#+-]*)?$/;
+  /^https:\/\/(explorer\.ecxfreebank\.com|apt\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases|github\.com\/mbdrivechains\/freebank-app\/(issues\/new|security\/advisories\/new))([\/?][A-Za-z0-9._~%\/?=&#+-]*)?$/;
 
 export async function openUrl(url: string): Promise<void> {
   if (!OPENABLE.test(url)) {

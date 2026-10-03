@@ -1,4 +1,5 @@
 mod activity;
+mod app_update;
 mod clipboard;
 mod commands;
 mod feedback;
@@ -58,14 +59,15 @@ pub fn keep_inherited_files_from_children() {
     }
 }
 
-/// Started as the phone link's background part (phone/background.rs): its app folder.
-pub fn phone_background_requested(args: &[String]) -> Option<std::path::PathBuf> {
+/// Started as the phone link's background part (phone/background.rs): its app folder, and whether it is light
+/// (started at login, daemon mode).
+pub fn phone_background_requested(args: &[String]) -> Option<(std::path::PathBuf, bool)> {
     phone::background::requested(args)
 }
 
 /// The background part's whole life; its exit code.
-pub fn phone_background_main(app_dir: std::path::PathBuf) -> i32 {
-    phone::background::main(app_dir)
+pub fn phone_background_main(app_dir: std::path::PathBuf, light: bool) -> i32 {
+    phone::background::main(app_dir, light)
 }
 
 pub fn run() {
@@ -87,13 +89,22 @@ pub fn run() {
             let relock = app.state::<wallet::RelockState>().inner().clone();
             // "Include recent activity" in a report reads this log (activity.rs).
             activity::init(&dir);
+            // Off the main thread, as both may ask the system's user directory: "Start when I log in" names this
+            // program as it is now (a moved AppImage), and what an interrupted app update left beside it goes.
+            let login_dir = dir.clone();
+            std::thread::spawn(move || {
+                phone::login_item::refresh(&login_dir);
+                app_update::sweep_leftovers();
+            });
             activity::note(&format!("FreeBank app {} started", env!("CARGO_PKG_VERSION")));
             // A background part kept the phone connected while the app was closed: it stops first,
             // so the app's own link never takes turns with it at the relay.
             app.manage(phone::commands::PhoneBackground(phone::background::take_back(&dir)));
             let phone = phone::commands::start(app.handle(), &dir, client, relock);
             app.manage(phone);
-            app.manage(Arc::new(NodeManager::new(dir)));
+            let mgr = Arc::new(NodeManager::new(dir));
+            app.manage(Arc::new(app_update::AppUpdater::new(mgr.http.clone())));
+            app.manage(mgr);
             Ok(())
         })
         // With "Keep running" on, the first close says what happens to the node (node/background.rs).
@@ -137,6 +148,7 @@ pub fn run() {
             phone::commands::phone_keep_info,
             phone::commands::phone_remove_passkey,
             phone::commands::phone_keep_set,
+            phone::commands::phone_login_set,
             phone::commands::phone_keep_connected_quit,
             feedback::feedback_send,
             feedback::feedback_activity,
@@ -192,6 +204,10 @@ pub fn run() {
             // v0.2.0 panels
             security::security_check,
             security::security_reveal,
+            // v0.2.4: the app updates itself
+            app_update::app_update_check,
+            app_update::app_update_start,
+            app_update::app_update_progress,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

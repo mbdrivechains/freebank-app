@@ -21,7 +21,7 @@ pub fn verify_sums(sums: &[u8], sig: &[u8]) -> Result<(), &'static str> {
     verify_with(RELEASE_KEY, sums, sig)
 }
 
-fn verify_with(key: &str, sums: &[u8], sig: &[u8]) -> Result<(), &'static str> {
+pub(crate) fn verify_with(key: &str, sums: &[u8], sig: &[u8]) -> Result<(), &'static str> {
     let key = PublicKey::from_openssh(key).map_err(|_| "the release key doesn't parse")?;
     let sig = SshSig::from_pem(sig).map_err(|_| "the signature file can't be read")?;
     if sig.public_key() != key.key_data() {

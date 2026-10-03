@@ -92,9 +92,18 @@ jobs:
       # System Settings > Privacy & Security > Open Anyway.
       - run: npx tauri build --target universal-apple-darwin --bundles app,dmg
       - name: Collect
+        env:
+          V: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p out
-          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "out/FreeBank_${{ needs.version.outputs.version }}_universal.dmg"
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg "out/FreeBank_${V}_universal.dmg"
+          # What the app updates itself from (src-tauri/src/app_update.rs): FreeBank.app alone, without macOS's
+          # extended attributes (no ._ files), the same bundle the disk image holds.
+          app="out/FreeBank_${V}_universal.app.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$app" -C src-tauri/target/universal-apple-darwin/release/bundle/macos FreeBank.app
+          tar -tzf "$app" > "$RUNNER_TEMP/app-files.txt"
+          if grep -q '\._' "$RUNNER_TEMP/app-files.txt"; then echo "::error::$app holds ._ files"; exit 1; fi
+          tar -xzOf "$app" FreeBank.app/Contents/Info.plist | grep -q "<string>${V}</string>"
           ls -l out
       - uses: actions/upload-artifact@v4
         with:
@@ -131,6 +140,7 @@ jobs:
             out/*.deb
             out/*.AppImage
             out/*.dmg
+            out/*.app.tar.gz
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,7 +160,16 @@ jobs:
 
           **macOS (Apple Silicon and Intel):** open the `.dmg` and drag FreeBank to Applications. This build is not
           notarised yet, so the first time macOS will refuse to open it: go to **System Settings → Privacy & Security**
-          and choose **Open Anyway**. On Intel Macs the FreeBank node itself comes with a later FreeBank release.
+          and choose **Open Anyway**. The FreeBank node needs macOS 14 or later on Apple Silicon, and macOS 15 or later
+          on Intel.
+
+          ## Updates
+
+          From v0.2.4 on, FreeBank says when a new version is out. The AppImage and the Mac app update themselves
+          (**Update and restart**). The `.deb` updates with Software Updater once FreeBank's apt repository is set up
+          (https://apt.ecxfreebank.com), or with the new `.deb`. The AppImage and the Mac app take an update only when
+          the release's `SHA256SUMS` carries the release key's signature; apt checks its repository's own key.
+          (`FreeBank_*_universal.app.tar.gz` is the Mac app's update.)
 
           FreeBank runs beside an eCash beta full node and its enforcer. BitWindow in full-node mode is the easiest way
           to have both.

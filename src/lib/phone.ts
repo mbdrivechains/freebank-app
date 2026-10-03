@@ -86,12 +86,17 @@ export interface KeepInfo {
   /** At this start the app took the link back from a background part running since then (unix s). */
   took_back: number | null;
   take_back_error: string | null;
+  /** "Start when I log in" (daemon mode, src-tauri/src/phone/login_item.rs), and whether this system has it. */
+  at_login: boolean;
+  at_login_here: boolean;
 }
 
 export const phone = {
   keepInfo: () => tauriInvoke("phone_keep_info") as Promise<KeepInfo>,
   /** On also keeps the node running. */
   keepSet: (on: boolean) => tauriInvoke("phone_keep_set", { on }) as Promise<void>,
+  /** "Start when I log in"; on also turns on keeping the phone connected and the node running. */
+  loginSet: (on: boolean) => tauriInvoke("phone_login_set", { on }) as Promise<void>,
   /** The close notice's "Keep the phone connected": start the background part, then close. */
   keepConnectedQuit: () => tauriInvoke("phone_keep_connected_quit") as Promise<void>,
   pairStart: () => tauriInvoke("phone_pair_start") as Promise<{ url: string; expires: number }>,

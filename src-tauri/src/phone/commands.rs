@@ -86,6 +86,9 @@ pub struct KeepInfo {
     /// The app took the link back at its start from a background part running since then.
     pub took_back: Option<u64>,
     pub take_back_error: Option<String>,
+    /// "Start when I log in" (daemon mode, `login_item.rs`), and whether this system has it.
+    pub at_login: bool,
+    pub at_login_here: bool,
 }
 
 #[tauri::command]
@@ -98,7 +101,14 @@ pub async fn phone_keep_info(
         Ok(t) => (*t, None),
         Err(e) => (None, Some(e.clone())),
     };
-    Ok(KeepInfo { keep: s.keep_phone, asked: s.keep_phone_asked, took_back, take_back_error })
+    Ok(KeepInfo {
+        keep: s.keep_phone,
+        asked: s.keep_phone_asked,
+        took_back,
+        take_back_error,
+        at_login: super::login_item::is_on(&mgr.app_dir),
+        at_login_here: cfg!(any(target_os = "macos", target_os = "linux")),
+    })
 }
 
 /// The switch, and the question after the first pairing. On also keeps the node running.
@@ -110,8 +120,28 @@ pub async fn phone_keep_set(mgr: State<'_, Arc<crate::node::NodeManager>>, on: b
     s.keep_phone_asked = true;
     if on {
         s.keep_running = true;
+    } else {
+        // Starting at login is part of keeping the phone connected.
+        super::login_item::set(&mgr.app_dir, false)?;
     }
     mgr.save_settings(s).await
+}
+
+/// "Start when I log in" (daemon mode): the login item, and with it "Keep my phone connected" and "Keep running", so
+/// the node a phone woke stays when the app opens and takes the link back.
+#[tauri::command]
+pub async fn phone_login_set(mgr: State<'_, Arc<crate::node::NodeManager>>, on: bool) -> Result<(), String> {
+    mgr.still_here()?;
+    super::login_item::set(&mgr.app_dir, on)?;
+    crate::activity::note(if on { "daemon: start at login on" } else { "daemon: start at login off" });
+    if on {
+        let mut s = mgr.settings.lock().await.clone();
+        s.keep_phone = true;
+        s.keep_phone_asked = true;
+        s.keep_running = true;
+        mgr.save_settings(s).await?;
+    }
+    Ok(())
 }
 
 /// "Keep the phone connected" in the close notice: start the background part with the phone-send

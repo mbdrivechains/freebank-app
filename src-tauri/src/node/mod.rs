@@ -192,6 +192,8 @@ pub struct NodeManager {
     pub log_mark: std::sync::Mutex<Option<process::LogMark>>,
     /// When the window's close was last held to say the node keeps running.
     pub close_asked: std::sync::Mutex<Option<Instant>>,
+    /// The app is updating itself (app_update.rs): Obliterate waits for it, so an update never restarts a removed app.
+    pub app_updating: AtomicBool,
     /// When the app last looked for its node from an earlier launch.
     pub adopt_tried: std::sync::Mutex<Option<Instant>>,
 }
@@ -238,6 +240,7 @@ impl NodeManager {
             log_mark: std::sync::Mutex::new(None),
             close_asked: std::sync::Mutex::new(None),
             adopt_tried: std::sync::Mutex::new(None),
+            app_updating: AtomicBool::new(false),
         }
     }
 

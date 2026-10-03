@@ -2202,3 +2202,33 @@ async fn a_held_outcome_survives_the_proofs_lapse() {
     assert_eq!(sim.open(&h.next().await["d"]), final_reply);
     assert_eq!(sim.open(&h.next().await["d"]), json!({"id": 13, "ok": {}}));
 }
+
+/// Daemon mode (v0.2.4, `background.rs` light): a paired phone's request wakes the node; while it starts, requests
+/// that need it hear `ERR_STARTING` with `"starting": true`; a removed phone wakes nothing.
+#[tokio::test]
+async fn daemon_mode_wakes_on_a_paired_phones_request() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    let woken = Arc::new(AtomicU64::new(0));
+    let w = woken.clone();
+    h.phone.set_waker(Arc::new(move || {
+        w.fetch_add(1, Ordering::SeqCst);
+    }));
+    h.phone.set_starting(true);
+    let r = ask(&mut h, &mut sim, 1, 5, "balance", json!({})).await;
+    assert_eq!(r, json!({"id": 5, "err": ERR_STARTING, "starting": true}));
+    assert_eq!(woken.load(Ordering::SeqCst), 1);
+    // Up again: the real answer.
+    h.phone.set_starting(false);
+    let r = ask(&mut h, &mut sim, 1, 6, "balance", json!({})).await;
+    assert!(r["ok"]["confirmed"].is_number(), "{r}");
+    assert_eq!(woken.load(Ordering::SeqCst), 2);
+    // A phone removed on the desktop: refused before anything wakes.
+    let id = h.phone.devices()[0].id.clone();
+    h.phone.revoke(&id).unwrap();
+    let f = sim.req(7, "balance", json!({}));
+    h.feed(1, f);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(woken.load(Ordering::SeqCst), 2);
+}
