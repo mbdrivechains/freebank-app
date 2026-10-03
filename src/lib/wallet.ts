@@ -86,6 +86,11 @@ function oneAtATime<T>(job: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** The node refused because the wallet is locked (a read that needs it, such as listmynotes, or a signing action). */
+export function walletLocked(e: unknown): boolean {
+  return needsUnlock(e);
+}
+
 function needsUnlock(e: unknown): boolean {
   const code = rpcCode(e);
   return code === RPC.UNLOCK_NEEDED || code === RPC.KEYPOOL_RAN_OUT;

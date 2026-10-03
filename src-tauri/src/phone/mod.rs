@@ -491,6 +491,7 @@ impl Phone {
         if s.state != state || s.detail != detail {
             *s = LinkStatus { state: state.into(), detail: detail.into() };
             drop(s);
+            crate::activity::note(&format!("phone link: {state}: {detail}"));
             self.events.emit(EV_CHANGED, json!({}));
         }
     }
@@ -665,6 +666,7 @@ impl Phone {
         };
         p.asks.push(ask.clone());
         drop(p);
+        crate::activity::note("phone pairing: a phone asks to pair");
         self.events.emit(EV_PAIR, serde_json::to_value(&ask).unwrap());
     }
 
@@ -679,6 +681,7 @@ impl Phone {
     pub fn pair_answer(&self, id: &str, allow: bool) -> Result<(), String> {
         let mut p = self.pairing.lock().unwrap();
         let i = p.asks.iter().position(|a| a.id == id).ok_or("That phone is no longer waiting.")?;
+        crate::activity::note(if allow { "phone pairing: allowed" } else { "phone pairing: denied" });
         let expired = p.code.as_ref().is_none_or(|c| self.now() >= c.expires);
         if !allow || expired {
             let ask = p.asks.remove(i);
@@ -1176,6 +1179,11 @@ impl Phone {
     }
 
     fn write_log(&self, entry: Value) {
+        // Not the sends that went through: their time could pick them out on the explorer.
+        match entry["result"].as_str() {
+            Some("sent") => {}
+            r => crate::activity::note(&format!("phone send: {}", r.unwrap_or("?"))),
+        }
         self.store.log_send(&entry);
         self.events.emit(EV_SEND, entry);
     }

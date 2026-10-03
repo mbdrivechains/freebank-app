@@ -74,7 +74,6 @@ pub const RPC_ALLOWED: &[&str] = &[
     "validateaddress",
     "getaddressinfo",
     "uptime",
-    "getgateinfo",
     "getmainchainblockcount",
     // Read-only: the wallet.
     "getbalance",

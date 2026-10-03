@@ -175,6 +175,29 @@ fn fake_node_main() {
     let datadir = PathBuf::from(get("-datadir=").expect("-datadir"));
     let port: u16 = get("-rpcport=").expect("-rpcport").parse().unwrap();
     std::fs::create_dir_all(&datadir).unwrap();
+    // Every start's arguments, for the -reindex tests.
+    let mut started = std::fs::OpenOptions::new().create(true).append(true).open(datadir.join("fake-args.log")).unwrap();
+    writeln!(started, "{}", args).unwrap();
+    // As freebankd v0.2.18 on a folder v0.2.17 wrote (`fake-old-format`): refused until a start with -reindex
+    // (`fake-always-refuse`: refused even then). Its log as the release build's (2026-10-03).
+    let reindex = args.split_whitespace().any(|a| a == "-reindex");
+    if datadir.join("fake-always-refuse").exists() || (datadir.join("fake-old-format").exists() && !reindex) {
+        let mut log = std::fs::OpenOptions::new().create(true).append(true).open(datadir.join("debug.log")).unwrap();
+        for l in [
+            "FreeBank version v0.2.18.0-fake (release build)",
+            ": This datadir's on-disk records (block index, blocks/rev*.dat, chainstate) are record format 2, but this \
+             build reads and writes format 3. Restart with -reindex to regenerate them (-reindex-chainstate is NOT sufficient)..",
+            "Aborted block database rebuild. Exiting.",
+            "Shutdown: In progress...",
+            "Shutdown: done",
+        ] {
+            writeln!(log, "2026-10-03 01:40:31 {}", l).unwrap();
+        }
+        std::process::exit(1);
+    }
+    if reindex {
+        let _ = std::fs::remove_file(datadir.join("fake-old-format"));
+    }
     // As freebankd: no second node on one folder.
     lock_or_exit(&datadir.join(".lock"));
     if let Some(w) = std::env::var_os("FB_FAKE_WALLETLOCK") {

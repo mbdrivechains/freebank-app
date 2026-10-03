@@ -1,4 +1,7 @@
 <script lang="ts">
+  // The node was started once with -reindex (a new release's data format, or an unclean stop, asked for it).
+  const REBUILDING =
+    "Your node is rebuilding its data from the blocks it already has. That takes a few minutes. Your wallet stays as it is, but its balance may read low until the rebuild is done.";
   // The Node tab: height against the explorer, peers in and out, the name on your blocks (and
   // changing it), Stop/Start for the node the app runs, versions, and Update. A node the app left
   // running when it last closed says since when; a release installed before the app checked
@@ -261,6 +264,7 @@
     {/if}
 
     {#if st.state === "up"}
+      {#if st.reindexing}<p class="hint">{REBUILDING}</p>{/if}
       <div class="big-stat">
         <div>
           <div class="stat-cap">FreeBank block</div>
@@ -278,7 +282,7 @@
     {:else if st.state === "busy" || st.state === "warming"}
       <div class="node-quiet-state">
         <span class="spinner"></span>
-        <span>{st.state === "busy" ? st.activity : "Your node is starting. That takes a minute or so, longer the first time while it checks the eCash chain."}</span>
+        <span>{st.state === "busy" ? st.activity : st.reindexing ? REBUILDING : "Your node is starting. That takes a minute or so, longer the first time while it checks the eCash chain."}</span>
       </div>
       <span class="bar"><span class="bar-fill indeterminate" style="width:100%"></span></span>
       {#if st.log_line && st.log_line !== "Shutdown: done"}<p class="log-line">{st.log_line}</p>{/if}

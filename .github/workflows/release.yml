@@ -46,34 +46,21 @@ jobs:
 
   linux:
     needs: version
-    # The oldest supported Ubuntu keeps the package installable on 22.04 and newer.
+    # Built in the pinned image (build/linux/Dockerfile: Ubuntu 22.04, so the package installs on 22.04 and newer), so
+    # anyone can rebuild the program and the .deb from the tag and get the same bytes (build/linux/rebuild.sh,
+    # VERIFY.md). The AppImage is packed in the same image, but not reproducibly yet (VERIFY.md says why).
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-29
-        with:
-          toolchain: stable
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: src-tauri
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libxdo-dev libssl-dev build-essential file
-      - run: npm ci
-      - run: npx tauri build --bundles deb,appimage
+      - name: Build in the pinned image
+        run: OUT="$PWD/out" BUNDLES=deb,appimage JOBS=4 build/linux/rebuild.sh HEAD
       - name: Collect
         run: |
-          mkdir -p out
-          scripts/deb-finalize.sh src-tauri/target/release/bundle/deb/*.deb out
-          cp src-tauri/target/release/bundle/appimage/*.AppImage "out/FreeBank_${{ needs.version.outputs.version }}_amd64.AppImage"
+          rm out/freebank
+          test -f "out/freebank_${{ needs.version.outputs.version }}_amd64.deb"
+          test -f "out/FreeBank_${{ needs.version.outputs.version }}_amd64.AppImage"
           ls -l out
       - uses: actions/upload-artifact@v4
         with:
@@ -90,11 +77,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 20.20.2
           cache: npm
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-29
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 2026-09-29
         with:
-          toolchain: stable
+          toolchain: 1.98.1
           # One universal app for Apple Silicon and Intel Macs.
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

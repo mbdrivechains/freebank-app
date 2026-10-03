@@ -6,7 +6,9 @@
 //!
 //! What goes: the kind, the text, a contact if given, and, if the user leaves the box ticked, the
 //! app's version, the system and the node's version (`feedback_details`, shown to them first).
-//! Nothing else: no addresses, balances, transaction ids, paths or logs.
+//! If they tick "Include recent activity", also the app's and the node's latest log lines, masked
+//! (`activity.rs`: no hashes, addresses, IP addresses, long tokens or home folder) and shown to them
+//! first (`feedback_activity`). Nothing else: no balances or amounts.
 
 use crate::node::{NodeManager, APP_VERSION};
 use serde::Serialize;
@@ -17,7 +19,7 @@ use tauri::State;
 const FEEDBACK_URL: &str = "https://app.ecxfreebank.com/feedback";
 /// The relay's limits (`relay/src/feedback.rs`): the text and the contact, in characters.
 const MAX_TEXT: usize = 8000;
-/// What fits the server's 16 KiB body with the other fields.
+/// The text's share of the server's 64 KiB body (the recent activity has its own).
 const MAX_TEXT_BYTES: usize = 14_000;
 const MAX_CONTACT: usize = 200;
 
@@ -37,6 +39,8 @@ struct Outgoing<'a> {
     app: &'a str,
     os: &'a str,
     node: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    activity: &'a str,
     from: &'static str,
 }
 
@@ -92,6 +96,22 @@ pub async fn feedback_details(mgr: State<'_, Arc<NodeManager>>) -> Result<Detail
     Ok(Details { app: APP_VERSION.to_string(), os: system(), node })
 }
 
+/// "Include recent activity": what the report would carry, for the user to read first (`activity.rs`).
+#[tauri::command]
+pub async fn feedback_activity(mgr: State<'_, Arc<NodeManager>>) -> Result<String, String> {
+    let datadir = mgr.settings.lock().await.datadir.clone();
+    let node = (!datadir.is_empty()).then(|| std::path::PathBuf::from(datadir));
+    Ok(crate::activity::recent(&mgr.app_dir, node.as_deref()))
+}
+
+/// An error the screens showed, for the recent activity. Error texts can carry amounts without a unit, so every
+/// longer number goes too (`mask_numbers`).
+#[tauri::command]
+pub async fn activity_note(text: String) {
+    let text: String = text.chars().take(2000).collect();
+    crate::activity::note(&format!("shown: {}", crate::activity::mask_numbers(&text)));
+}
+
 /// Send a report to FreeBank. Returns its reference.
 #[tauri::command]
 pub async fn feedback_send(
@@ -100,6 +120,7 @@ pub async fn feedback_send(
     text: String,
     contact: String,
     with_details: bool,
+    activity: Option<String>,
 ) -> Result<String, String> {
     if !matches!(kind.as_str(), "problem" | "idea" | "security") {
         return Err("Choose a problem, an idea or a security problem.".into());
@@ -109,8 +130,8 @@ pub async fn feedback_send(
     if text.is_empty() {
         return Err("Write something first.".into());
     }
-    // The characters, and the bytes: the server takes 16 KiB in all, which some scripts reach before
-    // 8,000 characters (code review 7).
+    // The characters, and the bytes: the server takes 64 KiB in all, with the activity, and the text
+    // alone reaches 14,000 bytes before 8,000 characters in some scripts (code review 7).
     if text.chars().count() > MAX_TEXT || text.len() > MAX_TEXT_BYTES {
         return Err("That is longer than FreeBank takes; shorten it, please.".into());
     }
@@ -123,8 +144,11 @@ pub async fn feedback_send(
         None => ("", "", ""),
     };
     let url = std::env::var("FREEBANK_FEEDBACK_URL").unwrap_or_else(|_| FEEDBACK_URL.to_string());
-    let body = Outgoing { kind: &kind, text: &text, contact: &contact, app, os, node, from: "app" };
-    post(&mgr.http, &url, &body).await
+    let activity: String = clean(activity.as_deref().unwrap_or(""), true).chars().take(crate::activity::MAX_ACTIVITY).collect();
+    let body = Outgoing { kind: &kind, text: &text, contact: &contact, app, os, node, activity: &activity, from: "app" };
+    post(&mgr.http, &url, &body).await.map_err(|e| {
+        if activity.is_empty() { e } else { format!("{e} If it keeps failing, untick Include recent activity and send again.") }
+    })
 }
 
 /// Post a report; the reference, or why not.
@@ -169,6 +193,7 @@ mod tests {
             app: APP_VERSION,
             os: &os,
             node: "v0.2.17",
+            activity: "2026-10-02T07:01:02Z node: started\n2026-10-02T07:01:09Z phone link: online: wss://app.ecxfreebank.com/ws",
             from: "app",
         };
         let id = post(&http, &url, &body).await.unwrap();

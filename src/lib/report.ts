@@ -29,10 +29,17 @@ export function openReport(kind: ReportKind = "problem", text = ""): void {
 
 export const report = {
   details: () => tauriInvoke("feedback_details") as Promise<ReportDetails>,
-  /** Returns the report's reference on FreeBank's server. */
-  send: (kind: ReportKind, text: string, contact: string, withDetails: boolean) =>
-    tauriInvoke("feedback_send", { kind, text, contact, withDetails }) as Promise<string>,
+  /** "Include recent activity": the app's and the node's latest log lines, masked (src-tauri/src/activity.rs). */
+  activity: () => tauriInvoke("feedback_activity") as Promise<string>,
+  /** Returns the report's reference on FreeBank's server. `activity` is the text the user was shown. */
+  send: (kind: ReportKind, text: string, contact: string, withDetails: boolean, activity = "") =>
+    tauriInvoke("feedback_send", { kind, text, contact, withDetails, activity }) as Promise<string>,
 };
+
+/** Note an error the screens showed, for the recent activity. Never throws. */
+export function noteShown(message: string): void {
+  tauriInvoke("activity_note", { text: message }).catch(() => {});
+}
 
 const REPO = "https://github.com/mbdrivechains/freebank-app";
 export const SECURITY_URL = `${REPO}/security/advisories/new`;

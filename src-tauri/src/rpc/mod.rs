@@ -9,7 +9,8 @@ use std::time::Duration;
 /// Bitcoin Core's "still loading" code: the node is up but warming up (block index, eCash checks).
 pub const RPC_IN_WARMUP: i64 = -28;
 
-/// JSON-RPC "Method not found": the node is older than the call.
+/// JSON-RPC "Method not found": the node is older than the call (the test node answers it).
+#[cfg(test)]
 pub const RPC_METHOD_NOT_FOUND: i64 = -32601;
 
 /// Why a call failed, kept apart so callers can tell "no node" from "node busy" from "wrong password".

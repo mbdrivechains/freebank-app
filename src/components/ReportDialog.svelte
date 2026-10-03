@@ -11,6 +11,17 @@
   let text = $reportDraft?.text ?? "";
   let contact = "";
   let withDetails = true;
+  // "Include recent activity": read when ticked, shown, and sent as shown (only to FreeBank, never to GitHub).
+  let withActivity = false;
+  let activity = "";
+  let readingActivity = false;
+  async function toggleActivity() {
+    activity = "";
+    if (!withActivity) return;
+    readingActivity = true;
+    activity = await report.activity().catch((e) => `(couldn't read it: ${e})`);
+    readingActivity = false;
+  }
   let details: ReportDetails | null = null;
   let sending = false;
   let sent = "";
@@ -44,7 +55,7 @@
     sending = true;
     error = "";
     try {
-      const id = await report.send(kind, text, contact, withDetails && !!details);
+      const id = await report.send(kind, text, contact, withDetails && !!details, withActivity ? activity : "");
       sent = id || "—";
     } catch (e) {
       error = nice(e);
@@ -99,13 +110,23 @@
           <span>Include <span class="mono">{detailLine}</span></span>
         </label>
       {/if}
+      <label class="check">
+        <input type="checkbox" bind:checked={withActivity} on:change={toggleActivity} />
+        <span>
+          Include recent activity: what FreeBank and its node did lately, to the minute, with addresses, amounts,
+          transaction ids and IP addresses masked. Only with Send to FreeBank, never on GitHub.
+        </span>
+      </label>
+      {#if withActivity}
+        <pre class="activity" data-testid="activity">{activity || "Reading…"}</pre>
+      {/if}
       <label class="field">
         <span class="field-label">Your email or other contact, if you'd like a reply (optional)</span>
         <input type="text" bind:value={contact} maxlength="200" autocomplete="off" />
       </label>
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <div class="row-actions">
-        <button on:click={send} disabled={sending || !text.trim()}>{sending ? "Sending…" : "Send to FreeBank"}</button>
+        <button on:click={send} disabled={sending || readingActivity || !text.trim()}>{sending ? "Sending…" : "Send to FreeBank"}</button>
         <button class="secondary" on:click={() => openUrl(githubUrl(kind, text, withDetails ? details : null))}>
           {kind === "security" ? "Report privately on GitHub" : "Open on GitHub"}
         </button>
@@ -181,6 +202,17 @@
   .check input {
     margin-top: 3px;
     accent-color: var(--accent-color);
+  }
+  .activity {
+    max-height: 200px;
+    overflow: auto;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color, rgba(127, 127, 127, 0.3));
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
   .mono {
     font-family: ui-monospace, Menlo, Consolas, monospace;

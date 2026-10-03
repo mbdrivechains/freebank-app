@@ -34,6 +34,7 @@ export interface NoteHolding {
   coins: number;
   house_status: string; // effective status: o/s/d/i/w
   redeemable: boolean;
+  redeemable_units?: number; // node v0.2.18: how many units can be redeemed now (while suspended, the demanded ones)
   demandable: boolean;
   house_tier?: number;
   house_minted_units?: number;
@@ -53,6 +54,7 @@ export interface House {
   lastattestheight: number;
   lastattestreserves: number; // ECX
   denominationmggold: number; // unit-of-account label (mg gold); inert in v1
+  defer_interest_bps?: number; // node v0.2.18: the yearly rate on demands queued while suspended (1000 = 10%)
   [k: string]: unknown;
 }
 
@@ -106,20 +108,6 @@ export interface WalletStatus {
   encrypted: boolean;
   unlocked_until: number;
 }
-
-/** Which parts of FreeBank the node's network has open (Rust gate_info). */
-export interface GateInfo {
-  /** Notes, houses, bills and pools. */
-  credit_open: boolean;
-  /** The gold unit; no gold screen exists yet. */
-  gold_open: boolean;
-  /** "node" (getgateinfo), "node-unrecognised" (getgateinfo in a shape this app doesn't read:
-   *  defaults), or "default" (a node without getgateinfo: credit open, gold closed). */
-  source: "node" | "node-unrecognised" | "default";
-}
-
-/** A node from before getgateinfo: credit as on beta today, gold closed. */
-export const GATES_BEFORE_V0217: GateInfo = { credit_open: true, gold_open: false, source: "default" };
 
 /** gettransaction's answer, the fields the receipt uses. confirmations < 0: a conflicting
  *  transaction confirmed (it was replaced). */
@@ -322,13 +310,6 @@ export const api = {
       if (!/RPC error -15:/.test(String(e))) throw e;
     });
     return api.walletStatus();
-  },
-
-  /** Which parts of FreeBank are open (lib/gates.ts). The browser build doesn't read getgateinfo
-   *  (its parser lives in Rust) and takes the pre-v0.2.17 defaults. */
-  async gateInfo(): Promise<GateInfo> {
-    if (isTauri) return tauriInvoke('gate_info') as Promise<GateInfo>;
-    return GATES_BEFORE_V0217;
   },
 
   // ---- Following a transaction (TxReceipt) ----

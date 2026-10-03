@@ -29,5 +29,11 @@ export function fmtEcx(sats: number): string {
   return `${neg ? "-" : ""}${whole.toLocaleString("en-US")}.${frac}`;
 }
 
+/** Whole sats as an amount for an input field, without grouping: 150000000 → "1.50000000". */
+export function ecxInput(sats: number): string {
+  const s = Math.max(0, Math.round(sats));
+  return `${Math.floor(s / SATS_PER_ECX)}.${String(s % SATS_PER_ECX).padStart(8, "0")}`;
+}
+
 /** The message for an amount parseEcx refused. */
 export const ECX_PROBLEM = "Enter an amount in ECX above zero, with at most 8 decimal places.";

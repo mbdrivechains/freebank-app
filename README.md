@@ -82,8 +82,6 @@ the app just connects to it.
 - **Houses** — directory, registration, reserve attestation
 - **Clearing pools** — swap notes ↔ ECX, add/remove liquidity, LP positions
 - **Bills of exchange** — issue / endorse / retire / claim escrow
-- Notes, houses, pools and bills show only while the node reports FreeBank's credit gate open
-  (`getgateinfo` from freebankd v0.2.17; older nodes keep them open)
 - (Planned) v0.3.0: the app's own eCash wallet, and Deposit and Withdraw three ways (at par, atomic swap, money
   changer); v0.4.0: bidding for FreeBank blocks
 

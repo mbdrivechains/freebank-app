@@ -16,7 +16,7 @@ pub mod testnode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -184,6 +184,12 @@ pub struct NodeManager {
     pub adopted: std::sync::Mutex<Option<background::Adopted>>,
     /// The node in `child` was started in its own session, so it can outlive the app.
     pub detached: AtomicBool,
+    /// The one-time `-reindex` start for a data folder an older release wrote (process::reap_or_reindex):
+    /// REINDEX_IDLE, REINDEX_RUNNING or REINDEX_GAVE_UP.
+    pub reindex: AtomicU8,
+    /// Where debug.log and logs/freebankd.out ended when this app last started its node, so the reason it stopped
+    /// is read only from what that run wrote (process::LogMark).
+    pub log_mark: std::sync::Mutex<Option<process::LogMark>>,
     /// When the window's close was last held to say the node keeps running.
     pub close_asked: std::sync::Mutex<Option<Instant>>,
     /// When the app last looked for its node from an earlier launch.
@@ -228,6 +234,8 @@ impl NodeManager {
             backups: std::sync::Mutex::new(Vec::new()),
             adopted: std::sync::Mutex::new(None),
             detached: AtomicBool::new(false),
+            reindex: AtomicU8::new(process::REINDEX_IDLE),
+            log_mark: std::sync::Mutex::new(None),
             close_asked: std::sync::Mutex::new(None),
             adopt_tried: std::sync::Mutex::new(None),
         }

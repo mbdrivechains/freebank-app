@@ -15,6 +15,131 @@ use std::time::Duration;
 /// FreeBank's node running after I close the app" on, the node starts in its own session, so it
 /// outlives the app; otherwise (on Linux) the kernel stops it if the app dies.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
+    start_opts(mgr, false).await
+}
+
+/// No -reindex start pending.
+pub const REINDEX_IDLE: u8 = 0;
+/// The app started the node with -reindex and it hasn't answered yet.
+pub const REINDEX_RUNNING: u8 = 1;
+/// That start failed too: say so, and wait for the user's next Start.
+pub const REINDEX_GAVE_UP: u8 = 2;
+
+/// freebankd stops with "Restart with -reindex" when its data folder needs rebuilding: one an older release wrote
+/// in another record format (v0.2.18 moved to format 3, a consensus change: "every node must upgrade and restart
+/// once with -reindex"), or one an unclean stop left out of step. Do that once, by ourselves: it rebuilds the
+/// node's indexes from the blocks it already has; the wallet stays as it is. If that start fails too, say so, and
+/// wait for the user's next Start.
+pub(crate) fn needs_reindex(why: &str) -> bool {
+    why.contains("Restart with -reindex")
+}
+
+async fn reap_or_reindex(mgr: &NodeManager, datadir: &Path) -> (bool, Option<String>) {
+    let (running, exited) = reap(mgr, datadir).await;
+    if running {
+        return (running, exited);
+    }
+    match mgr.reindex.load(Ordering::SeqCst) {
+        REINDEX_RUNNING => {
+            mgr.reindex.store(REINDEX_GAVE_UP, Ordering::SeqCst);
+            return (running, exited);
+        }
+        REINDEX_GAVE_UP => return (running, exited),
+        _ => {}
+    }
+    if !exited.as_deref().is_some_and(needs_reindex) {
+        return (running, exited);
+    }
+    // Never in the middle of something else (a stop, an update, Remove FreeBank): that one decides.
+    let Ok(_busy) = mgr.busy("Starting FreeBank to rebuild its data…") else {
+        return (running, exited);
+    };
+    crate::activity::note("node: asked for -reindex; starting it once with -reindex");
+    match start_opts(mgr, true).await {
+        Ok(()) => (true, None),
+        Err(e) => {
+            mgr.reindex.store(REINDEX_GAVE_UP, Ordering::SeqCst);
+            let msg = format!("{} Starting it with -reindex failed: {}", exited.unwrap_or_default(), e);
+            *mgr.last_exit.lock().unwrap() = Some(msg.clone());
+            (false, Some(msg))
+        }
+    }
+}
+
+/// A `-reindex` start ends when freebankd logs "Reindexing finished" (init.cpp, ThreadImport): its RPC answers long
+/// before, while it is still replaying the blocks. Settled only for our own running node, so an answer from
+/// another node on our port never clears a give-up.
+fn settle_reindex(mgr: &NodeManager, datadir: &Path, ours_up: bool) {
+    if ours_up && mgr.reindex.load(Ordering::SeqCst) == REINDEX_RUNNING && reindex_finished(mgr, datadir) {
+        mgr.reindex.store(REINDEX_IDLE, Ordering::SeqCst);
+        crate::activity::note("node: rebuilt its data");
+    }
+}
+
+/// Where the node's two logs ended when the app last started it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LogMark {
+    pub debug_log: u64,
+    pub out: u64,
+    /// How far reindex_finished has read debug.log.
+    pub scanned: u64,
+}
+
+fn file_len(p: &Path) -> u64 {
+    std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
+}
+
+/// Bytes of a file from `from` (capped to its last `max`), or None if it is shorter than `from` (rewritten since).
+fn read_since(p: &Path, from: u64, max: u64) -> Option<String> {
+    let mut f = std::fs::File::open(p).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len < from {
+        return None;
+    }
+    f.seek(SeekFrom::Start(from.max(len.saturating_sub(max)))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn reindex_finished(mgr: &NodeManager, datadir: &Path) -> bool {
+    let mut mark = mgr.log_mark.lock().unwrap();
+    let Some(m) = mark.as_mut() else { return false };
+    let Ok(mut f) = std::fs::File::open(datadir.join("debug.log")) else { return false };
+    let len = f.metadata().map(|x| x.len()).unwrap_or(0);
+    if len < m.scanned.max(m.debug_log) {
+        // freebankd shrank its log as it started: read it again from the top.
+        m.debug_log = 0;
+        m.scanned = 0;
+    }
+    let from = m.scanned.max(m.debug_log);
+    // In steps of 4 MiB at most; the next read starts 64 bytes back, so a line split between two reads is seen whole.
+    let until = len.min(from + (4 << 20));
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(from)).is_err() || f.take(until - from).read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    m.scanned = until.saturating_sub(64).max(from);
+    String::from_utf8_lossy(&buf).contains("Reindexing finished")
+}
+
+/// Why our node stopped, from what this run wrote: debug.log's error, else the last line it printed (where a
+/// program the system refuses to run says why, e.g. "built for macOS 15.0 which is newer than running OS").
+fn exit_reason(mgr: &NodeManager, datadir: &Path) -> Option<String> {
+    let mark = *mgr.log_mark.lock().unwrap();
+    let Some(m) = mark else { return last_log_line(datadir) };
+    if let Some(why) = read_since(&datadir.join("debug.log"), m.debug_log, 16384).and_then(|t| log_line_in(&t)) {
+        return Some(why);
+    }
+    let out = read_since(&mgr.app_dir.join("logs").join("freebankd.out"), m.out, 4096)?;
+    out.lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(|l| l.chars().take(400).collect())
+}
+
+async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     mgr.still_here()?;
     // The node this app left running when it last closed is the one to use, if it still runs.
     background::adopt_now(mgr).await;
@@ -94,6 +219,9 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);
+    if reindex {
+        cmd.arg("-reindex");
+    }
     let detach = s.keep_running;
     #[cfg(unix)]
     unsafe {
@@ -110,10 +238,14 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
             Ok(())
         });
     }
+    let debug_log = file_len(&Path::new(&s.datadir).join("debug.log"));
+    let out_len = file_len(&logs.join("freebankd.out"));
     let c = cmd
         .spawn()
         .map_err(|e| format!("Couldn't start {}: {}", bin.display(), e))?;
+    *mgr.log_mark.lock().unwrap() = Some(LogMark { debug_log, out: out_len, scanned: debug_log });
     mgr.detached.store(detach, Ordering::SeqCst);
+    mgr.reindex.store(if reindex { REINDEX_RUNNING } else { REINDEX_IDLE }, Ordering::SeqCst);
     // So the next launch can recognise it, should it outlive the app (on purpose, or after a crash).
     if let Some(pid) = c.id() {
         let _ = background::write_pid(
@@ -130,6 +262,11 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
         );
     }
     *child = Some(c);
+    crate::activity::note(match (reindex, detach) {
+        (true, _) => "node: started with -reindex",
+        (false, true) => "node: started (keeps running when the app closes)",
+        (false, false) => "node: started",
+    });
     Ok(())
 }
 
@@ -137,6 +274,7 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
 /// then wait for it to exit. Never SIGKILL: a hard kill risks the block index. A node recognised
 /// from an earlier launch is stopped the same way (background::stop_adopted).
 pub async fn stop(mgr: &NodeManager) -> Result<(), String> {
+    crate::activity::note("node: stopping");
     let mut guard = mgr.child.lock().await;
     let Some(child) = guard.as_mut() else {
         drop(guard);
@@ -196,12 +334,11 @@ const LOG_NOISE: &[&str] = &["Failed to get latest withdrawal bundle from ldb"];
 /// a stop ("Shutdown: In progress..." with no start since) it is the "Error: …" line before the
 /// shutdown, or nothing for a clean stop.
 pub(crate) fn last_log_line(datadir: &Path) -> Option<String> {
-    let mut f = std::fs::File::open(datadir.join("debug.log")).ok()?;
-    let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(8192))).ok()?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
+    log_line_in(&read_since(&datadir.join("debug.log"), 0, 8192)?)
+}
+
+/// last_log_line's choice within a piece of debug.log.
+fn log_line_in(text: &str) -> Option<String> {
     // "2026-09-26 10:00:00 init message: Loading…" -> "Loading…"
     let msgs: Vec<&str> = text
         .lines()
@@ -216,11 +353,13 @@ pub(crate) fn last_log_line(datadir: &Path) -> Option<String> {
     let started = msgs.iter().rposition(|m| m.starts_with("FreeBank version v"));
     let stopped = msgs.iter().rposition(|m| m.starts_with("Shutdown: In progress"));
     match stopped {
-        // A reason may be long ("… Restart with -reindex …" comes late in freebankd's).
+        // A reason may be long ("… Restart with -reindex …" comes late in freebankd's). Most start with
+        // "Error: "; the ones freebankd asks as a question in a GUI (v0.2.18's "on-disk records … are record
+        // format 2 … Restart with -reindex") have an empty caption, so ": ".
         Some(s) if started.map_or(true, |b| s > b) => msgs[started.map_or(0, |b| b + 1)..s]
             .iter()
             .rev()
-            .find(|m| m.starts_with("Error: "))
+            .find_map(|m| m.strip_prefix(": ").or_else(|| m.starts_with("Error: ").then_some(*m)))
             .map(|m| m.chars().take(400).collect()),
         _ => msgs
             .iter()
@@ -242,6 +381,7 @@ async fn reap(mgr: &NodeManager, datadir: &Path) -> (bool, Option<String>) {
         if background::forget_adopted(mgr) {
             let why = last_log_line(datadir).unwrap_or_default();
             let msg = format!("FreeBank stopped. {}", why).trim().to_string();
+            crate::activity::note("node: stopped");
             *mgr.last_exit.lock().unwrap() = Some(msg.clone());
             return (false, Some(msg));
         }
@@ -250,8 +390,9 @@ async fn reap(mgr: &NodeManager, datadir: &Path) -> (bool, Option<String>) {
     match child.try_wait() {
         Ok(None) => (true, None),
         Ok(Some(status)) => {
-            let why = last_log_line(datadir).unwrap_or_default();
+            let why = exit_reason(mgr, datadir).unwrap_or_default();
             let msg = format!("FreeBank stopped ({}). {}", status, why).trim().to_string();
+            crate::activity::note(&format!("node: stopped ({status})"));
             *guard = None;
             background::remove_pid(mgr);
             *mgr.last_exit.lock().unwrap() = Some(msg.clone());
@@ -270,14 +411,17 @@ pub struct NodeProgress {
     pub explorer_tip: Option<u64>,
     pub peers: Option<u64>,
     pub log_line: Option<String>,
+    /// The node is rebuilding its data with -reindex, once, for a new release.
+    pub reindexing: bool,
 }
 
 pub async fn progress(mgr: &NodeManager) -> NodeProgress {
     let s = mgr.settings.lock().await.clone();
     let datadir = PathBuf::from(&s.datadir);
     background::adopt(mgr).await;
-    let (running, exited) = reap(mgr, &datadir).await;
+    let (running, exited) = reap_or_reindex(mgr, &datadir).await;
     let rpc = detect::probe(&mgr.http, &s).await;
+    settle_reindex(mgr, &datadir, running && rpc.state == detect::RpcState::Up);
     let peers = if rpc.state == detect::RpcState::Up {
         detect::local_client(&mgr.http, &s)
             .call("getconnectioncount", vec![])
@@ -294,6 +438,7 @@ pub async fn progress(mgr: &NodeManager) -> NodeProgress {
         explorer_tip: mgr.explorer_tip().await,
         peers,
         log_line: last_log_line(&datadir),
+        reindexing: running && mgr.reindex.load(Ordering::SeqCst) == REINDEX_RUNNING,
     }
 }
 
@@ -331,6 +476,8 @@ pub struct NodeStatus {
     pub keeps_running: bool,
     pub exited: Option<String>,
     pub log_line: Option<String>,
+    /// The node is rebuilding its data with -reindex, once, for a new release.
+    pub reindexing: bool,
     pub version: String,
     pub blocks: u64,
     pub headers: u64,
@@ -442,6 +589,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         keeps_running: false,
         exited: None,
         log_line: None,
+        reindexing: false,
         version: String::new(),
         blocks: 0,
         headers: 0,
@@ -471,7 +619,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         return Ok(st);
     }
     background::adopt(mgr).await;
-    let (managed, exited) = reap(mgr, &datadir).await;
+    let (managed, exited) = reap_or_reindex(mgr, &datadir).await;
     st.managed = managed;
     st.exited = exited;
     if managed {
@@ -490,6 +638,8 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         other => other,
     };
     st.message = probe.message;
+    settle_reindex(mgr, &datadir, managed && probe.state == detect::RpcState::Up);
+    st.reindexing = managed && mgr.reindex.load(Ordering::SeqCst) == REINDEX_RUNNING;
     st.explorer_tip = mgr.explorer_tip().await;
     if st.state != detect::RpcState::Up {
         st.log_line = last_log_line(&datadir);
@@ -664,10 +814,108 @@ mod tests {
         let failed = [start, error, "Shutdown: In progress...", "net thread exit", "Shutdown: done"];
         assert_eq!(log(&failed).as_deref(), Some(error));
         assert_eq!(log(&[start, tip, noise, "Shutdown: In progress...", "Shutdown: done"]), None);
+        // v0.2.18 on a v0.2.17 data folder (2026-10-03, the release build): an empty caption, then a line with no
+        // time stamp.
+        let format = ": This datadir's on-disk records (block index, blocks/rev*.dat, chainstate) are record format 2, \
+                      but this build reads and writes format 3. Restart with -reindex to regenerate them \
+                      (-reindex-chainstate is NOT sufficient)..";
+        let refused = [start, "Opened LevelDB successfully", format, "Please restart with -reindex or -reindex-chainstate to recover.",
+                       "Aborted block database rebuild. Exiting.", "Shutdown: In progress...", "Shutdown: done"];
+        let why = log(&refused).unwrap();
+        assert!(why.starts_with("This datadir's on-disk records"), "{why}");
+        assert!(needs_reindex(&why));
+        assert!(needs_reindex(error) && !needs_reindex(noise) && !needs_reindex(tip));
         // Started again since: the new run's line, not the old error.
         let again = [start, error, "Shutdown: In progress...", "Shutdown: done", start, "init message: Verifying blocks…"];
         assert_eq!(log(&again).as_deref(), Some("Verifying blocks…"));
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A node that refuses its data folder ("Restart with -reindex", as v0.2.18 does on v0.2.17's) is started once
+    /// more with -reindex by the next poll; a refusal that start doesn't cure is shown, and not tried again.
+    #[tokio::test]
+    async fn a_node_asking_for_reindex_is_started_once_with_it() {
+        let (d, mgr) = super::super::testnode::manager("reidx", false).await;
+        let datadir = d.join("node");
+        let starts = || std::fs::read_to_string(datadir.join("fake-args.log")).unwrap_or_default();
+        let poll = |want_up: bool| {
+            let (mgr, datadir) = (&mgr, &datadir);
+            async move {
+                let until = std::time::Instant::now() + Duration::from_secs(20);
+                loop {
+                    let (running, exited) = reap_or_reindex(mgr, datadir).await;
+                    let s = mgr.settings.lock().await.clone();
+                    if want_up && detect::probe(&mgr.http, &s).await.state == detect::RpcState::Up {
+                        return (running, exited);
+                    }
+                    if !want_up && !running && mgr.reindex.load(Ordering::SeqCst) == REINDEX_GAVE_UP {
+                        return (running, exited);
+                    }
+                    assert!(std::time::Instant::now() < until, "no settled state: {:?}", exited);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+
+        std::fs::write(datadir.join("fake-old-format"), b"").unwrap();
+        start(&mgr).await.unwrap();
+        let _guard = poll(true).await;
+        let pid = managed_pids(&mgr).await[0];
+        let _kill = super::super::testnode::KillOnDrop { pid, datadir: datadir.clone() };
+        let args = starts();
+        let lines: Vec<&str> = args.lines().collect();
+        assert_eq!(lines.len(), 2, "{args}");
+        let has = |l: &str| l.split_whitespace().any(|a| a == "-reindex");
+        assert!(!has(lines[0]) && has(lines[1]), "{args}");
+        assert_eq!(mgr.reindex.load(Ordering::SeqCst), REINDEX_RUNNING, "up, but only progress/status settle it");
+        stop(&mgr).await.unwrap();
+
+        // Refused even with -reindex: one more start, then the reason, and no further starts.
+        std::fs::write(datadir.join("fake-always-refuse"), b"").unwrap();
+        start(&mgr).await.unwrap();
+        let (running, exited) = poll(false).await;
+        assert!(!running);
+        assert!(exited.as_deref().is_some_and(needs_reindex), "{exited:?}");
+        for _ in 0..5 {
+            reap_or_reindex(&mgr, &datadir).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(starts().lines().count(), 4, "{}", starts());
+        // The user's next Start tries once more.
+        start(&mgr).await.unwrap();
+        poll(false).await;
+        assert_eq!(starts().lines().count(), 6, "{}", starts());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The stop reason comes from what this run wrote: an older run's "Restart with -reindex" doesn't count, and a
+    /// program the system refused to run says why in freebankd.out. A -reindex start ends at "Reindexing finished",
+    /// not when the RPC first answers.
+    #[test]
+    fn this_runs_reason_and_the_end_of_a_rebuild() {
+        use std::io::Write;
+        let d = std::env::temp_dir().join(format!("fbmark-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("app/logs")).unwrap();
+        let datadir = d.join("node");
+        std::fs::create_dir_all(&datadir).unwrap();
+        let old = "2026-10-03 01:40:31 FreeBank version v0.2.18.0-x (release build)\n\
+                   2026-10-03 01:40:31 : This datadir's records are format 2. Restart with -reindex to regenerate them\n\
+                   2026-10-03 01:40:31 Shutdown: In progress...\n2026-10-03 01:40:31 Shutdown: done\n";
+        std::fs::write(datadir.join("debug.log"), old).unwrap();
+        std::fs::write(d.join("app/logs/freebankd.out"), "earlier output\n").unwrap();
+        let mgr = NodeManager::new(d.join("app"));
+        *mgr.log_mark.lock().unwrap() = Some(LogMark { debug_log: old.len() as u64, out: 15, scanned: old.len() as u64 });
+        assert_eq!(exit_reason(&mgr, &datadir), None, "nothing written since: not the old reason");
+        let mut out = std::fs::OpenOptions::new().append(true).open(d.join("app/logs/freebankd.out")).unwrap();
+        writeln!(out, "dyld[123]: Symbol not found: _foo\n  Referenced from: freebankd (built for macOS 15.0 which is newer than running OS)").unwrap();
+        assert!(exit_reason(&mgr, &datadir).unwrap().contains("built for macOS 15.0"));
+        let mut log = std::fs::OpenOptions::new().append(true).open(datadir.join("debug.log")).unwrap();
+        writeln!(log, "2026-10-03 01:41:00 FreeBank version v0.2.18.0-x (release build)\n2026-10-03 01:41:01 Reindexing block file blk00000.dat...").unwrap();
+        assert!(!reindex_finished(&mgr, &datadir));
+        writeln!(log, "2026-10-03 01:42:13 Reindexing finished").unwrap();
+        assert!(reindex_finished(&mgr, &datadir));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[tokio::test]

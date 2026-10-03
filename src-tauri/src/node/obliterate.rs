@@ -866,6 +866,8 @@ pub async fn run(mgr: &NodeManager, places: Places, ticks: Vec<Tick>) -> Result<
         .map_err(|e| e.to_string())??;
     process::stop(mgr).await?;
     let home = places.home.clone();
+    // The recent-activity log stops first, so a note can't bring the app's folder back while it goes.
+    crate::activity::stop();
     let done = tokio::task::spawn_blocking(move || execute(&places, &ticks))
         .await
         .map_err(|e| e.to_string())??;

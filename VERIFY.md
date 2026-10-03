@@ -8,8 +8,8 @@ app. The app keeps your 24 recovery words (encrypted) and runs the node that hol
 2. **Was the package you downloaded built from that source,** and from nothing else?
 
 For the second, you can check that GitHub built each package from the public tag, and that the maintainer published
-it. You can't yet rebuild a package byte for byte yourself. The first question can only be answered by reviewing the
-code. This page shows how to do both, and what neither of them proves.
+it. From v0.2.3 you can also rebuild the Linux package yourself and get the same bytes. The first question can only be
+answered by reviewing the code. This page shows how to do these, and what none of them proves.
 
 ## What you can and cannot check
 
@@ -19,7 +19,8 @@ code. This page shows how to do both, and what neither of them proves.
 | The package is the one GitHub built from the public tag | GitHub attestation (step 3) | v0.2.0 and later |
 | The files are the ones the maintainer published | signed `SHA256SUMS` (step 3) | v0.2.0 and later |
 | The phone page at app.ecxfreebank.com is its public source, built | rebuild it and compare (freebank-phone's README) | since 2026-10-01 |
-| Your own build gives the same bytes | not yet possible | |
+| Your own build of the Linux program and `.deb` gives the same bytes | rebuild it (step 4) | v0.2.3 and later |
+| Your own build of the AppImage or the Mac app gives the same bytes | not yet possible | |
 | The code is free of exploits | nobody can prove this; review reduces the risk (step 2) | |
 
 FreeBank is **experimental, pre-audit software**. A clean review, by an AI or a person, is evidence, not a
@@ -88,7 +89,11 @@ macOS.
     phone page are in [mbdrivechains/freebank-phone](https://github.com/mbdrivechains/freebank-phone). The page uses
     the phone's camera only to read a FreeBank pairing QR code, when you tap Scan the code on your desktop; the
     pictures stay on the phone (`phone/src/lib/scan.ts` there);
-  - the report desk (`POST /feedback`), only when you send a report (`src-tauri/src/feedback.rs`).
+  - the report desk (`POST /feedback`), only when you send a report (`src-tauri/src/feedback.rs`). If you tick
+    "Include recent activity", the report also carries the latest lines of the app's own log
+    (`<app data>/logs/app.log`) and chosen lines of the node's `debug.log` (progress, start and stop, errors: never
+    wallet lines), to the minute, with hashes, coin addresses, amounts, IP addresses, long tokens and your name
+    masked (`src-tauri/src/activity.rs`), exactly as the dialog shows them first.
 - **The eCash node and its enforcer** that run beside FreeBank, at the addresses found or entered at setup.
 - **This computer's own addresses:** Settings > Security tries a few TCP connections to them, to see which of the
   node's ports other computers could reach (`src-tauri/src/security.rs`). They stay on this computer.
@@ -96,7 +101,9 @@ macOS.
   listed in `src/lib/node.ts` and `src-tauri/tauri.conf.json`.
 
 The window's content security policy (`src-tauri/tauri.conf.json`: `default-src 'self'`) stops the screens from
-contacting anything themselves. It doesn't cover opening links: those go through the allowed list above, in the
+contacting anything themselves. `dangerousDisableAssetCspModification: ["script-src"]` there only keeps Tauri from
+adding its own hashes of the app's JS files to `script-src`: they allowed nothing `'self'` doesn't, and Tauri lists them
+in the order the build machine's disk returns the files, which made builds differ between machines. It doesn't cover opening links: those go through the allowed list above, in the
 browser. `src/lib/api.ts` can also run the screens in an ordinary browser (see the README); the
 desktop app doesn't use that mode.
 
@@ -178,10 +185,28 @@ Give your assistant the checked-out tree and something like this:
   GitHub built exactly these bytes from the tag's source, with `.github/workflows/release.yml`. (`--source-ref`
   pins the tag: the workflow can also be started by hand, though it records attestations only for tags.)
 
+## Step 4: rebuild the Linux package yourself
+
+From v0.2.3, GitHub builds the Linux program and `.deb` inside a pinned Docker image, `build/linux/Dockerfile`:
+Ubuntu 22.04 fixed by its digest, Ubuntu's packages from a dated snapshot, and Rust 1.98.1 and Node 20.20.2 checked
+against their published hashes. Build the same tag in the same image and you get the same bytes. With Docker:
+
+```sh
+git checkout v<version>
+build/linux/rebuild.sh v<version>        # 10 to 30 minutes; prints the hashes
+grep freebank_<version>_amd64.deb SHA256SUMS
+```
+
+The `.deb`'s hash must be the one in the release's `SHA256SUMS`, and the program inside it
+(`dpkg-deb -x freebank_<version>_amd64.deb x`, then `x/usr/bin/freebank`) is `build/linux/out/<commit>/freebank`.
+
 ## What this does not cover
 
-- **Your own build won't match yet.** The packages can't be rebuilt byte for byte, so you trust GitHub's build
-  machines, which the attestation names. A reproducible Linux build is planned.
+- **Only the Linux program and `.deb` rebuild byte for byte.** The AppImage is built in the same image, but its
+  packing tools are downloaded at build time and give its copy of the program a library path inside the AppImage, so
+  neither compares byte for byte yet. The Mac app is built and signed on GitHub's Macs. For those you trust GitHub's
+  build machines, which the attestation names. The image itself trusts its base image and Ubuntu's
+  packages: a reproducible build, not one that builds its compilers from source.
 - **macOS** packages are not notarised yet; macOS asks you to allow the app the first time (README, Install).
 - **Releases before v0.2.0** have neither a signature nor an attestation.
 - **The FreeBank node** (`freebankd`) is a separate program. The app installs it only if its signature checks; to

@@ -1198,7 +1198,12 @@ pub async fn send_prepare(
 pub async fn send_confirm(client: State<'_, ClientState>, mgr: State<'_, Arc<NodeManager>>, id: String) -> Result<Sent, String> {
     let log = log_of(&mgr);
     let mut c = client.lock().await;
-    confirm(&BOOK, &mut c, &id, log.as_ref()).await
+    let r = confirm(&BOOK, &mut c, &id, log.as_ref()).await;
+    // Only a send that failed: one that went through could be picked out on the explorer by its time.
+    if let Err(e) = &r {
+        crate::activity::note(&format!("send: not sent: {}", crate::activity::mask_numbers(e)));
+    }
+    r
 }
 
 /// This app's sends, newest first.

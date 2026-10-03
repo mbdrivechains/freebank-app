@@ -593,6 +593,9 @@
         <span>{prog?.rpc.state === "up" ? `${prog.peers ?? 0} peer${prog.peers === 1 ? "" : "s"}` : "Warming up"}</span>
         {#if prog?.rpc.state === "warming" && prog.rpc.message}<span>{prog.rpc.message}</span>{/if}
       </div>
+      {#if prog?.reindexing}
+        <p class="hint">Your node is rebuilding its data from the blocks it already has. That takes a few minutes; your wallet stays as it is.</p>
+      {/if}
       {#if prog?.log_line && prog.rpc.state !== "up" && prog.log_line !== prog.rpc.message}
         <p class="log-line">{prog.log_line}</p>
       {/if}

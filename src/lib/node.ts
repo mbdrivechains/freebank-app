@@ -84,6 +84,8 @@ export interface NodeProgress {
   explorer_tip: number | null;
   peers: number | null;
   log_line: string | null;
+  /** The node is rebuilding its data with -reindex, once, for a new release. */
+  reindexing: boolean;
 }
 
 export interface Peer {
@@ -117,6 +119,8 @@ export interface NodeStatus {
   keeps_running: boolean;
   exited: string | null;
   log_line: string | null;
+  /** The node is rebuilding its data with -reindex, once, for a new release. */
+  reindexing: boolean;
   version: string;
   blocks: number;
   headers: number;

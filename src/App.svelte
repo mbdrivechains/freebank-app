@@ -28,10 +28,9 @@
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
   import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
-  import { ECX_PROBLEM, fmtEcx, parseEcx } from "./lib/amount";
+  import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "./lib/amount";
   import { nice } from "./lib/errors";
-  import { creditOpen, gates, loadGates } from "./lib/gates";
-  import { cancelUnlock, submitUnlock, unlockRequest, withUnlock } from "./lib/wallet";
+  import { cancelUnlock, submitUnlock, unlockRequest, walletLocked, withUnlock } from "./lib/wallet";
   import { clearReceipts, dismissReceipt, receipts, showReceipt } from "./lib/receipts";
   // v0.2.0 panels: the Security card and Home's red items, the Deposit panel, the Receive QR code
   import SecuritySettings from "./components/SecuritySettings.svelte";
@@ -105,11 +104,6 @@
     }
   }
 
-  // Notes, houses, pools and bills show only while the node reports the credit gate open
-  // (lib/gates.ts). If it closes, or isn't known yet, a credit screen falls back to Home.
-  const CREDIT_VIEWS = ["notes", "houses", "pools", "bills"];
-  $: if (!$creditOpen && CREDIT_VIEWS.includes(currentView)) currentView = "home";
-
   const NEED_COINS = "You need FreeBank coins first: deposit ECX from BitWindow.";
 
   // Connection form (Model A: remote-control your own custodial node)
@@ -174,15 +168,38 @@
     return u === null ? "" : `= ${u.toLocaleString()} units`;
   }
 
+  // Lists that need the wallet unlocked (listmynotes, listmylp, listmybills): with it locked, the screen says so and
+  // offers Unlock (the usual passphrase prompt) instead of the node's "Please enter the wallet passphrase" (found on
+  // Xvfb, 2026-10-01).
+  let locked = { notes: false, lp: false, bills: false };
+  async function unlockToRead<T>(read: () => Promise<T>, what: string): Promise<T | null> {
+    try {
+      return await withUnlock(read, { what, upfront: true });
+    } catch (e) {
+      error = nice(e);
+      return null;
+    }
+  }
+
   async function loadNotes() {
     notesLoading = true;
     error = "";
     try {
       notes = await api.listMyNotes();
+      locked.notes = false;
     } catch (e) {
-      error = nice(e);
+      if (walletLocked(e)) locked.notes = true;
+      else error = nice(e);
     }
     notesLoading = false;
+  }
+
+  async function unlockNotes() {
+    const n = await unlockToRead(() => api.listMyNotes(), "see your notes");
+    if (n) {
+      notes = n;
+      locked.notes = false;
+    }
   }
 
   async function doMint() {
@@ -206,8 +223,19 @@
 
   function startAction(type: "send" | "redeem" | "demand", houseId: number) {
     action = { type, houseId };
-    actionUnits = "";
     actionAddress = "";
+    // A redeem or a demand takes one holder's coins summing exactly to the amount, so start from what can go:
+    // everything redeemable now (while suspended, only the demanded notes), or everything not yet demanded.
+    const n = notes.find((x) => x.house_id === houseId);
+    const units = !n ? 0 : type === "redeem" ? n.redeemable_units ?? n.units : type === "demand" ? n.units - n.demanded_units : 0;
+    actionUnits = units > 0 ? ecxInput(units) : "";
+  }
+
+  // The yearly rate on demands queued at a suspended house (node v0.2.18, defer_interest_bps: 1000 = 10%). It takes
+  // the list, so the line re-renders when the houses arrive after the notes.
+  function queueRate(list: House[], houseId: number): string {
+    const bps = list.find((h) => h.id === houseId)?.defer_interest_bps;
+    return typeof bps === "number" && bps > 0 ? `${bps / 100}% a year` : "interest";
   }
 
   async function submitAction() {
@@ -239,6 +267,9 @@
       await loadNotes();
     } catch (e) {
       error = nice(e);
+      // A redeem or a demand takes one holder's coins summing exactly to the amount (the node: "... sum exactly ...").
+      if (type !== "send" && /sum exactly/.test(error))
+        error += " Your notes of this house may sit at more than one of your addresses: send them to one of your own addresses first (Send, with an address from Receive), then try again.";
     }
     actionBusy = false;
   }
@@ -336,11 +367,26 @@
     poolsLoading = true;
     error = "";
     try {
-      [pools, myLp] = await Promise.all([api.listPools(), api.listMyLp()]);
+      pools = await api.listPools();
+      try {
+        myLp = await api.listMyLp();
+        locked.lp = false;
+      } catch (e) {
+        if (!walletLocked(e)) throw e;
+        locked.lp = true;
+      }
     } catch (e) {
       error = nice(e);
     }
     poolsLoading = false;
+  }
+
+  async function unlockLp() {
+    const lp = await unlockToRead(() => api.listMyLp(), "see your liquidity");
+    if (lp) {
+      myLp = lp;
+      locked.lp = false;
+    }
   }
 
   function startPoolAction(type: "swap" | "add" | "remove", poolId: number) {
@@ -446,10 +492,20 @@
     error = "";
     try {
       bills = await api.listMyBills();
+      locked.bills = false;
     } catch (e) {
-      error = nice(e);
+      if (walletLocked(e)) locked.bills = true;
+      else error = nice(e);
     }
     billsLoading = false;
+  }
+
+  async function unlockBills() {
+    const b = await unlockToRead(() => api.listMyBills(), "see your bills");
+    if (b) {
+      bills = b;
+      locked.bills = false;
+    }
   }
 
   async function doIssueBill() {
@@ -555,8 +611,6 @@
 
   async function refresh() {
     if (!connected) return;
-    // The gates can open at any block, so ask on every refresh (it never throws).
-    loadGates();
     try {
       [balance, transactions, blockchainInfo] = await Promise.all([
         api.getBalance(),
@@ -773,20 +827,18 @@
       <button class:active={currentView === "home"} on:click={() => { currentView = "home"; error = ""; refresh(); }}>
         Home
       </button>
-      {#if $creditOpen}
-        <button class:active={currentView === "notes"} on:click={() => { currentView = "notes"; loadNotes(); loadHouses(); }}>
-          Notes
-        </button>
-        <button class:active={currentView === "houses"} on:click={() => { currentView = "houses"; loadHouses(); }}>
-          Houses
-        </button>
-        <button class:active={currentView === "pools"} on:click={() => { currentView = "pools"; loadPools(); loadHouses(); }}>
-          Pools
-        </button>
-        <button class:active={currentView === "bills"} on:click={() => { currentView = "bills"; loadBills(); }}>
-          Bills
-        </button>
-      {/if}
+      <button class:active={currentView === "notes"} on:click={() => { currentView = "notes"; loadNotes(); loadHouses(); }}>
+        Notes
+      </button>
+      <button class:active={currentView === "houses"} on:click={() => { currentView = "houses"; loadHouses(); }}>
+        Houses
+      </button>
+      <button class:active={currentView === "pools"} on:click={() => { currentView = "pools"; loadPools(); loadHouses(); }}>
+        Pools
+      </button>
+      <button class:active={currentView === "bills"} on:click={() => { currentView = "bills"; loadBills(); }}>
+        Bills
+      </button>
       <!-- Send shows "Available" and Max from the balance: fresh when it opens (found in the coin tests). -->
       <button class:active={currentView === "send"} on:click={() => { currentView = "send"; refresh(); }}>
         Send
@@ -816,11 +868,9 @@
     {/each}
 
     {#if currentView === "node"}
-      <!-- The gates can't be read while the node warms up: ask again once it is up, until it has answered -->
       <NodeStatus
         on:height={(e) => {
           if (blockchainInfo) blockchainInfo = { ...blockchainInfo, blocks: e.detail };
-          if ($gates === null) loadGates();
         }}
       />
     {:else if currentView === "home"}
@@ -833,6 +883,12 @@
       <HomeTransactions {transactions} {balance} needCoins={NEED_COINS} on:changed={refresh} />
     {:else if currentView === "notes"}
       <!-- Notes (M1): per-house credit notes — hold / send / redeem / demand -->
+      {#if locked.notes}
+        <div class="card locked-read">
+          <p>Your wallet is locked. Unlock it to see your notes.</p>
+          <button on:click={unlockNotes}>Unlock</button>
+        </div>
+      {/if}
       <div class="card">
         <div class="notes-head">
           <h2>My Notes</h2>
@@ -840,7 +896,9 @@
             {notesLoading ? "…" : "Refresh"}
           </button>
         </div>
-        {#if notes.length === 0}
+        {#if locked.notes}
+          <p class="muted">Unlock your wallet (above) to see them.</p>
+        {:else if notes.length === 0}
           <div class="empty">
             <p>You don't hold any notes yet.</p>
             {#if !housesLoading && houses.length === 0}
@@ -862,7 +920,15 @@
               </div>
               <div class="hint">{n.units.toLocaleString()} units</div>
               {#if n.demanded_units > 0}
-                <div class="note-demanded">{fmtEcx(n.demanded_units)} {BASE_TICKER} under demand (accruing interest)</div>
+                <div class="note-demanded">
+                  {#if n.house_status === "d"}
+                    {fmtEcx(n.demanded_units)} {BASE_TICKER} in the house's payout queue, earning {queueRate(houses, n.house_id)}
+                  {:else if n.house_status === "o" || n.house_status === "s"}
+                    {fmtEcx(n.demanded_units)} {BASE_TICKER} demanded: the house must pay it within the demand window
+                  {:else}
+                    {fmtEcx(n.demanded_units)} {BASE_TICKER} demanded; the house has failed, so holders are paid from what it has left
+                  {/if}
+                </div>
               {/if}
               <div class="note-actions">
                 <button on:click={() => startAction("send", n.house_id)}>Send</button>
@@ -885,10 +951,17 @@
                     </label>
                   {/if}
                   {#if action.type === "redeem"}
+                    {#if n.house_status === "d"}
+                      <p class="hint">The house is suspended: only notes under demand can be redeemed now, with their interest.</p>
+                    {/if}
                     <p class="hint">Redemption is paid from the house's reserves — this succeeds when your node controls the house.</p>
                   {/if}
                   {#if action.type === "demand"}
-                    <p class="hint">Lodges a demand under the option clause; your notes stay yours and start accruing interest.</p>
+                    {#if n.house_status === "d"}
+                      <p class="hint">Your notes join the house's payout queue and earn {queueRate(houses, n.house_id)} from today. The house can pay you at any time; until it does, these notes can't be sent.</p>
+                    {:else}
+                      <p class="hint">A formal demand: the house must pay you in full within the demand window. Until it pays, these notes can't be sent.</p>
+                    {/if}
                   {/if}
                   <div class="note-form-actions">
                     <button on:click={submitAction} disabled={actionBusy || !actionUnits}>
@@ -995,6 +1068,12 @@
       </div>
     {:else if currentView === "pools"}
       <!-- Pools (M3): note ⇄ ECX constant-product AMM -->
+      {#if locked.lp}
+        <div class="card locked-read">
+          <p>Your wallet is locked. Unlock it to see your liquidity in the pools.</p>
+          <button on:click={unlockLp}>Unlock</button>
+        </div>
+      {/if}
       {#if pools.length > 0}
       <div class="card">
         <div class="notes-head">
@@ -1003,7 +1082,9 @@
             {poolsLoading ? "…" : "Refresh"}
           </button>
         </div>
-        {#if myLp.length === 0}
+        {#if locked.lp}
+          <p class="muted">Unlock your wallet (above) to see it.</p>
+        {:else if myLp.length === 0}
           <p class="muted">You haven't added to any pool. Adding to one below earns a share of its swap fees.</p>
         {:else}
           {#each myLp as lp}
@@ -1144,6 +1225,12 @@
       {/if}
     {:else if currentView === "bills"}
       <!-- Bills (M4): bills of exchange — the discount-house asset side -->
+      {#if locked.bills}
+        <div class="card locked-read">
+          <p>Your wallet is locked. Unlock it to see your bills.</p>
+          <button on:click={unlockBills}>Unlock</button>
+        </div>
+      {/if}
       <div class="card">
         <div class="notes-head">
           <h2>My Bills</h2>
@@ -1152,7 +1239,9 @@
           </button>
         </div>
         <p class="muted">Bills of exchange you hold, drew, or accepted — a discount house's asset side: dated credit, backed by an escrow bond, that settles at par.</p>
-        {#if bills.length === 0}
+        {#if locked.bills}
+          <p class="muted">Unlock your wallet (above) to see them.</p>
+        {:else if bills.length === 0}
           <div class="empty">
             <p>You have no bills yet.</p>
             <p class="muted small">
@@ -1306,4 +1395,13 @@
 
 <style>
   /* Styles are in styles/app.css */
+  .locked-read {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .locked-read p {
+    margin: 0;
+  }
 </style>

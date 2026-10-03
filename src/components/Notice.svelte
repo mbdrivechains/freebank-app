@@ -6,7 +6,7 @@
   // An error given as `message` offers "Report this", which opens the report dialog with it (lib/report.ts).
   import { createEventDispatcher } from "svelte";
   import { api } from "../lib/api";
-  import { openReport } from "../lib/report";
+  import { noteShown, openReport } from "../lib/report";
 
   export let kind: "info" | "error" = "info";
   export let message = "";
@@ -16,6 +16,8 @@
   export let reportable = true;
 
   const canReport = !api.isPWA();
+  // Errors shown go into the recent activity a report can include (src-tauri/src/activity.rs).
+  $: if (canReport && kind === "error" && message) noteShown(message);
 
   const dispatch = createEventDispatcher<{ dismiss: void }>();
 </script>

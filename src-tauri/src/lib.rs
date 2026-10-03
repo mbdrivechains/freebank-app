@@ -1,7 +1,7 @@
+mod activity;
 mod clipboard;
 mod commands;
 mod feedback;
-mod gates;
 mod node;
 mod phone;
 mod recovery;
@@ -85,6 +85,9 @@ pub fn run() {
             };
             let client = app.state::<Arc<Mutex<FreeBankClient>>>().inner().clone();
             let relock = app.state::<wallet::RelockState>().inner().clone();
+            // "Include recent activity" in a report reads this log (activity.rs).
+            activity::init(&dir);
+            activity::note(&format!("FreeBank app {} started", env!("CARGO_PKG_VERSION")));
             // A background part kept the phone connected while the app was closed: it stops first,
             // so the app's own link never takes turns with it at the relay.
             app.manage(phone::commands::PhoneBackground(phone::background::take_back(&dir)));
@@ -117,7 +120,6 @@ pub fn run() {
             send::send_speed_up,
             send::history,
             send::history_csv,
-            gates::gate_info,
             wallet::wallet_status,
             wallet::wallet_unlock,
             wallet::wallet_lock,
@@ -137,6 +139,8 @@ pub fn run() {
             phone::commands::phone_keep_set,
             phone::commands::phone_keep_connected_quit,
             feedback::feedback_send,
+            feedback::feedback_activity,
+            feedback::activity_note,
             recovery::commands::wallet_change_passphrase,
             recovery::commands::wallet_backup_now,
             recovery::commands::wallet_restore_file_check,
