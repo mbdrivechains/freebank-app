@@ -253,7 +253,7 @@ pub(crate) async fn encrypt(c: &mut FreeBankClient, pass: &str) -> Result<(), St
         Ok(_) => Ok(()),
         // The node stops right after encrypting. If it went before its answer arrived, the check
         // after the restart shows whether the wallet got its passphrase.
-        Err(RpcError::Unreachable(_)) | Err(RpcError::Busy) => Ok(()),
+        Err(RpcError::Refused(_)) | Err(RpcError::Unreachable(_)) | Err(RpcError::Busy) => Ok(()),
         Err(e) => Err(e.for_ui()),
     }
 }

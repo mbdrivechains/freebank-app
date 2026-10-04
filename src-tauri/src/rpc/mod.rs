@@ -17,7 +17,9 @@ pub const RPC_METHOD_NOT_FOUND: i64 = -32601;
 #[derive(Debug)]
 pub enum RpcError {
     NotConfigured,
-    /// Nothing answered at the address (connection refused, timeout).
+    /// Nothing listened at the address: the connection was refused, so the call never reached a node.
+    Refused(String),
+    /// The connection failed some other way (dropped, reset), possibly after the node had the call.
     Unreachable(String),
     /// Took longer than the call's timeout (a node busy verifying blocks answers late).
     Busy,
@@ -32,7 +34,7 @@ impl fmt::Display for RpcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RpcError::NotConfigured => write!(f, "RPC not configured"),
-            RpcError::Unreachable(e) => write!(f, "Request failed: {}", e),
+            RpcError::Refused(e) | RpcError::Unreachable(e) => write!(f, "Request failed: {}", e),
             RpcError::Busy => write!(f, "The node is busy; try again in a moment"),
             RpcError::Http(s) => write!(f, "HTTP error: {}", s),
             RpcError::Rpc { message, .. } => write!(f, "RPC error: {}", message),
@@ -50,6 +52,17 @@ impl RpcError {
             RpcError::Rpc { code, message } => format!("RPC error {}: {}", code, message),
             e => e.to_string(),
         }
+    }
+
+    /// The call surely did nothing: the node refused it with an error of its own, refused the login (401) or the
+    /// address (403, rpcallowip), nothing listened at the address, or the call never left the app. A timeout, a dropped
+    /// connection or an answer that can't be read may come after the node acted, a payment sent included (v0.2.7: such
+    /// a payment keeps its "Approve sends on my phone" count).
+    pub fn did_nothing(&self) -> bool {
+        matches!(
+            self,
+            RpcError::Rpc { .. } | RpcError::NotConfigured | RpcError::Refused(_) | RpcError::Http(401) | RpcError::Http(403)
+        )
     }
 }
 
@@ -302,6 +315,8 @@ impl FreeBankClient {
             .map_err(|e| {
                 if e.is_timeout() {
                     RpcError::Busy
+                } else if e.is_connect() {
+                    RpcError::Refused(e.to_string())
                 } else {
                     RpcError::Unreachable(e.to_string())
                 }
@@ -344,6 +359,10 @@ pub(crate) mod stub {
     use std::sync::{Arc, Mutex};
 
     pub type Calls = Arc<Mutex<Vec<(String, Value)>>>;
+
+    /// An `answer` error with this code closes the connection with no answer at all: the node took the call, then the
+    /// line dropped (or the answer never came).
+    pub const HANG_UP: i64 = i64::MIN;
 
     /// A client pointed at a new stub. `answer(method, params)` gives the result, or (code, message)
     /// for a JSON-RPC error, sent with HTTP 404 for -32601 and 500 otherwise, as Core does.
@@ -390,6 +409,7 @@ pub(crate) mod stub {
                 let shown = if path == "/" || path.is_empty() { method.clone() } else { format!("{} {}", path, method) };
                 log.lock().unwrap().push((shown, req["params"].clone()));
                 let (status, reply) = match answer(&path, &method, &req["params"]) {
+                    Err((HANG_UP, _)) => continue,
                     Ok(v) => ("200 OK", json!({"result": v, "error": null, "id": req["id"]})),
                     Err((code, message)) => (
                         if code == super::RPC_METHOD_NOT_FOUND { "404 Not Found" } else { "500 Internal Server Error" },
@@ -430,5 +450,28 @@ mod tests {
         assert_eq!(c.call_ui("getblockcount", vec![]).await.unwrap(), json!(7));
         // Failures that aren't the node's answer read as before.
         assert_eq!(RpcError::Busy.for_ui(), RpcError::Busy.to_string());
+    }
+
+    #[tokio::test]
+    async fn only_a_refusal_surely_did_nothing() {
+        // v0.2.7: a timeout or a dropped line may come after the node acted.
+        assert!(RpcError::Rpc { code: -26, message: "x".into() }.did_nothing());
+        assert!(RpcError::NotConfigured.did_nothing());
+        assert!(RpcError::Http(401).did_nothing());
+        for e in [RpcError::Busy, RpcError::Unreachable("reset".into()), RpcError::Http(500), RpcError::Other("bad JSON".into())] {
+            assert!(!e.did_nothing(), "{e}");
+        }
+        for e in [RpcError::Refused("refused".into()), RpcError::Http(401), RpcError::Http(403), RpcError::NotConfigured] {
+            assert!(e.did_nothing(), "{e}");
+        }
+        // Nothing listening: refused, so it surely did nothing (the review of v0.2.7).
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut c = FreeBankClient::default();
+        c.configure(&format!("http://127.0.0.1:{port}"), "u", "p");
+        let e = c.call_typed("getblockcount", vec![]).await.unwrap_err();
+        assert!(matches!(e, RpcError::Refused(_)), "{e}");
+        let (c, _) = stub::serve(|_, _| Err((stub::HANG_UP, String::new())));
+        let e = c.call_typed("sendtoaddress", vec![]).await.unwrap_err();
+        assert!(!e.did_nothing(), "a dropped line: {e:?}");
     }
 }

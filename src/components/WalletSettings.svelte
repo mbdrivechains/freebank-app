@@ -31,6 +31,8 @@
   } from "../lib/walletSeed";
 
   let info: WalletInfo | null = null;
+  /** The wallet card's technical rows, folded (v0.2.7). */
+  let moreFacts = false;
   let loadError = "";
   let plan: MovePlan | null = null;
 
@@ -244,22 +246,33 @@
   {:else if !info}
     <p class="muted small">Asking your node about the wallet…</p>
   {:else}
+    <!-- What the owner acts on first; the technical rows (and empty amounts) behind More details (v0.2.7, the walk-through:
+         the card was 11 rows). -->
     <dl class="facts">
-      <div><dt>Wallet file</dt><dd class="mono">{#if info.wallet_file}<PathText path={info.wallet_file} />{:else}{info.wallet_name}{/if}</dd></div>
       <div><dt>Passphrase</dt><dd>{info.encrypted ? "Set" : "Not set"}</dd></div>
       <div>
         <dt>Now</dt>
         <dd>{!info.encrypted ? "Open to anyone with the file" : unlockedNow ? `Unlocked until ${new Date(info.unlocked_until * 1000).toLocaleTimeString()}` : "Locked"}</dd>
       </div>
       <div><dt>Spendable</dt><dd>{fmtEcx(info.balance_sats)} {BASE_TICKER}</dd></div>
-      <div><dt>Unconfirmed</dt><dd>{fmtEcx(info.unconfirmed_sats)} {BASE_TICKER}</dd></div>
-      <div><dt>Newly mined</dt><dd>{fmtEcx(info.immature_sats)} {BASE_TICKER}</dd></div>
-      <div><dt>Transactions</dt><dd>{info.txcount.toLocaleString()}</dd></div>
-      <div><dt>Key pool</dt><dd>{info.keypool.toLocaleString()} to receive, {info.keypool_change.toLocaleString()} for change</dd></div>
-      <div><dt>HD seed id</dt><dd class="mono seed-id">{info.hd_seed_id ?? "none"}</dd></div>
+      {#if moreFacts || info.unconfirmed_sats !== 0}
+        <div><dt>Unconfirmed</dt><dd>{fmtEcx(info.unconfirmed_sats)} {BASE_TICKER}</dd></div>
+      {/if}
+      {#if moreFacts || info.immature_sats !== 0}
+        <div><dt>Newly mined</dt><dd>{fmtEcx(info.immature_sats)} {BASE_TICKER}</dd></div>
+      {/if}
       <div><dt>Recovery words</dt><dd>{seedWords}</dd></div>
       <div><dt>Last backup</dt><dd>{info.backup_at ? when(info.backup_at) : "Never"}</dd></div>
+      {#if moreFacts}
+        <div><dt>Wallet file</dt><dd class="mono">{#if info.wallet_file}<PathText path={info.wallet_file} />{:else}{info.wallet_name}{/if}</dd></div>
+        <div><dt>Transactions</dt><dd>{info.txcount.toLocaleString()}</dd></div>
+        <div><dt>Key pool</dt><dd>{info.keypool.toLocaleString()} to receive, {info.keypool_change.toLocaleString()} for change</dd></div>
+        <div><dt>HD seed id</dt><dd class="mono seed-id">{info.hd_seed_id ?? "none"}</dd></div>
+      {/if}
     </dl>
+    <button class="link-btn facts-more" on:click={() => (moreFacts = !moreFacts)} aria-expanded={moreFacts} type="button">
+      {moreFacts ? "Fewer details" : "More details"}
+    </button>
     {#if info.seed_file_problem}<p class="soft-error">{info.seed_file_problem}</p>{/if}
 
     <div class="wallet-actions">

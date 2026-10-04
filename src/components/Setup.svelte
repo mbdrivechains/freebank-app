@@ -35,6 +35,8 @@
   let screen: Screen = "checking";
   let info: SetupInfo | null = null;
   let stack: StackCheck | null = null;
+  /** Advanced holds typed addresses that differ from the saved ones, which the checklist shows. */
+  let advEdited = false;
   let datadir: DatadirCheck | null = null;
   let lockedMessage = "";
   let checking = false;
@@ -391,6 +393,10 @@
     {/if}
 
     {#if stack}
+      {#if advEdited}
+        <p class="hint">This list checks the saved addresses. To use the ones typed under Advanced, test them there, then
+          press <em>Use these addresses</em>.</p>
+      {/if}
       <div class="checklist">
         <div class="check-item" class:ok={stack.rest_ok && stack.on_beta}>
           <span class="dot"></span>
@@ -414,7 +420,14 @@
     {#if startError}<p class="soft-error">{startError}</p>{/if}
 
     {#if info}
-      <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} open={!!stack?.found} on:saved={() => check()} />
+      <AdvancedSettings
+        settings={info.settings}
+        defaultDatadir={info.default_datadir}
+        open={!!stack?.found}
+        on:saved={() => check()}
+        on:recheck={() => check(false)}
+        on:edited={(e) => (advEdited = e.detail)}
+      />
     {/if}
 
   {:else if screen === "locked"}

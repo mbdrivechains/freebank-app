@@ -152,7 +152,7 @@ pub async fn probe(http: &reqwest::Client, s: &Settings) -> Probe {
             ),
             None,
         ),
-        Err(RpcError::Unreachable(_)) | Err(RpcError::NotConfigured) => {
+        Err(RpcError::Refused(_)) | Err(RpcError::Unreachable(_)) | Err(RpcError::NotConfigured) => {
             (RpcState::Down, String::new(), None)
         }
         Err(e) => (RpcState::Locked, e.to_string(), None),

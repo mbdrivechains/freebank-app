@@ -365,6 +365,7 @@
     held: "waiting for you",
     declined: "declined",
     failed: "failed",
+    unknown: "may have gone out: check History",
     expired: "not answered in time",
     cancelled: "cancelled when FreeBank restarted",
     refused: "refused: FreeBank was closed",

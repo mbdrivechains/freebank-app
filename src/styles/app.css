@@ -549,9 +549,15 @@ button.secondary {
   font-family: monospace;
 }
 
+/* Label and value in columns of their own, so a long value wraps within its column (v0.2.7, the walk-through). */
+.house-stats > div {
+  display: grid;
+  grid-template-columns: minmax(104px, 140px) minmax(0, 1fr);
+  column-gap: 8px;
+  overflow-wrap: anywhere;
+}
+
 .house-stats .stat-label {
-  display: inline-block;
-  min-width: 140px;
   color: var(--text-secondary);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
@@ -1119,6 +1125,12 @@ button.wide {
   word-break: break-all;
 }
 
+/* More details under a facts list (v0.2.7). */
+.facts-more {
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+
 .small {
   font-size: 12.5px;
 }
@@ -1332,6 +1344,25 @@ button.gear.active {
 .ok-note {
   color: var(--success-color);
   margin-bottom: 12px;
+}
+
+/* Advanced: typed addresses that test fine, and the button that uses them (v0.2.7). */
+.use-these {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.use-these .ok-note {
+  margin: 0;
+  flex: 1 1 220px;
+}
+
+.use-these button {
+  font-size: 13px;
+  padding: 8px 14px;
 }
 
 .node-quiet-state {

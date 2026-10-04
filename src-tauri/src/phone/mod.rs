@@ -52,15 +52,26 @@ pub struct RpcFail {
     /// error, timeout).
     pub code: Option<i64>,
     pub message: String,
+    /// The node may have had the call and acted on it: no answer of its own came back after it was handed over (a
+    /// timeout, a dropped connection, an answer that can't be read). A payment that fails so may have gone out (v0.2.7;
+    /// the review of v0.2.7: daemon mode's "starting" must not hide it).
+    pub maybe: bool,
 }
 
 impl RpcFail {
+    /// The node's own refusal: it did nothing.
     pub fn rpc(code: i64, message: impl Into<String>) -> Self {
-        Self { code: Some(code), message: message.into() }
+        Self { code: Some(code), message: message.into(), maybe: false }
     }
 
+    /// No answer of the node's own: it may have acted.
     pub fn other(message: impl Into<String>) -> Self {
-        Self { code: None, message: message.into() }
+        Self { code: None, message: message.into(), maybe: true }
+    }
+
+    /// The call never reached a node (nothing listened, the login or address was refused).
+    pub fn refused(message: impl Into<String>) -> Self {
+        Self { code: None, message: message.into(), maybe: false }
     }
 
     /// No node answered: unreachable, or still warming up.
@@ -165,6 +176,8 @@ pub const ERR_RESTARTED: &str = "the desktop app restarted; nothing was sent";
 pub const ERR_NOT_ENCRYPTED: &str =
     "This wallet has no passphrase, so phones already send up to their daily limit without one.";
 pub const ERR_WRONG_PASSPHRASE: &str = "That isn't the wallet's passphrase.";
+pub const ERR_MAY_HAVE_GONE: &str = "Your desktop's node didn't answer after it was handed this payment, so it may have \
+                                     gone out. Check History before trying again.";
 
 pub const EV_PAIR: &str = "phone-pair-request";
 pub const EV_HELD: &str = "phone-held-send";
@@ -386,6 +399,9 @@ enum Pay {
     NotTried(String),
     /// The node refused the send.
     Failed(String),
+    /// Handed to the node, with no answer of its own (a timeout, a dropped connection): it may have gone out, so it
+    /// keeps its count against the limits (v0.2.7).
+    MayHaveGone,
 }
 
 /// The wallet as the Phone settings show it.
@@ -1653,6 +1669,11 @@ impl Phone {
                 self.log(dev, &name, &p, "failed", json!(e));
                 Err(e)
             }
+            // It may have gone out: it keeps its place in the phone's limit.
+            Err(Pay::MayHaveGone) => {
+                self.log(dev, &name, &p, "unknown", json!(ERR_MAY_HAVE_GONE));
+                Err(ERR_MAY_HAVE_GONE.into())
+            }
         }
     }
 
@@ -1668,6 +1689,7 @@ impl Phone {
                     Ok(u) => u,
                     Err(Pay::Locked | Pay::WrongPassphrase) => return Err(ERR_NOTES_LOCKED.into()),
                     Err(Pay::NotTried(e) | Pay::Failed(e)) => return Err(e),
+                    Err(Pay::MayHaveGone) => return Err(ERR_MAY_HAVE_GONE.into()),
                 };
                 let r = self.rpc.call("listmynotes", vec![]).await;
                 if unlocked {
@@ -2056,6 +2078,7 @@ impl Phone {
             }
             Ok(txid) => Ok(txid),
             Err(Pay::Failed(e)) => Err(consolidate_hint(pending.kind, e)),
+            Err(Pay::MayHaveGone) => Err(ERR_MAY_HAVE_GONE.to_string()),
         };
         let h = {
             let mut held = self.held.lock().unwrap();
@@ -2063,7 +2086,9 @@ impl Phone {
             held.remove(i)
         };
         self.save_held();
-        if let (Err(_), Some(c)) = (&paid, h.cleared) {
+        // A payment that may have gone out keeps its "Approve sends on my phone" count.
+        let unknown = matches!(&paid, Err(e) if e == ERR_MAY_HAVE_GONE);
+        if let (Err(_), Some(c), false) = (&paid, h.cleared, unknown) {
             self.uncount(c);
         }
         let result = match paid {
@@ -2073,7 +2098,7 @@ impl Phone {
                 Ok(Confirmed { txid: txid.as_str().map(String::from), need_passphrase: false })
             }
             Err(e) => {
-                self.log_held(&h, "failed", json!(e));
+                self.log_held(&h, if unknown { "unknown" } else { "failed" }, json!(e));
                 self.final_reply(&h, "err", json!(e));
                 Err(e)
             }
@@ -2114,7 +2139,7 @@ impl Phone {
                 secs,
                 || self.rpc.call("walletpassphrase", vec![json!(pass), json!(secs)]),
                 // A refusal changes no timer; an unanswered call may have set one.
-                |e: &RpcFail| e.code.is_none(),
+                |e: &RpcFail| e.maybe,
             )
             .await
             .map(|_| ())
@@ -2143,6 +2168,7 @@ impl Phone {
                 // Someone's unlock ran out between our look and the send: look again, once.
                 Err(e) if e.code == Some(RPC_WALLET_UNLOCK_NEEDED) && !unlocked && first => first = false,
                 Err(e) if e.code == Some(RPC_WALLET_UNLOCK_NEEDED) => return Err(Pay::Locked),
+                Err(e) if e.maybe => return Err(Pay::MayHaveGone),
                 Err(e) => return Err(Pay::Failed(e.plain())),
             }
         }

@@ -225,7 +225,7 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
     client.configure_local(&format!("http://127.0.0.1:{}", s.rpc_port), s.datadir.clone().into());
     let mut probe = FreeBankClient::default();
     probe.configure_local(&format!("http://127.0.0.1:{}", s.rpc_port), s.datadir.clone().into());
-    let node = NodeRpc(Arc::new(Mutex::new(client)));
+    let node: Arc<dyn super::Rpc> = Arc::new(NodeRpc(Arc::new(Mutex::new(client))));
     let waker = light.then(|| {
         Arc::new(Waker {
             st: std::sync::Mutex::new(WakeState::default()),
@@ -237,7 +237,7 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
     });
     let rpc: Arc<dyn super::Rpc> = match &waker {
         Some(w) => Arc::new(WakingRpc { inner: node, waker: w.clone() }),
-        None => Arc::new(node),
+        None => node,
     };
     let Ok((phone, out)) = Phone::new(&app_dir, rpc, Arc::new(NoScreen), Arc::new(unix_now)) else {
         return 1;
@@ -330,8 +330,8 @@ impl Waker {
         self.asked();
         let s = self.st.lock().unwrap();
         match &s.failed {
-            Some((_, why)) if !s.waking => RpcFail { code: Some(super::WAKE_FAILED), message: why.clone() },
-            _ => RpcFail { code: Some(super::WAKE_STARTING), message: String::new() },
+            Some((_, why)) if !s.waking => RpcFail::rpc(super::WAKE_FAILED, why.clone()),
+            _ => RpcFail::rpc(super::WAKE_STARTING, String::new()),
         }
     }
 
@@ -406,7 +406,7 @@ impl Waker {
 
 /// The node, for the light part: a call that reaches none wakes it, and answers "starting" (or why it couldn't start).
 struct WakingRpc {
-    inner: NodeRpc,
+    inner: Arc<dyn super::Rpc>,
     waker: Arc<Waker>,
 }
 
@@ -414,7 +414,14 @@ impl super::Rpc for WakingRpc {
     fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> futures_util::future::BoxFuture<'a, Result<Value, RpcFail>> {
         Box::pin(async move {
             match self.inner.call(method, params).await {
-                Err(e) if e.unreachable() => Err(self.waker.unreachable()),
+                // No node had the call (none listening, or warming up): wake it, and say it's starting.
+                Err(e) if e.unreachable() && !e.maybe => Err(self.waker.unreachable()),
+                // The node may have had it and gone (the review of v0.2.7): wake it, but keep the failure as it is,
+                // so a payment that may have gone out says so and keeps its count.
+                Err(e) if e.unreachable() => {
+                    let _ = self.waker.unreachable();
+                    Err(e)
+                }
                 r => r,
             }
         })
@@ -448,6 +455,43 @@ async fn stopped() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phone::Rpc;
+
+    /// A node that fails every call so.
+    struct Fails(RpcFail);
+
+    impl super::super::Rpc for Fails {
+        fn call<'a>(&'a self, _: &'a str, _: Vec<Value>) -> super::super::BoxFuture<'a, Result<Value, RpcFail>> {
+            let e = self.0.clone();
+            Box::pin(async move { Err(e) })
+        }
+    }
+
+    /// The review of v0.2.7: in daemon mode a call that reached no node says the node is starting (or why it
+    /// couldn't), but one the node may have had keeps its failure, so a payment that may have gone out says so and
+    /// keeps its count.
+    #[tokio::test]
+    async fn waking_hides_only_calls_that_reached_no_node() {
+        let dir = std::env::temp_dir().join(format!("fb-waking-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let waker = Arc::new(Waker {
+            // A start failed just now: no new wake is tried, and calls that reach no node hear why.
+            st: std::sync::Mutex::new(WakeState { failed: Some((Instant::now(), "It couldn't start.".into())), ..Default::default() }),
+            phone: std::sync::OnceLock::new(),
+            mgr: Arc::new(crate::node::NodeManager::new(dir.clone())),
+            probe: Arc::new(Mutex::new(FreeBankClient::default())),
+            ops: Mutex::new(()),
+        });
+        let refused = WakingRpc { inner: Arc::new(Fails(RpcFail::refused("connection refused"))), waker: waker.clone() };
+        let e = refused.call("sendtoaddress", vec![]).await.unwrap_err();
+        assert_eq!((e.code, e.maybe), (Some(super::super::WAKE_FAILED), false));
+        let warming = WakingRpc { inner: Arc::new(Fails(RpcFail::rpc(super::super::RPC_IN_WARMUP, "Loading"))), waker: waker.clone() };
+        assert_eq!(warming.call("getbalance", vec![]).await.unwrap_err().code, Some(super::super::WAKE_FAILED));
+        let dropped = WakingRpc { inner: Arc::new(Fails(RpcFail::other("connection closed before message completed"))), waker };
+        let e = dropped.call("sendtoaddress", vec![]).await.unwrap_err();
+        assert_eq!((e.code, e.maybe), (None, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn only_its_own_command_line_starts_it() {

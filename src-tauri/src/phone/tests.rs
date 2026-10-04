@@ -26,6 +26,8 @@ const NOT_ENOUGH: &str = "Not enough ECX in your desktop wallet for this payment
 struct MockRpc {
     calls: Mutex<Vec<(String, Vec<Value>)>>,
     fail_send: AtomicBool,
+    /// sendtoaddress sends, then no answer comes back (a dropped line).
+    drop_send: AtomicBool,
     /// The next getwalletinfo answers as usual, then the unlock ends (it ran out in between).
     lock_after_look: AtomicBool,
     now: Arc<AtomicU64>,
@@ -50,6 +52,7 @@ impl MockRpc {
         Self {
             calls: Mutex::default(),
             fail_send: AtomicBool::new(false),
+            drop_send: AtomicBool::new(false),
             lock_after_look: AtomicBool::new(false),
             now,
             wallet: Mutex::new(MockWallet { txcount: 3, ..Default::default() }),
@@ -168,6 +171,8 @@ impl Rpc for MockRpc {
                         Err(RpcFail::rpc(-13, LOCKED_MSG))
                     } else if self.fail_send.load(Ordering::SeqCst) {
                         Err(RpcFail::rpc(-6, "Insufficient funds"))
+                    } else if self.drop_send.load(Ordering::SeqCst) {
+                        Err(RpcFail::other("connection closed before message completed"))
                     } else {
                         Ok(json!(format!("txid-{n}")))
                     }
@@ -251,6 +256,26 @@ fn temp_dir(what: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("phone")).unwrap();
     dir
+}
+
+#[tokio::test]
+async fn a_send_the_node_took_without_answering_keeps_its_place_in_the_limit() {
+    // v0.2.7: no answer of the node's own after the send was handed over: it may have gone out, so the phone's
+    // allowance isn't given back, the phone hears so, and the desktop's list says so.
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.rpc.drop_send.store(true, Ordering::SeqCst);
+    let r = ask(&mut h, &mut sim, 1, 1, "send", json!({"address": TO, "amount": 0.04})).await;
+    assert_eq!(r["err"], ERR_MAY_HAVE_GONE, "{r}");
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.06).abs() < 1e-12, "the allowance stays used");
+    assert_eq!(h.phone.store.recent_sends(1)[0]["result"], "unknown");
+    // A refusal of the node's own still gives it back.
+    h.rpc.drop_send.store(false, Ordering::SeqCst);
+    h.rpc.fail_send.store(true, Ordering::SeqCst);
+    let r = ask(&mut h, &mut sim, 1, 2, "send", json!({"address": TO, "amount": 0.04})).await;
+    assert_eq!(r["err"], NOT_ENOUGH);
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.06).abs() < 1e-12);
 }
 
 fn harness(d: Option<&SecretKey>) -> H {

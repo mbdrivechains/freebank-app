@@ -51,11 +51,17 @@ impl Rpc for NodeRpc {
     fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>> {
         Box::pin(async move {
             // The main wallet always, whichever the screens chose (v0.2.6: several wallets, the phone on the main one).
-            self.0.lock().await.call_fresh_typed_main(method, params).await.map_err(|e| match e {
-                RpcError::Rpc { code, message } => RpcFail::rpc(code, message),
-                e => RpcFail::other(e.to_string()),
-            })
+            self.0.lock().await.call_fresh_typed_main(method, params).await.map_err(fail_of)
         })
+    }
+}
+
+/// A call's failure for the narrow door: the node's own error, a call that never reached it, or one it may have had.
+pub(crate) fn fail_of(e: RpcError) -> RpcFail {
+    match e {
+        RpcError::Rpc { code, message } => RpcFail::rpc(code, message),
+        e if e.did_nothing() => RpcFail::refused(e.to_string()),
+        e => RpcFail::other(e.to_string()),
     }
 }
 

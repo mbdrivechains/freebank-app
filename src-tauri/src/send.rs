@@ -35,7 +35,7 @@
 
 use crate::commands::ClientState;
 use crate::node::NodeManager;
-use crate::rpc::FreeBankClient;
+use crate::rpc::{FreeBankClient, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -231,6 +231,9 @@ pub struct Book {
     held: Mutex<HashMap<String, Held>>,
     fees: Mutex<Option<(Instant, FeeChoices)>>,
     quotes: Mutex<HashMap<String, (Instant, BumpQuote)>>,
+    /// Prepared sends a try of which may have gone out: kept past the send's own hold, so a retry that fails after it
+    /// expired still keeps the count (the re-review of v0.2.7).
+    maybe_sent: Mutex<std::collections::HashSet<String>>,
     hold: Duration,
     fees_for: Duration,
 }
@@ -250,6 +253,9 @@ struct Held {
     made: Instant,
     /// How "Approve sends on my phone" let it through: a try again after the passphrase doesn't ask, or count, twice.
     cleared: Option<crate::phone::Cleared>,
+    /// A try may have gone out (MAY_HAVE_GONE): from then on its count stays, whatever a later try says (the review
+    /// of v0.2.7: a retry that fails to sign, or finds its coins spent, mustn't give the first try's count back).
+    maybe_sent: bool,
 }
 
 impl Book {
@@ -259,6 +265,7 @@ impl Book {
             held: Mutex::default(),
             fees: Mutex::default(),
             quotes: Mutex::default(),
+            maybe_sent: Mutex::default(),
             hold,
             fees_for,
         }
@@ -325,6 +332,11 @@ impl Book {
         }
     }
 
+    /// Whether a try of prepared send `id` may have gone out.
+    pub fn maybe_sent(&self, id: &str) -> bool {
+        self.maybe_sent.lock().unwrap().contains(id)
+    }
+
     /// Put it back after a failure (a locked wallet, say), while it still holds.
     fn put_back(&self, id: &str, h: Held) {
         if h.made.elapsed() < self.hold {
@@ -376,9 +388,9 @@ fn funding_problem(e: String) -> String {
 
 /// sendrawtransaction's failures, in plain words.
 fn broadcast_problem(e: String) -> String {
-    if e.starts_with("RPC error -25:") {
-        "Some of the coins this send used have been spent since you reviewed it. Review it again.".into()
-    } else if let Some(m) = e.strip_prefix("RPC error -26: ") {
+    if e.starts_with("RPC error -25:") && e.contains("Missing inputs") {
+        SPENT_ALREADY.into()
+    } else if let Some(m) = e.strip_prefix("RPC error -25: ").or_else(|| e.strip_prefix("RPC error -26: ")) {
         format!("The network refused this send: {}", m)
     } else {
         e
@@ -634,7 +646,7 @@ pub async fn prepare(book: &Book, c: &mut FreeBankClient, req: SendRequest) -> R
         label: req.speed.label(),
         expires_in: book.hold.as_secs(),
     };
-    book.keep(&id, Held { quote: quote.clone(), hex, made: Instant::now(), cleared: None });
+    book.keep(&id, Held { quote: quote.clone(), hex, made: Instant::now(), cleared: None, maybe_sent: false });
     Ok(quote)
 }
 
@@ -658,10 +670,16 @@ pub struct Sent {
 
 /// Sign and send a prepared send, then log it.
 pub async fn confirm(book: &Book, c: &mut FreeBankClient, id: &str, log: Option<&SendLog>) -> Result<Sent, String> {
-    let held = book.take(id)?;
+    let mut held = book.take(id)?;
     let txid = match sign_and_send(c, &held.hex).await {
         Ok(t) => t,
         Err(e) => {
+            // Its coins spent already, after a try that may have gone out: that try went out.
+            let e = if e == SPENT_ALREADY && held.maybe_sent { WENT_OUT.to_string() } else { e };
+            held.maybe_sent |= may_have_gone(&e);
+            if held.maybe_sent {
+                book.maybe_sent.lock().unwrap().insert(id.to_string());
+            }
             book.put_back(id, held);
             return Err(e);
         }
@@ -726,6 +744,27 @@ pub async fn approve_first(book: &Book, phone: &crate::phone::Phone, id: &str) -
 /// What the node says when a locked wallet is asked to sign (RPC_WALLET_UNLOCK_NEEDED).
 pub(crate) const LOCKED: &str = "RPC error -13: Error: Please enter the wallet passphrase with walletpassphrase first.";
 
+/// A send handed to the node that then gave no answer of its own (a timeout, a dropped connection): it may have gone
+/// out. It keeps its "Approve sends on my phone" count, and Send keeps it, so trying again sends the very same
+/// transaction (v0.2.7).
+pub(crate) const MAY_HAVE_GONE: &str =
+    "Your node didn't answer after FreeBank handed it this send, so it may have gone out. Check History before trying again.";
+/// Trying again found it in the chain already: it went out the first time.
+pub(crate) const WENT_OUT: &str = "This send went out already: it's in the chain. Check History.";
+/// The node says the send's coins are spent (-25): by another payment, or by this one if an earlier try went out.
+pub(crate) const SPENT_ALREADY: &str = "Some of the coins this send used have been spent since you reviewed it. Review it again.";
+/// Speed up handed to the node with no answer of its own: the faster transaction may have replaced the send.
+pub(crate) const BUMP_MAY_HAVE_GONE: &str =
+    "Your node didn't answer after FreeBank asked it to speed this send up, so it may have done it. Check History before trying again.";
+
+/// Speed up made the faster transaction, but the node had more to say: it may not go through.
+pub(crate) const BUMP_UNSURE: &str = "The node made the faster transaction, but it may not go through: ";
+
+/// A failed send or Speed up that may still have gone out: it keeps its count.
+pub(crate) fn may_have_gone(e: &str) -> bool {
+    e == MAY_HAVE_GONE || e == WENT_OUT || e == BUMP_MAY_HAVE_GONE || e.starts_with(BUMP_UNSURE)
+}
+
 async fn sign_and_send(c: &mut FreeBankClient, hex: &str) -> Result<String, String> {
     let signed = c.call_ui("signrawtransactionwithwallet", vec![json!(hex)]).await?;
     if signed["complete"] != Value::Bool(true) {
@@ -740,8 +779,18 @@ async fn sign_and_send(c: &mut FreeBankClient, hex: &str) -> Result<String, Stri
         return Err(format!("The wallet couldn't sign this send ({}). Nothing was sent.", why));
     }
     let hex = signed["hex"].as_str().ok_or("The wallet's signed transaction came back empty.")?;
-    let txid = c.call_ui("sendrawtransaction", vec![json!(hex)]).await.map_err(broadcast_problem)?;
-    txid.as_str().map(String::from).ok_or_else(|| "The node didn't say the send's transaction ID.".into())
+    let txid = match c.call_fresh_typed("sendrawtransaction", vec![json!(hex)]).await {
+        Ok(t) => t,
+        // RPC_VERIFY_ALREADY_IN_CHAIN: a try after one that may have gone out, and it did.
+        Err(RpcError::Rpc { code: -27, .. }) => return Err(WENT_OUT.into()),
+        // RPC_VERIFY_ERROR, missing inputs: spent by something else, or by an earlier try (`confirm` tells). Other -25s
+        // (a full mempool, say) are the node's refusal as before.
+        Err(RpcError::Rpc { code: -25, message }) if message.contains("Missing inputs") => return Err(SPENT_ALREADY.into()),
+        Err(e) if e.did_nothing() => return Err(broadcast_problem(e.for_ui())),
+        Err(_) => return Err(MAY_HAVE_GONE.into()),
+    };
+    // The node accepted it, whatever else it said: it went out.
+    txid.as_str().map(String::from).ok_or_else(|| MAY_HAVE_GONE.into())
 }
 
 // ---- Speed up ---------------------------------------------------------------------------------
@@ -884,11 +933,22 @@ pub struct Bumped {
 pub async fn speed_up(book: &Book, c: &mut FreeBankClient, log: Option<&SendLog>, txid: &str, speed: Speed) -> Result<Bumped, String> {
     let q = book.quote(txid).ok_or(QUOTE_EXPIRED)?;
     let choice = q.choices.iter().find(|c| c.speed == speed && c.ok).ok_or("That speed isn't available for this send.")?;
-    let r = c.call_ui("bumpfee", vec![json!(txid), json!({"totalFee": choice.fee})]).await.map_err(bump_problem)?;
-    if let Some(e) = r["errors"].as_array().and_then(|a| a.first()).and_then(Value::as_str) {
-        return Err(format!("The node made the faster transaction but didn't accept it: {}", e));
+    let r = match c.call_fresh_typed("bumpfee", vec![json!(txid), json!({"totalFee": choice.fee})]).await {
+        Ok(r) => r,
+        Err(e) if e.did_nothing() => return Err(bump_problem(e.for_ui())),
+        Err(_) => return Err(BUMP_MAY_HAVE_GONE.into()),
+    };
+    // bumpfee answers Ok once it made the faster transaction (the review of v0.2.7). "Couldn't mark the original as
+    // replaced" comes after it went out: a success. Anything else (the mempool refused it) means it may not go through:
+    // its count stays, it isn't logged, and the screen says so.
+    let errors: Vec<&str> = r["errors"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    if let Some(e) = errors.iter().find(|e| !e.contains("could not mark the original transaction as replaced")) {
+        return Err(format!("{BUMP_UNSURE}{e}. Check History before trying again."));
     }
-    let new = r["txid"].as_str().ok_or("The node didn't say the new transaction's ID.")?.to_string();
+    for e in &errors {
+        crate::activity::note(&format!("speed up: the node said: {}", crate::activity::mask_numbers(e)));
+    }
+    let Some(new) = r["txid"].as_str().map(String::from) else { return Err(BUMP_MAY_HAVE_GONE.into()) };
     // Core adds change it would leave as dust to the fee, so its figure can be a little higher.
     let fee = sats(&r["fee"]).unwrap_or(choice.fee);
     book.quotes.lock().unwrap().remove(txid);
@@ -1276,10 +1336,13 @@ pub async fn send_confirm(
     let mut c = client.lock().await;
     let r = confirm(&BOOK, &mut c, &id, log.as_ref()).await;
     drop(c);
-    // A send that didn't go out no longer counts.
-    if let (Err(_), Some(cl), Some(p)) = (&r, cleared, guard) {
-        p.uncount(cl);
-        BOOK.clear_mark(&id);
+    // A send that didn't go out no longer counts. One that may have gone keeps its count and its mark, so trying it
+    // again (the same transaction) doesn't count twice.
+    if let (Err(e), Some(cl), Some(p)) = (&r, cleared, guard) {
+        if !may_have_gone(e) && !BOOK.maybe_sent(&id) {
+            p.uncount(cl);
+            BOOK.clear_mark(&id);
+        }
     }
     // Only a send that failed: one that went through could be picked out on the explorer by its time.
     if let Err(e) = &r {
@@ -1328,8 +1391,10 @@ pub async fn send_speed_up(
     };
     let mut c = client.lock().await;
     let r = speed_up(&BOOK, &mut c, log.as_ref(), &txid, speed).await;
-    if let (Err(_), Some(cl), Some(p)) = (&r, cleared, guard) {
-        p.uncount(cl);
+    if let (Err(e), Some(cl), Some(p)) = (&r, cleared, guard) {
+        if !may_have_gone(e) {
+            p.uncount(cl);
+        }
     }
     r
 }
@@ -1398,6 +1463,13 @@ mod tests {
         /// listtransactions, oldest first.
         list: Vec<Value>,
         n: u64,
+        /// The next call of this method is acted on, then the line drops with no answer (sendrawtransaction sends
+        /// first; bumpfee answers nothing).
+        hang_up: Option<&'static str>,
+        /// sendrawtransaction answers -27: the transaction is in the chain already.
+        in_chain: bool,
+        /// sendrawtransaction answers -25: its coins are spent.
+        spent: bool,
     }
 
     type Shared = Arc<Mutex<Node>>;
@@ -1541,6 +1613,12 @@ mod tests {
                     }
                     Ok(json!({"hex": format!("5349474e4544{}", h), "complete": true}))
                 }
+                "sendrawtransaction" if self.in_chain => Err((-27, "Transaction already in block chain".into())),
+                "sendrawtransaction" if self.spent => Err((-25, "Missing inputs".into())),
+                "bumpfee" if self.hang_up == Some("bumpfee") => {
+                    self.hang_up = None;
+                    Err((stub::HANG_UP, String::new()))
+                }
                 "sendrawtransaction" => {
                     let h = p[0].as_str().unwrap();
                     let tx = dec(h);
@@ -1552,6 +1630,10 @@ mod tests {
                     let outs: i64 = tx["vout"].as_array().unwrap().iter().map(|o| o["sats"].as_i64().unwrap()).sum();
                     let replaceable = if tx["rbf"] == json!(true) || tx["vin"].as_array().unwrap().len() > 0 { "yes" } else { "no" };
                     self.txs.insert(txid.clone(), json!({"fee": ins - outs, "hex": h, "confirmations": 0, "replaceable": replaceable}));
+                    if self.hang_up == Some("sendrawtransaction") {
+                        self.hang_up = None;
+                        return Err((stub::HANG_UP, String::new()));
+                    }
                     Ok(json!(txid))
                 }
                 "gettransaction" => {
@@ -1843,6 +1925,81 @@ mod tests {
             assert_eq!(sent.fee, q.fee);
             assert_eq!(params(&calls, "sendrawtransaction").len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn a_send_the_node_took_without_answering_may_have_gone_and_keeps_its_count() {
+        // v0.2.7: the node sent it, then the line dropped. The screen hears it may have gone out (never "try again"),
+        // the prepared send stays, so a retry sends the very same transaction, and its count isn't given back.
+        let (mut c, calls, n) = node(Node { hang_up: Some("sendrawtransaction"), ..funded() });
+        let book = Book::default();
+        let q = prepare(&book, &mut c, req(Some(10_000_000), false, Speed::Next)).await.unwrap();
+        let e = confirm(&book, &mut c, &q.id, None).await.unwrap_err();
+        assert_eq!(e, MAY_HAVE_GONE);
+        assert!(may_have_gone(&e), "send_confirm keeps its count and its mark");
+        assert!(book.peek(&q.id).is_some(), "kept for the retry");
+        // It went out, and has confirmed since: the retry says so.
+        n.lock().unwrap().in_chain = true;
+        let e = confirm(&book, &mut c, &q.id, None).await.unwrap_err();
+        assert_eq!(e, WENT_OUT);
+        assert!(may_have_gone(&e));
+        let sent = params(&calls, "sendrawtransaction");
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0], sent[1], "the same transaction both times");
+        // The node's own refusal still gives the count back.
+        for refused in ["RPC error -26: 66: insufficient fee", NOT_REPLACEABLE, LOCKED, EXPIRED] {
+            assert!(!may_have_gone(refused));
+        }
+        assert!(!may_have_gone(&broadcast_problem("RPC error -25: Missing inputs".into())));
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_may_have_gone_never_gives_the_count_back() {
+        // The review of v0.2.7: once a try may have gone out, a later try's failure keeps the count. Its coins found
+        // spent then (it went out, confirmed, and its outputs were spent within the hold) says it went out; a locked
+        // wallet on the retry is still only the passphrase.
+        let (mut c, _calls, n) = node(Node { hang_up: Some("sendrawtransaction"), ..funded() });
+        let book = Book::default();
+        let q = prepare(&book, &mut c, req(Some(10_000_000), false, Speed::Next)).await.unwrap();
+        assert!(!book.maybe_sent(&q.id));
+        assert_eq!(confirm(&book, &mut c, &q.id, None).await.unwrap_err(), MAY_HAVE_GONE);
+        assert!(book.maybe_sent(&q.id), "send_confirm keeps its count from now on");
+        n.lock().unwrap().locked = true;
+        assert_eq!(confirm(&book, &mut c, &q.id, None).await.unwrap_err(), LOCKED);
+        assert!(book.maybe_sent(&q.id), "a locked retry doesn't clear it");
+        n.lock().unwrap().locked = false;
+        n.lock().unwrap().spent = true;
+        let e = confirm(&book, &mut c, &q.id, None).await.unwrap_err();
+        assert_eq!(e, WENT_OUT);
+        // A fresh send whose coins are spent sent nothing: its count goes back.
+        let book = Book::default();
+        let (mut c, _calls, _n) = node(Node { spent: true, ..funded() });
+        let q = prepare(&book, &mut c, req(Some(10_000_000), false, Speed::Next)).await.unwrap();
+        let e = confirm(&book, &mut c, &q.id, None).await.unwrap_err();
+        assert_eq!(e, SPENT_ALREADY);
+        assert!(!may_have_gone(&e) && !book.maybe_sent(&q.id));
+        // The mark outlives the send's hold (the re-review of v0.2.7: a retry failing after the hold ran out).
+        let book = Book::new(Duration::from_millis(50), FEES_FOR);
+        let (mut c, _calls, _n) = node(Node { hang_up: Some("sendrawtransaction"), ..funded() });
+        let q = prepare(&book, &mut c, req(Some(10_000_000), false, Speed::Next)).await.unwrap();
+        assert_eq!(confirm(&book, &mut c, &q.id, None).await.unwrap_err(), MAY_HAVE_GONE);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(book.peek(&q.id).is_none() && book.maybe_sent(&q.id));
+        // Another -25 is the node's refusal, in its own words.
+        assert_eq!(broadcast_problem("RPC error -25: mempool full".into()), "The network refused this send: mempool full");
+        assert!(may_have_gone(&format!("{BUMP_UNSURE}x. Check History before trying again.")));
+    }
+
+    #[tokio::test]
+    async fn a_speed_up_the_node_took_without_answering_keeps_its_count() {
+        let (mut c, calls, n, book, log, _dir, sent) = one_send(funded()).await;
+        let q = quote_speed_up(&book, &mut c, &log.read().unwrap(), &sent.txid).await.unwrap();
+        let speed = q.choices.iter().find(|c| c.ok).expect("a speed the change can pay").speed;
+        n.lock().unwrap().hang_up = Some("bumpfee");
+        let e = speed_up(&book, &mut c, Some(&log), &sent.txid, speed).await.unwrap_err();
+        assert_eq!(e, BUMP_MAY_HAVE_GONE);
+        assert!(may_have_gone(&e), "send_speed_up keeps its count");
+        assert_eq!(params(&calls, "bumpfee").len(), 1);
     }
 
     #[tokio::test]

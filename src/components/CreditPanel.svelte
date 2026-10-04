@@ -699,7 +699,7 @@
       </div>
 
       {#if houses.length > 0}
-      <details class="tools">
+      <details class="advanced tools">
         <summary>House tools: mint notes</summary>
       <div class="card">
         <h3>Mint notes</h3>
@@ -822,7 +822,7 @@
         {/if}
       </div>
 
-      <details class="tools">
+      <details class="advanced tools">
         <summary>House tools: charter a house, attest reserves</summary>
       <div class="card">
         <h3>Charter a house</h3>
@@ -997,7 +997,7 @@
       </div>
 
       {#if houses.length > 0}
-      <details class="tools">
+      <details class="advanced tools">
         <summary>House tools: create a pool</summary>
       <div class="card">
         <h3>Create a pool</h3>
@@ -1109,7 +1109,7 @@
         <button on:click={getBillPubkey}>New bill key</button>
       </div>
 
-      <details class="tools">
+      <details class="advanced tools">
         <summary>House tools: issue a bill</summary>
       <div class="card">
         <h3>Issue a bill</h3>
@@ -1145,19 +1145,22 @@
 {/if}
 
 <style>
-  /* The issuer's forms, folded at the foot of each segment (v0.2.6). */
+  /* The issuer's forms, folded at the foot of each segment (v0.2.6), in the app's fold (.advanced, v0.2.7: the
+     walk-through found its ▶ unlike the others). The forms' cards lie flat inside it. */
   .tools {
     margin-top: 8px;
+    margin-bottom: 14px;
   }
-  .tools > summary {
-    cursor: pointer;
-    color: var(--text-secondary);
-    font-size: 13px;
-    font-weight: 600;
-    padding: 8px 2px;
+  .tools > :global(.card) {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 4px 0 14px;
+    margin: 0;
   }
-  .tools[open] > summary {
-    margin-bottom: 8px;
+  .tools > :global(.card + .card) {
+    border-top: 1px solid var(--border-color);
+    padding-top: 14px;
   }
   .locked-read {
     display: flex;

@@ -9,7 +9,9 @@
   export let lockedReason = "";
   export let saveLabel = "Save and check again";
 
-  const dispatch = createEventDispatcher<{ saved: Settings }>();
+  // saved: new settings; recheck: the saved addresses test fine, so the list above should look again; edited: typed
+  // addresses differ from the saved ones (the list above shows the saved ones).
+  const dispatch = createEventDispatcher<{ saved: Settings; recheck: void; edited: boolean }>();
 
   let rest = settings.rest;
   let enforcer = settings.enforcer;
@@ -25,6 +27,7 @@
     datadir !== settings.datadir ||
     Number(rpcPort) !== settings.rpc_port ||
     Number(p2pPort) !== settings.p2p_port;
+  $: dispatch("edited", rest !== settings.rest || enforcer !== settings.enforcer);
 
   async function save() {
     saving = true;
@@ -53,13 +56,22 @@
   async function test() {
     testing = true;
     checks = null;
+    // The addresses as they were when the test started: a result for addresses edited since is dropped (the review
+    // of v0.2.7: "These addresses work" appeared for ones never tested).
+    const [r, e] = [rest, enforcer];
+    let got: ConnCheck[];
     try {
-      checks = await node.testConnection(rest, enforcer);
-    } catch (e) {
-      checks = [{ label: "Test", ok: false, detail: String(e) }];
+      got = await node.testConnection(r, e);
+    } catch (err) {
+      got = [{ label: "Test", ok: false, detail: String(err) }];
     }
     testing = false;
+    if (rest !== r || enforcer !== e) return;
+    checks = got;
+    // The saved addresses work now: the list above, from an earlier look, checks again (v0.2.7, the walk-through).
+    if (allOk(got) && r === settings.rest && e === settings.enforcer) dispatch("recheck");
   }
+  const allOk = (c: ConnCheck[] | null) => !!c && c.length > 0 && c.every((x) => x.ok);
   $: if (rest || enforcer) checks = null;
 
   function reset() {
@@ -98,13 +110,17 @@
           </div>
         {/each}
       </div>
-      <!-- The list above the box reads the saved addresses: say so when the typed ones work (v0.2.6, the walk-through:
-           Test connection went green while the checklist still said "not found"). -->
-      {#if dirty && checks.length && checks.every((c) => c.ok) && !lockedReason}
-        <p class="hint ok-note">
-          These addresses work.
-          <button class="link-btn inline" on:click={save} disabled={saving} type="button">{saving ? "Saving…" : "Save them and use them"}</button>
-        </p>
+      <!-- The list above the box reads the saved addresses (v0.2.6 and v0.2.7, the walk-throughs: Test connection went
+           green while the checklist still said "not found", and Check again kept testing the old addresses). -->
+      {#if allOk(checks) && !lockedReason}
+        {#if rest !== settings.rest || enforcer !== settings.enforcer}
+          <div class="use-these">
+            <p class="hint ok-note">These addresses work. FreeBank still uses the saved ones until you use these.</p>
+            <button on:click={save} disabled={saving} type="button">{saving ? "Saving…" : "Use these addresses"}</button>
+          </div>
+        {:else}
+          <p class="hint ok-note">These are the addresses FreeBank uses, and they work.</p>
+        {/if}
       {/if}
     {/if}
     <label>

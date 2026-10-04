@@ -189,9 +189,60 @@ pub async fn rpc_call(
         None => None,
     };
     let mut c = client.lock().await;
-    let r = c.call_ui(&method, params).await;
-    if let (Err(_), Some((p, cl))) = (&r, cleared) {
-        p.uncount(cl);
+    let r = screen_call(&mut c, &method, params).await;
+    drop(c);
+    r.map_err(|(e, give_back)| {
+        if let (true, Some((p, cl))) = (give_back, cleared) {
+            p.uncount(cl);
+        }
+        e
+    })
+}
+
+/// A screen's call. On failure, also whether a payment counted for it is given back: only when the node surely did
+/// nothing. A credit payment handed to the node with no answer of its own may have gone out, so it keeps its count and
+/// the screen doesn't read "try again" (v0.2.7).
+pub(crate) async fn screen_call(
+    c: &mut FreeBankClient,
+    method: &str,
+    params: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, (String, bool)> {
+    match c.call_fresh_typed(method, params).await {
+        Ok(v) => Ok(v),
+        Err(e) if e.did_nothing() => Err((e.for_ui(), true)),
+        Err(_) if crate::phone::CREDIT_PAYMENTS.contains(&method) => Err((CREDIT_MAY_HAVE_GONE.into(), false)),
+        Err(e) => Err((e.for_ui(), false)),
     }
-    r
+}
+
+/// A credit payment handed to the node with no answer of its own (a timeout, a dropped connection).
+pub(crate) const CREDIT_MAY_HAVE_GONE: &str =
+    "Your node didn't answer after FreeBank handed it this payment, so it may have gone out. Check your notes and History before trying again.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rpc::stub;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn a_credit_payment_the_node_took_without_answering_keeps_its_count() {
+        let (mut c, calls) = stub::serve(|m, _| match m {
+            "transfernote" => Err((stub::HANG_UP, String::new())),
+            "redeemnote" => Err((-4, "no single holder's coins sum exactly to the amount".into())),
+            "listhouses" => Err((stub::HANG_UP, String::new())),
+            _ => Ok(json!({"txid": "t"})),
+        });
+        // The node took it and the line dropped: it may have gone out, and its count stays.
+        let e = screen_call(&mut c, "transfernote", vec![json!(1), json!(5), json!(0.0001), json!("X")]).await.unwrap_err();
+        assert_eq!(e, (CREDIT_MAY_HAVE_GONE.to_string(), false));
+        // The node's own refusal: nothing went out, the count comes back, and the screen gets the code.
+        let e = screen_call(&mut c, "redeemnote", vec![json!(1), json!(5), json!(0.0001)]).await.unwrap_err();
+        assert_eq!(e, ("RPC error -4: no single holder's coins sum exactly to the amount".to_string(), true));
+        // A read that drops says what happened, as before (nothing was counted for it).
+        let e = screen_call(&mut c, "listhouses", vec![]).await.unwrap_err();
+        assert!(!e.1 && e.0 != CREDIT_MAY_HAVE_GONE, "{e:?}");
+        assert_eq!(screen_call(&mut c, "issuebill", vec![]).await.unwrap(), json!({"txid": "t"}));
+        assert_eq!(calls.lock().unwrap().len(), 4);
+    }
 }

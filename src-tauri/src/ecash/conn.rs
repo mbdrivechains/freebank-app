@@ -227,7 +227,7 @@ pub async fn connect(_http: &reqwest::Client, s: &Settings, app_dir: Option<&Pat
                 return Ok(Conn { chain, ..conn });
             }
             Err(RpcError::Http(401)) | Err(RpcError::Http(403)) => continue,
-            Err(RpcError::Unreachable(_)) | Err(RpcError::Busy) => {
+            Err(RpcError::Refused(_)) | Err(RpcError::Unreachable(_)) | Err(RpcError::Busy) => {
                 return Err(format!("The eCash node isn't answering at {}. Is BitWindow (or your eCash node) running?", at))
             }
             Err(RpcError::Rpc { code: -28, .. }) => return Err("The eCash node is still starting. Try again in a minute.".into()),
