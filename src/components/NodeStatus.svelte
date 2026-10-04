@@ -10,6 +10,7 @@
   import PathText from "./PathText.svelte";
   import WhatsRunning from "./WhatsRunning.svelte";
   import {
+    friendlyLog,
     checkForUpdate,
     megabytes,
     node,
@@ -223,45 +224,11 @@
 {:else}
   <div class="card node-card">
     <div class="node-head">
-      <div class="node-name">
-        <div class="stat-cap">Name on your blocks</div>
-        {#if editing}
-          <div class="input-with-btn">
-            <input type="text" bind:value={newTag} maxlength="64" spellcheck="false" autocomplete="off" />
-            <button class="ghost" type="button" title="Suggest another name" on:click={() => (newTag = randomTag())}>↻</button>
-          </div>
-        {:else}
-          <div class="node-tag">
-            {st.tag ?? "none set"}
-            <button class="link-btn inline" on:click={editTag} disabled={saving || st.state === "busy"}>Change</button>
-          </div>
-        {/if}
-      </div>
-      {#if !editing}<span class="pill" class:pill-ok={inSync}>{pill}</span>{/if}
+      <h2 class="node-title">Your FreeBank node</h2>
+      <span class="pill" class:pill-ok={inSync}>{pill}</span>
     </div>
     {#if st.adopted && st.background_since}
       <p class="hint bg-note">Running in the background since {when(st.background_since)}.</p>
-    {/if}
-    {#if editing}
-      {#if tagErr}
-        <p class="field-problem">{tagErr}</p>
-      {:else}
-        <p class="hint">
-          {#if st.managed}
-            Saving restarts your node. That takes a minute or so.
-          {:else if external}
-            Your node was started by another program. The name is saved in freebank.conf, and it takes effect when that program restarts the node.
-          {:else}
-            The explorer shows this name on blocks your node wins.
-          {/if}
-        </p>
-      {/if}
-      <div class="row-actions tag-actions">
-        <button on:click={saveTag} disabled={!!tagErr}>Save</button>
-        <button class="secondary" on:click={() => (editing = false)}>Cancel</button>
-      </div>
-    {:else if tagNote}
-      <p class="hint ok-note">{tagNote}</p>
     {/if}
 
     {#if st.state === "up"}
@@ -286,7 +253,7 @@
         <span>{st.state === "busy" ? st.activity : st.reindexing ? REBUILDING : "Your node is starting. That takes a minute or so, longer the first time while it checks the eCash chain."}</span>
       </div>
       <span class="bar"><span class="bar-fill indeterminate" style="width:100%"></span></span>
-      {#if st.log_line && st.log_line !== "Shutdown: done"}<p class="log-line">{st.log_line}</p>{/if}
+      {#if st.log_line && st.log_line !== "Shutdown: done" && friendlyLog(st.log_line)}<p class="log-line">{friendlyLog(st.log_line)}</p>{/if}
     {:else if st.state === "down"}
       <div class="node-quiet-state">
         <span>
@@ -318,6 +285,43 @@
       <p class="muted">{st.message}</p>
     {/if}
 
+    <div class="name-row">
+      <div class="node-name">
+        <div class="stat-cap">Name on your blocks</div>
+        {#if editing}
+          <div class="input-with-btn">
+            <input type="text" bind:value={newTag} maxlength="64" spellcheck="false" autocomplete="off" />
+            <button class="ghost" type="button" title="Suggest another name" on:click={() => (newTag = randomTag())}>↻</button>
+          </div>
+        {:else}
+          <div class="node-tag">
+            {st.tag ?? "none set"}
+            <button class="link-btn inline" on:click={editTag} disabled={saving || st.state === "busy"}>Change</button>
+          </div>
+        {/if}
+      </div>
+    </div>
+    {#if editing}
+      {#if tagErr}
+        <p class="field-problem">{tagErr}</p>
+      {:else}
+        <p class="hint">
+          {#if st.managed}
+            Saving restarts your node. That takes a minute or so.
+          {:else if external}
+            Your node was started by another program. The name is saved in freebank.conf, and it takes effect when that program restarts the node.
+          {:else}
+            The explorer shows this name on blocks your node wins.
+          {/if}
+        </p>
+      {/if}
+      <div class="row-actions tag-actions">
+        <button on:click={saveTag} disabled={!!tagErr}>Save</button>
+        <button class="secondary" on:click={() => (editing = false)}>Cancel</button>
+      </div>
+    {:else if tagNote}
+      <p class="hint ok-note">{tagNote}</p>
+    {/if}
     <button class="wide secondary" on:click={() => openUrl(st?.explorer ?? "")}>Open the explorer ↗</button>
   </div>
 
@@ -325,12 +329,11 @@
 
   <div class="card">
     <dl class="facts versions">
-      <div><dt>App</dt><dd>FreeBank {st.versions.app}</dd></div>
       <div>
         <dt>Node</dt>
         <dd>
           {#if st.versions.node}
-            FreeBank {st.versions.node}{st.versions.commit ? ` (${st.versions.commit})` : ""}
+            FreeBank {st.versions.node}
           {:else if st.state === "up"}
             {ver(st.version)}
           {:else}
@@ -420,7 +423,9 @@
           {/each}
         </ul>
       {/if}
-      {#if st.listens}
+      {#if st.listens && st.peers_local}
+        <p class="hint">Your node takes peers from this computer only (freebank.conf binds the peer port here). It syncs through its own outbound peers.</p>
+      {:else if st.listens}
         <p class="hint">Others can reach you only if port {st.p2p_port} is open to this computer. Without it, you still sync through your own outbound peers.</p>
       {:else}
         <p class="hint">Your node takes no incoming peers (freebank.conf says listen=0). It syncs through its own outbound peers.</p>
@@ -433,8 +438,6 @@
   <div class="card quiet">
     <dl class="facts">
       <div><dt>Data folder</dt><dd class="mono path-dd"><PathText path={st.datadir} /></dd></div>
-      <div><dt>eCash node</dt><dd class="mono">{st.rest}</dd></div>
-      <div><dt>Enforcer</dt><dd class="mono">{st.enforcer}</dd></div>
       <div>
         <dt>Started by</dt>
         <dd class="text-dd">
@@ -469,6 +472,13 @@
   .text-dd {
     word-break: normal;
     overflow-wrap: break-word;
+  }
+  .node-title {
+    margin: 0;
+    font-size: 17px;
+  }
+  .name-row {
+    margin: 14px 0 10px;
   }
   .bg-note {
     margin: 2px 0 14px;

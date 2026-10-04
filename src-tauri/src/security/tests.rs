@@ -306,6 +306,11 @@ fn p2p_is_info() {
     let quiet = p2p_check(&Conf { listen: Some(false), ..Default::default() }, 8455);
     assert_eq!(quiet.level, Level::Info);
     assert!(quiet.detail.contains("listen=0"));
+    // bind= lines on loopback only (the UX walk-through's B5): not public.
+    let local = p2p_check(&parse_conf("bind=127.0.0.1\nwhitebind=noban@127.0.0.1:8456\n"), 8455);
+    assert!(local.title.contains("this computer only"), "{}", local.title);
+    // One bind beyond loopback: public again.
+    assert!(p2p_check(&parse_conf("bind=127.0.0.1\nbind=0.0.0.0\n"), 8455).title.contains("public"));
 }
 
 // ---- Wallet backups ----

@@ -41,5 +41,18 @@ export function nice(e: unknown): string {
   if (/Request failed|error sending request|Connection refused|RPC not configured|busy; try again/i.test(m)) {
     return "Your FreeBank node isn't answering. It may be stopped or still starting; the Node tab shows which.";
   }
+  // Node v0.2.19's refusals for members-only and redeem-only houses.
+  if (/bad-house-not-member/.test(m)) {
+    return "This house's notes can only go to its members, and that address isn't one.";
+  }
+  if (/bad-house-redeem-only/.test(m)) {
+    return "This house's notes pass only between the house and their holder: redeem or demand them instead.";
+  }
+  if (/member op for this house is already in the mempool/i.test(m)) {
+    return "A house's members can change once a block. Try again after the next block.";
+  }
+  if (/house-state-changing op .*already in the mempool/i.test(m)) {
+    return "This house already has a change waiting for the next block. Try again after it.";
+  }
   return m.replace(/^RPC error(?: -?\d+)?: /, "").replace(/^Error: /, "");
 }

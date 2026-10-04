@@ -17,8 +17,8 @@
 //! generic `rpc_call`. Passphrases and words are never logged, stored in the clear, or put in an error.
 
 pub mod commands;
-mod job;
-mod ops;
+pub(crate) mod job;
+pub(crate) mod ops;
 #[cfg(test)]
 mod real_node;
 #[cfg(test)]

@@ -389,7 +389,7 @@ async fn start_and_wait(mgr: &NodeManager, s: &Settings, report: &Report) -> Res
 /// process::child_alive and process::start as they are on a26e147. If the node agent's re-adoption
 /// ("keep the node running after quit") means the app's own node may not be its child, decide `ours`
 /// (and how to start it) here.
-async fn restart_after_encrypt(mgr: &NodeManager, s: &Settings, ours: bool, report: &Report) -> Result<(), String> {
+pub(crate) async fn restart_after_encrypt(mgr: &NodeManager, s: &Settings, ours: bool, report: &Report) -> Result<(), String> {
     if ours {
         report.note("FreeBank stops to finish encrypting the wallet, then starts again.");
         let until = Instant::now() + Duration::from_secs(300);
@@ -408,8 +408,10 @@ async fn restart_after_encrypt(mgr: &NodeManager, s: &Settings, ours: bool, repo
         "Your node was started by another program. It stops now to finish encrypting the wallet: start it \
          again there, and FreeBank carries on.",
     );
-    // First it goes down (or it is already back, with a passphrase)...
-    let until = Instant::now() + Duration::from_secs(180);
+    // First it goes down (or it is already back, with a passphrase: started since, by its uptime; just after
+    // encryptwallet the old process still answers for a moment while it shuts down, so an answer alone isn't enough)...
+    let entered = Instant::now();
+    let until = entered + Duration::from_secs(180);
     loop {
         let p = detect::probe(&mgr.http, s).await;
         if p.state == detect::RpcState::Down {
@@ -417,10 +419,18 @@ async fn restart_after_encrypt(mgr: &NodeManager, s: &Settings, ours: bool, repo
         }
         if p.state == detect::RpcState::Up {
             if let Ok(mut c) = local_client(mgr, s, Duration::from_secs(20)) {
-                if let Ok(i) = c.call_fresh("getwalletinfo", vec![]).await {
-                    if i.get("unlocked_until").is_some() {
-                        report.waiting(false);
-                        return Ok(());
+                let restarted = c
+                    .call_fresh("uptime", vec![])
+                    .await
+                    .ok()
+                    .and_then(|u| u.as_u64())
+                    .is_some_and(|up| up <= entered.elapsed().as_secs() + 1);
+                if restarted {
+                    if let Ok(i) = c.call_fresh("getwalletinfo", vec![]).await {
+                        if i.get("unlocked_until").is_some() {
+                            report.waiting(false);
+                            return Ok(());
+                        }
                     }
                 }
             }

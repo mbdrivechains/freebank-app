@@ -40,6 +40,11 @@ pub const RPC_ALLOWED: &[&str] = &[
     "listhouses",
     "registerhouse",
     "attesthouse",
+    // Node v0.2.19: members-only and redeem-only houses (the list is public; the rest are the house's own changes).
+    "listhousemembers",
+    "addhousemembers",
+    "removehousemembers",
+    "purgehousemembers",
     "listpools",
     "listmylp",
     "swapnote",
@@ -193,6 +198,20 @@ pub struct Conf {
     pub listen: Option<bool>,
     /// An rpcpassword= or rpcauth= line: then the file holds a login.
     pub rpc_login: bool,
+    /// bind= and whitebind= lines: where the peer port listens.
+    pub bind: Vec<String>,
+}
+
+impl Conf {
+    /// Every bind= line keeps the peer port on this computer (and there is at least one).
+    pub fn peers_local_only(&self) -> bool {
+        !self.bind.is_empty()
+            && self.bind.iter().all(|b| {
+                // whitebind=perm@host:port: the address after the permissions.
+                let addr = b.rsplit('@').next().unwrap_or(b);
+                is_loopback_host(host_part(addr))
+            })
+    }
 }
 
 /// Core's InterpretBool: empty is true, else the leading number is.
@@ -220,6 +239,7 @@ pub fn parse_conf(text: &str) -> Conf {
             "rpcallowip" => c.rpcallowip.push(v.to_string()),
             "rpcpassword" | "rpcauth" => c.rpc_login = true,
             "listen" if c.listen.is_none() => c.listen = Some(conf_bool(v)),
+            "bind" | "whitebind" => c.bind.push(v.to_string()),
             "nolisten" if c.listen.is_none() => c.listen = Some(!conf_bool(v)),
             k if k.starts_with("zmqpub") => c.zmq.push((k.to_string(), v.to_string())),
             _ => {}
@@ -371,6 +391,16 @@ pub fn p2p_check(conf: &Conf, port: u16) -> Check {
             Level::Info,
             "Your node takes no incoming peers",
             "freebank.conf says listen=0: your node connects out to other FreeBank nodes, and nothing connects in.",
+            "",
+        );
+    }
+    if conf.peers_local_only() {
+        return Check::new(
+            "p2p",
+            Level::Info,
+            "Your node takes peers from this computer only",
+            "freebank.conf binds the peer port to this computer: your node connects out to other FreeBank nodes, and only \
+             programs on this computer can connect in.",
             "",
         );
     }
@@ -1071,7 +1101,9 @@ pub async fn security_check(
 ) -> Result<Vec<Check>, String> {
     let s = mgr.settings.lock().await.clone();
     let wallet = {
-        let mut c = client.lock().await;
+        // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+        let shared = client.lock().await;
+        let mut c = shared.for_main();
         if !c.is_configured() {
             Ok(None)
         } else {

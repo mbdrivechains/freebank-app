@@ -24,6 +24,10 @@
 
   const dispatch = createEventDispatcher<{ removed: Removed; obliterated: Obliterated }>();
 
+  /** Which part Settings shows (v0.2.6, its index): "connection" (when FreeBank closes, and the connection),
+   *  "startover" (Delete chain data, Remove, Obliterate), or both (setup's gear). */
+  export let part: "all" | "connection" | "startover" = "all";
+
   let info: SetupInfo | null = null;
   let st: NodeStatus | null = null;
   let loadError = "";
@@ -216,6 +220,7 @@
 {/if}
 
 {#if info && st}
+  {#if part !== "startover"}
   <KeepRunning keepRunning={info.settings.keep_running} />
 
   <div class="card">
@@ -234,6 +239,8 @@
     <p class="hint">Saved changes take effect the next time FreeBank starts.</p>
   </div>
 
+  {/if}
+  {#if part !== "connection"}
   <div class="card">
     <h3>Start over</h3>
 
@@ -299,7 +306,8 @@
         {:else}
           <p>
             This stops your node and deletes everything ticked below, for good. The eCash node, the enforcer and
-            BitWindow are not touched.
+            BitWindow are not touched: FreeBank's eCash wallets stay in the eCash node, watch-only (they hold no keys;
+            the bidding key goes with FreeBank's folder).
           </p>
           <ul class="wipe-list">
             {#each plan.items as item (item.id)}
@@ -381,4 +389,5 @@
 
     {#if error}<p class="soft-error">{error}</p>{/if}
   </div>
+{/if}
 {/if}

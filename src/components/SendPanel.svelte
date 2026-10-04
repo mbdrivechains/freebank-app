@@ -43,7 +43,8 @@
 
   $: amountSats = max ? null : parseEcx(amountText);
   $: amountProblem = !max && amountText.trim() !== "" && amountSats === null ? ECX_PROBLEM : "";
-  $: ready = address.trim() !== "" && (max || amountSats !== null);
+  // Nothing to review with nothing to send (v0.2.6, the walk-through: Review was on with 0 available).
+  $: ready = address.trim() !== "" && (max || amountSats !== null) && balance > 0;
   // All three speeds cost the same: one line, no choice.
   $: one = fees?.same ? fees.choices[0] : null;
 
@@ -194,7 +195,7 @@
         <div class="field">
           <span class="sp-label">Speed</span>
           {#if fees && one}
-            <div class="sp-one"><strong>{one.label}</strong><span class="sp-rate">{rateText(one.sat_per_vb)}</span></div>
+            <div class="sp-one"><strong>{one.label}</strong></div>
             <p class="hint">
               {fees.basis === "none"
                 ? "Your node has no fee data yet, so this is the lowest fee. While the network is busy it may take more than one block."
@@ -206,7 +207,6 @@
                 <label class="sp-choice" class:on={speed === c.speed}>
                   <input type="radio" name="send-speed" value={c.speed} bind:group={speed} />
                   <span>{c.label}</span>
-                  <span class="sp-rate">{rateText(c.sat_per_vb)}</span>
                 </label>
               {/each}
             </div>
@@ -302,12 +302,6 @@
   }
   .sp-one strong {
     font-weight: 600;
-  }
-  .sp-rate {
-    margin-left: auto;
-    color: var(--text-secondary);
-    font-size: 13px;
-    white-space: nowrap;
   }
   .sp-facts {
     margin-top: 0;

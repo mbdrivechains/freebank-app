@@ -9,6 +9,11 @@
 
   let refreshing = false;
 
+  // Big: whole coins and two decimals; the other six small, without trailing zeros (the walk-through: eight decimals
+  // read as noise). The exact amount is in the title.
+  $: full = fmtEcx(Math.round(balance * 1e8));
+  $: [main, rest] = [full.slice(0, -6), full.slice(-6).replace(/0+$/, "")];
+
   async function handleRefresh() {
     refreshing = true;
     await onRefresh();
@@ -32,9 +37,12 @@
 </script>
 
 <div class="balance-card">
+  <button class="refresh-btn" on:click={handleRefresh} disabled={refreshing} title="Refresh" aria-label="Refresh">
+    {refreshing ? "…" : "↻"}
+  </button>
   <div class="balance-label">Balance</div>
-  <div class="balance-amount">
-    <span class="value">{fmtEcx(Math.round(balance * 1e8))}</span><span class="unit">{BASE_TICKER}</span>
+  <div class="balance-amount" title="{full} {BASE_TICKER}">
+    <span class="value">{main}<span class="rest">{rest}</span></span><span class="unit">{BASE_TICKER}</span>
   </div>
   {#if pending.unconfirmed > 0 || pending.immature > 0}
     <div class="pending">
@@ -46,9 +54,6 @@
       {/if}
     </div>
   {/if}
-  <button class="refresh-btn" on:click={handleRefresh} disabled={refreshing}>
-    {refreshing ? "..." : "Refresh"}
-  </button>
 </div>
 
 <style>
@@ -60,6 +65,7 @@
     color: white;
     text-align: center;
     margin-bottom: 16px;
+    position: relative;
   }
 
   .balance-label {
@@ -96,12 +102,24 @@
     color: #f3d38b;
   }
 
+  .balance-amount .rest {
+    font-size: 0.5em;
+    opacity: 0.7;
+  }
+
   .refresh-btn {
-    background: rgba(255, 255, 255, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.25);
     color: white;
-    padding: 8px 16px;
-    border-radius: 8px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 16px;
+    line-height: 1;
     cursor: pointer;
   }
 

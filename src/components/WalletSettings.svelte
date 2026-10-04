@@ -1,4 +1,6 @@
 <script lang="ts">
+  // The words' coverage: one sentence, the detail behind More (v0.2.6).
+  let coverageMore = false;
   // Settings > Wallet (desktop, the node on this computer).
   //   What the wallet is: its file, passphrase and lock, balances, transactions, key pool, the HD
   //   seed's id, FreeBank's recovery words, the last backup.
@@ -13,6 +15,7 @@
   import { fmtEcx } from "../lib/amount";
   import { BASE_TICKER } from "../lib/brand";
   import { nice } from "../lib/errors";
+  import { walletList } from "../lib/wallets";
   import {
     MAX_BACKUP_BYTES,
     WORD_COUNT,
@@ -231,7 +234,11 @@
 </script>
 
 <div class="card wallet-card">
-  <h3>Wallet</h3>
+  <!-- It acts on the main wallet whichever the header chose (the phone and the words' protection are the main one's). -->
+  <h3>{$walletList.length > 1 ? "Main wallet" : "Wallet"}</h3>
+  {#if $walletList.length > 1 && !$walletList.find((w) => w.active && w.name === null)}
+    <p class="muted small">This is your main wallet, whichever one the header shows.</p>
+  {/if}
   {#if loadError}
     <p class="soft-error">{loadError}</p>
   {:else if !info}
@@ -394,11 +401,17 @@
     </div>
 
     <p class="hint coverage">
-      Your {WORD_COUNT} recovery words cover every address this wallet makes from them, but not keys added by hand. From FreeBank
-      app 0.3.0 they also cover the app's eCash wallet. Other wallets can't read FreeBank's addresses from the words
-      directly, but a BIP85 tool can rebuild this wallet from them: its "WIF" for these words at index 0 (the HD-Seed WIF
-      application, <span class="mono">{info.bip85_path}</span>) is this wallet's seed, which a FreeBank node takes with
-      <span class="mono">sethdseed</span>.
+      Your {WORD_COUNT} recovery words cover this wallet and the app's eCash wallets, every address made from them (not keys
+      added by hand).
+      {#if coverageMore}
+        The eCash wallets are standard BIP84 wallets (accounts 0 and 1), so any BIP84 wallet finds them from the words.
+        Other wallets can't read FreeBank's addresses from the words directly, but a BIP85 tool can rebuild this wallet
+        from them: its "WIF" for these words at index 0 (the HD-Seed WIF application,
+        <span class="mono">{info.bip85_path}</span>) is this wallet's seed, which a FreeBank node takes with
+        <span class="mono">sethdseed</span>.
+      {:else}
+        <button class="link-btn inline" on:click={() => (coverageMore = true)}>More</button>
+      {/if}
     </p>
   {/if}
 </div>

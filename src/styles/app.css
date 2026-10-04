@@ -80,6 +80,7 @@ header h1 {
 }
 
 header .network {
+  white-space: nowrap;
   font-size: 12px;
   color: var(--text-secondary);
   border: 1px solid var(--border-color);
@@ -87,25 +88,43 @@ header .network {
   border-radius: 999px;
 }
 
-/* Navigation: one scrollable row of tabs */
+/* Navigation: four tabs (v0.2.6). It wraps rather than scrolls, so no tab can sit out of sight (the UX walk-through
+   found the ninth tab unreachable behind a hidden scrollbar). Segments (Credit's, eCash's, Settings' index) use the
+   same look, a little smaller. */
 nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 18px;
   padding: 4px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
 
-nav::-webkit-scrollbar {
-  display: none;
+nav.segments {
+  margin-bottom: 14px;
+  border-radius: 10px;
+}
+
+nav.segments button {
+  font-size: 12.5px;
+  padding: 6px 8px;
+}
+
+/* Settings' index: even rows of three, nothing stretched alone on a second row (the walk-through). */
+nav.settings-index {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+nav.settings-index button {
+  white-space: normal;
+  line-height: 1.2;
 }
 
 nav button {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   padding: 7px 10px;
   border: none;
   background: transparent;
@@ -167,7 +186,8 @@ nav button.active {
   color: var(--text-secondary);
 }
 
-input[type="text"], input[type="number"], input[type="password"], .form input {
+/* Text boxes look like the inputs (v0.2.6: an empty box in the report dialog showed the browser's red border). */
+input[type="text"], input[type="number"], input[type="password"], .form input, textarea, select {
   padding: 11px 12px;
   border: 1px solid var(--border-color);
   border-radius: 10px;
@@ -178,7 +198,7 @@ input[type="text"], input[type="number"], input[type="password"], .form input {
   width: 100%;
 }
 
-input:focus {
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px var(--accent-tint);
@@ -353,6 +373,8 @@ button:focus-visible {
 .address-display button {
   padding: 12px;
   font-size: 14px;
+  /* Its own height beside a long link, not the link's (v0.2.6, the pairing link). */
+  align-self: flex-start;
 }
 
 /* QR placeholder */
@@ -430,6 +452,10 @@ button:focus-visible {
 
 .badge-o { background: rgba(76, 175, 80, 0.25); color: #7bd47f; }
 .badge-s { background: rgba(255, 152, 0, 0.2); color: #ffb74d; }
+/* A members-only or redeem-only house (node v0.2.19). */
+.badge-members { background: rgba(120, 144, 255, 0.2); color: #9fb0ff; margin-left: 4px; }
+.member-row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.member-row .mono { word-break: break-all; }
 .badge-d { background: rgba(255, 193, 7, 0.2); color: #ffd54f; }
 .badge-i { background: rgba(244, 67, 54, 0.2); color: #ef9a9a; }
 .badge-w { background: var(--border-color); color: var(--text-secondary); }
@@ -1578,4 +1604,50 @@ button.secondary.danger-text:not(:disabled):hover {
   text-align: center;
   font-size: 11.5px;
   color: #6b7480;
+}
+
+
+/* Home's Send / Receive / From eCash (v0.2.6): open in place, as on the phone page. */
+.home-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 12px 0;
+}
+.home-actions button {
+  padding: 10px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-color);
+  font-weight: 600;
+  cursor: pointer;
+}
+.home-actions button.active {
+  border-color: var(--accent-color, #d9a441);
+  color: var(--accent-color, #d9a441);
+}
+
+/* The header's wallet switcher (v0.2.6, several wallets). */
+.wallet-pick option {
+  background: var(--bg-secondary);
+  color: var(--text-color);
+}
+
+/* A narrow window with the wallet switcher: the mark alone, so the switcher and the network fit on one line. */
+@media (max-width: 420px) {
+  header:has(.wallet-pick) .app-name {
+    display: none;
+  }
+  .head-right {
+    gap: 6px;
+  }
+}
+
+.wallet-pick {
+  width: auto;
+  max-width: 140px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  border-radius: 999px;
 }

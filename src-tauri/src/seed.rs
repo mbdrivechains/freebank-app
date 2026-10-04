@@ -54,10 +54,11 @@ pub enum Chain {
 }
 
 impl Chain {
-    /// getblockchaininfo's `chain`.
+    /// getblockchaininfo's `chain`. Node v0.2.19 calls beta "beta" (it said "main"): the same keys and
+    /// prefixes as before.
     pub fn from_name(name: &str) -> Result<Chain, String> {
         match name {
-            "main" => Ok(Chain::Main),
+            "main" | "beta" => Ok(Chain::Main),
             "regtest" => Ok(Chain::Regtest),
             other => Err(format!("FreeBank doesn't know the network \"{}\".", other)),
         }
@@ -180,7 +181,7 @@ fn hmac_sha512(key: &[u8], msg: &[u8]) -> Zeroizing<[u8; 64]> {
     Zeroizing::new(Hmac::<sha512::Hash>::from_engine(engine).to_byte_array())
 }
 
-fn hardened(path: &[u32]) -> Result<Vec<ChildNumber>, String> {
+pub(crate) fn hardened(path: &[u32]) -> Result<Vec<ChildNumber>, String> {
     path.iter()
         .map(|&i| ChildNumber::from_hardened_idx(i).map_err(|e| e.to_string()))
         .collect()
@@ -188,7 +189,7 @@ fn hardened(path: &[u32]) -> Result<Vec<ChildNumber>, String> {
 
 /// Wipe an extended key's secret parts before it is dropped. (secp256k1 keys don't wipe themselves;
 /// this is the best the library allows.)
-fn wipe(x: &mut Xpriv) {
+pub(crate) fn wipe(x: &mut Xpriv) {
     x.private_key.non_secure_erase();
     x.chain_code = ChainCode::from([0u8; 32]);
 }
@@ -203,7 +204,7 @@ pub fn bip85_entropy(root: &Xpriv, path: &[u32]) -> Result<Zeroizing<[u8; 64]>, 
 }
 
 /// The BIP32 root of the words' BIP39 seed (empty BIP39 passphrase).
-fn words_root(entropy: &[u8; 32]) -> Result<Xpriv, String> {
+pub(crate) fn words_root(entropy: &[u8; 32]) -> Result<Xpriv, String> {
     let m = bip39::Mnemonic::from_entropy_in(bip39::Language::English, entropy).map_err(|e| e.to_string())?;
     let seed = Zeroizing::new(m.to_seed_normalized(""));
     Xpriv::new_master(NetworkKind::Main, &*seed).map_err(|e| e.to_string())
@@ -221,7 +222,21 @@ pub fn freebank_hd_seed(entropy: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, Strin
 /// entropy at m/83696968'/2'/0', the secret of the WIF a BIP85 tool shows. It must be a valid secp256k1
 /// key; BIP85 says to fail hard otherwise (odds below 1 in 2^127).
 pub fn hd_seed_from_root(root: &Xpriv) -> Result<Zeroizing<[u8; 32]>, String> {
-    let full = bip85_entropy(root, &BIP85_PATH)?;
+    hd_seed_at_index(root, 0)
+}
+
+/// The HD seed of the words' wallet number `index` (v0.2.6, several wallets): BIP85's HD-Seed WIF at m/83696968'/2'/i'.
+/// Index 0 is the main wallet; each other wallet made from the words takes the next index, so the words and the index
+/// bring it back (any BIP85 tool shows the same WIF).
+pub fn hd_seed_at(entropy: &[u8; 32], index: u32) -> Result<Zeroizing<[u8; 32]>, String> {
+    let mut root = words_root(entropy)?;
+    let s = hd_seed_at_index(&root, index);
+    wipe(&mut root);
+    s
+}
+
+fn hd_seed_at_index(root: &Xpriv, index: u32) -> Result<Zeroizing<[u8; 32]>, String> {
+    let full = bip85_entropy(root, &[BIP85_PATH[0], BIP85_PATH[1], index])?;
     let mut seed = Zeroizing::new([0u8; 32]);
     seed.copy_from_slice(&full[..32]);
     if SecretKey::from_slice(&*seed).is_err() {
@@ -673,6 +688,16 @@ mod tests {
         }
     }
 
+    /// The words' other wallets (v0.2.6): BIP85's HD-Seed WIF at index 1 and 2, worked out independently the same way
+    /// (Python: PBKDF2 for the BIP39 seed, hardened BIP32 by hand, the BIP85 HMAC); index 0 is the main wallet.
+    #[test]
+    fn the_words_other_wallets_are_bip85_indexes() {
+        let z = [0u8; 32];
+        assert_eq!(*hd_seed_at(&z, 0).unwrap(), *freebank_hd_seed(&z).unwrap());
+        assert_eq!(hex::encode(*hd_seed_at(&z, 1).unwrap()), "993396dd3b60a2eb780d5a48a061a1d355678b1f6b12e2fde24023cd3627e283");
+        assert_eq!(hex::encode(*hd_seed_at(&z, 2).unwrap()), "5a575e8c09c7792eb97c73bf0ba44f8fa7ab91ca5a748a34a15c6f571eb7c71b");
+    }
+
     /// What freebankd v0.2.16 itself reported for the first vector's words ("abandon … art"): given
     /// their BIP85 WIF with `sethdseed true "L1Zxb…"` on a main-network wallet, getwalletinfo's
     /// hdmasterkeyid, the first getnewaddress "" legacy (m/0'/0'/0'), the first getrawchangeaddress
@@ -706,6 +731,7 @@ mod tests {
         // The master xprv is BIP32's root of the 32 bytes.
         assert_eq!(master_xprv(&s, Chain::Main).unwrap().as_str(), Xpriv::new_master(NetworkKind::Main, &s).unwrap().to_string());
         assert_eq!(Chain::from_name("main"), Ok(Chain::Main));
+        assert_eq!(Chain::from_name("beta"), Ok(Chain::Main));
         assert_eq!(Chain::from_name("regtest"), Ok(Chain::Regtest));
         assert!(Chain::from_name("test").is_err());
     }

@@ -1539,7 +1539,8 @@ async fn confirming_on_a_locked_wallet_asks_for_the_passphrase_for_that_send() {
     h.rpc.forget_calls();
     let c = h.phone.confirm_send(&confirm, true, pass(PASS)).await.unwrap();
     let txid = c.txid.clone().unwrap();
-    assert_eq!(h.rpc.methods(), ["getwalletinfo", "walletpassphrase", "sendtoaddress", "walletlock"]);
+    // The balance first (enough), then the one-off unlock.
+    assert_eq!(h.rpc.methods(), ["getbalance", "getwalletinfo", "walletpassphrase", "sendtoaddress", "walletlock"]);
     assert!(!h.rpc.unlocked());
     assert_eq!(sim.open(&h.next().await["d"]), json!({"id": 8, "pending": confirm, "ok": {"txid": txid}}));
     assert!(h.phone.held().is_empty());
@@ -1591,7 +1592,8 @@ async fn the_passphrase_stays_in_memory() {
     let mut replies = vec![];
     h.phone.phone_send_on(Zeroizing::new(PASS.into())).await.unwrap();
     replies.push(ask(&mut h, &mut sim, 1, 1, "send", json!({"address": TO, "amount": 0.01})).await);
-    replies.push(ask(&mut h, &mut sim, 1, 2, "send", json!({"address": TO, "amount": 5})).await);
+    // Over the phone's limit, so held; within the stand-in wallet's 1.5 ECX, so it can be paid.
+    replies.push(ask(&mut h, &mut sim, 1, 2, "send", json!({"address": TO, "amount": 1})).await);
     let confirm = replies[1]["ok"]["pending"].as_str().unwrap().to_string();
     h.phone.forget_passphrase();
     replies.push(ask(&mut h, &mut sim, 1, 3, "send", json!({"address": TO, "amount": 0.01})).await);
@@ -2281,7 +2283,7 @@ async fn the_phone_sees_its_notes_and_the_houses() {
     assert_eq!(
         r["ok"][0],
         json!({"house": 3, "name": "Bank of Leith", "state": "o", "state_name": "Open", "amount": 0.05, "demanded": 0.0,
-               "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000})
+               "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000, "type": "open"})
     );
     // Suspended: only the demanded notes can be redeemed, with their interest.
     assert_eq!(r["ok"][1]["state_name"], "Suspended");
@@ -2292,8 +2294,17 @@ async fn the_phone_sees_its_notes_and_the_houses() {
     assert_eq!(
         r["ok"][1],
         json!({"house": 4, "name": "Ayr Bank", "state": "d", "state_name": "Suspended", "ratio_bps": 6000,
-               "outstanding": 0.4, "reserves": 0.24, "attested_at": 100, "rate_bps": 1000})
+               "outstanding": 0.4, "reserves": 0.24, "attested_at": 100, "rate_bps": 1000, "type": "open"})
     );
+}
+
+#[test]
+fn the_phone_hears_a_houses_type() {
+    // Node v0.2.19's members-only and redeem-only houses; older nodes say nothing: open.
+    assert_eq!(house_view(&json!({"id": 1, "type": "members"}))["type"], "members");
+    assert_eq!(house_view(&json!({"id": 2, "type": "redeem"}))["type"], "redeem");
+    assert_eq!(house_view(&json!({"id": 3}))["type"], "open");
+    assert_eq!(house_view(&json!({"id": 4, "type": "something new"}))["type"], "open");
 }
 
 #[tokio::test]
@@ -2368,7 +2379,7 @@ async fn a_demand_the_node_refuses_says_what_to_do() {
     h.rpc.fail_send.store(true, Ordering::SeqCst);
     let r = ask(&mut h, &mut sim, 1, 1, "note-demand", json!({"house": 4, "amount": 0.01})).await;
     let e = r["err"].as_str().unwrap();
-    assert!(e.contains("sum exactly") && e.contains("one of your own addresses"), "{e}");
+    assert!(e.contains("sum exactly") && e.contains("gather them first on your desktop"), "{e}");
     assert!((limit_left(&mut h, &mut sim, 1).await - 0.1).abs() < 1e-12, "a failed demand gives the limit back");
 }
 
@@ -2754,6 +2765,17 @@ fn the_credit_tabs_payments_cost_what_leaves_the_wallet() {
     assert_eq!(cost("attesthouse", json!([3, 0.001]), None), Some(fee));
     // A house's pledges are locked away from this wallet's spending (re-review L1).
     assert_eq!(cost("registerhouse", json!([1, 1, "leith", 1000, [1.5, 0.5], 0.001]), None), Some(2 * ECX + fee));
+    // Node v0.2.19's optional arguments after the fee: a house's type, a mint's address.
+    assert_eq!(cost("registerhouse", json!([1, 1, "leith", 1000, [1.5, 0.5], 0.001, "members"]), None), Some(2 * ECX + fee));
+    // To an address: the notes count (review M1); to this wallet: the fee only.
+    assert_eq!(cost("mintnote", json!([3, 500, 0.001, TO]), None), Some(500 + fee));
+    assert_eq!(cost("mintnote", json!([3, 500, 0.001]), None), Some(fee));
+    // The member list's changes pay their fee.
+    assert_eq!(cost("addhousemembers", json!([3, [TO, TO], 0.001]), None), Some(fee));
+    assert_eq!(cost("removehousemembers", json!([3, [TO], 0.001]), None), Some(fee));
+    assert_eq!(cost("purgehousemembers", json!([3, 0.001]), None), Some(fee));
+    let (_, what) = credit_payment("addhousemembers", json!([3, [TO, TO], 0.001]).as_array().unwrap(), None).unwrap();
+    assert_eq!(what, Approve::Action { text: "Add 2 members to house #3".into(), sats: Some(fee) });
     // What can't be read counts as more than any day's amount: a phone is asked.
     assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), None), Some(u64::MAX));
     assert_eq!(cost("swapnote", json!([1, "btxfornote", "lots", 1, 0.001]), None), Some(u64::MAX));
@@ -2945,4 +2967,19 @@ fn a_phone_link_that_failed_to_start_refuses_while_the_setting_is_on() {
     store.save_config(&Config { approve_over: Some(5), ..Config::default() }).unwrap();
     assert!(state.guard(&dir).err().is_some_and(|e| e.contains("didn't start")));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_held_send_the_wallet_cant_pay_says_so_before_the_passphrase() {
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    // 2 ECX: over the phone's limit (held), more than the stand-in wallet's 1.5.
+    let r = ask(&mut h, &mut sim, 1, 1, "send", json!({"address": TO, "amount": 2})).await;
+    let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
+    h.rpc.forget_calls();
+    let e = h.phone.confirm_send(&confirm, true, None).await.unwrap_err();
+    assert!(e.starts_with("Not enough ECX: the wallet has 1.5 and this payment is 2"), "{e}");
+    assert_eq!(h.rpc.methods(), ["getbalance"], "no unlock, no send");
+    assert_eq!(h.phone.held().len(), 1, "it keeps waiting");
 }

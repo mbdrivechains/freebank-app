@@ -73,6 +73,9 @@
     }
   }
 
+  // Its explanation: two sentences, the rest behind More (v0.2.6, the walk-through counted 14 lines).
+  let approveMore = false;
+  let iphoneMore = false;
   // "Approve sends on my phone" (v0.2.5; operator 2026-10-02: "yes..opt in I assume"; reworked after the security
   // review, operator 2026-10-03: "yes to that"): once this computer's payments in a day would come to more than the
   // amount, a phone's Face ID first. Off, or a higher amount, takes the phone too, or the recovery words and a day.
@@ -351,7 +354,7 @@
   }
 
   const STATE_TEXT: Record<string, string> = {
-    off: "Not connected: no phone is paired.",
+    off: "Not connected.",
     connecting: "Connecting to the relay…",
     online: "Connected to the relay.",
     retrying: "Can't reach the relay.",
@@ -375,6 +378,11 @@
       return held.some((h) => h.confirm === id) ? "waiting for you" : "was held for your answer";
     }
     if (s.result === "sent" && s.held) return "sent after you allowed it";
+    // Why it failed, as the phone heard it (v0.2.6, the walk-through: the list said "failed" and no more).
+    if (s.result === "failed" && typeof s.detail === "string" && s.detail) {
+      const why = s.detail.replace(/^RPC error(?: -?\d+)?: /, "");
+      return `failed: ${why.length > 120 ? why.slice(0, 117) + "…" : why}`;
+    }
     return RESULT_TEXT[s.result] ?? s.result;
   }
 
@@ -416,13 +424,18 @@
         your own phone.
       </p>
       <p class="hint">
-        <strong>On an iPhone,</strong> FreeBank belongs on the Home Screen. The first time, scan this code with the
-        Camera app: the page it opens shows how to add FreeBank to the Home Screen. Then open FreeBank there and tap
-        <strong>Scan the code on your desktop</strong>. The Home Screen app keeps its own storage, apart from Safari, so
-        it needs its own pairing, even if Safari has one, and shows here as a second phone. If its camera won't open,
-        click Copy and tap <strong>Paste pairing link</strong> there: a Mac's Universal Clipboard passes the link to
-        your iPhone.
+        <strong>On an iPhone,</strong> scan this with the Camera app: the page it opens shows how to put FreeBank on your
+        Home Screen, where it pairs.
+        {#if !iphoneMore}<button class="link-btn inline" on:click={() => (iphoneMore = true)}>More</button>{/if}
       </p>
+      {#if iphoneMore}
+        <p class="hint">
+          Then open FreeBank on the Home Screen and tap <strong>Scan the code on your desktop</strong>. The Home Screen app
+          keeps its own storage, apart from Safari, so it needs its own pairing, even if Safari has one, and shows here as
+          a second phone. If its camera won't open, click Copy and tap <strong>Paste pairing link</strong> there: a Mac's
+          Universal Clipboard passes the link to your iPhone.
+        </p>
+      {/if}
       <div class="row-actions">
         <button class="secondary" on:click={() => (pair = null)}>Close</button>
       </div>
@@ -610,17 +623,22 @@
       </label>
       <p class="hint">
         Once this computer's payments in a day come to more than the amount, your phone approves the next one with Face
-        ID. Every payment FreeBank makes here counts, with its fee: Send, Speed up, notes, bills, pools and houses, and a
-        phone's payment you confirm here. Your phone also approves what would get round it: showing your recovery words,
-        a new wallet or a restore, Obliterate, pairing another phone, Face ID on another phone or removing it, a higher
-        daily limit for a phone, and turning this off or raising the amount. Lost your phone? Your recovery words turn
-        it off a day later; your phones can cancel that while FreeBank is open on them.
+        ID. It guards FreeBank, not the node directly.
+        {#if !approveMore}<button class="link-btn inline" on:click={() => (approveMore = true)}>More</button>{/if}
       </p>
-      <p class="hint">
-        It guards FreeBank, not the node: someone with this computer and your wallet passphrase could still use the
-        node directly, copy the wallet, or change FreeBank's files or this computer's clock. A phone still pays within
-        its own daily limit without asking.
-      </p>
+      {#if approveMore}
+        <p class="hint">
+          Every payment FreeBank makes here counts, with its fee: Send, Speed up, eCash, notes, bills, pools and houses,
+          and a phone's payment you confirm here. Your phone also approves what would get round it: showing your recovery
+          words, a new wallet or a restore, Obliterate, pairing another phone, Face ID on another phone or removing it, a
+          higher daily limit for a phone, and turning this off or raising the amount. Lost your phone? Your recovery
+          words turn it off a day later; your phones can cancel that while FreeBank is open on them.
+        </p>
+        <p class="hint">
+          Someone with this computer and your wallet passphrase could still use the node directly, copy the wallet, or
+          change FreeBank's files or this computer's clock. A phone still pays within its own daily limit without asking.
+        </p>
+      {/if}
       {#if approve.over === null && approve.approvers === 0}
         <p class="hint">First turn Face ID on in FreeBank on your phone (its Settings).</p>
       {:else}

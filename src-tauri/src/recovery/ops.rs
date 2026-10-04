@@ -33,7 +33,7 @@ pub(crate) fn open_saved(app_dir: &Path, pass: &str) -> Result<(seed::Entropy, [
     }
 }
 
-async fn open_saved_blocking(app_dir: &Path, pass: &Zeroizing<String>) -> Result<(seed::Entropy, [u8; 20]), String> {
+pub(crate) async fn open_saved_blocking(app_dir: &Path, pass: &Zeroizing<String>) -> Result<(seed::Entropy, [u8; 20]), String> {
     let (dir, p) = (app_dir.to_path_buf(), pass.clone());
     tokio::task::spawn_blocking(move || open_saved(&dir, &p)).await.map_err(|e| e.to_string())?
 }

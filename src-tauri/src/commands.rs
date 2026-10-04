@@ -15,7 +15,9 @@ pub struct Transaction {
     pub confirmations: i64,
     pub time: i64,
     pub address: Option<String>,
-    pub category: String, // "send" or "receive"
+    pub category: String, // "send", "receive", or for a block this wallet won "generate" / "immature" / "orphan"
+    /// The block it is in, when confirmed.
+    pub blockheight: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -136,6 +138,7 @@ pub async fn get_transactions(
             time: tx["time"].as_i64().unwrap_or(0),
             address: tx["address"].as_str().map(|s| s.to_string()),
             category: tx["category"].as_str().unwrap_or("unknown").to_string(),
+            blockheight: tx["blockheight"].as_i64(),
         })
         .collect();
 

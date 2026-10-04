@@ -22,7 +22,9 @@ and the Mac app update themselves: **Update and restart** downloads the new vers
 an update only when the release's `SHA256SUMS` carries the release key's signature (below) and the package matches its
 line there: the same check FreeBank makes before installing the node. The `.deb` updates with Software Updater once
 [FreeBank's apt repository](https://apt.ecxfreebank.com) is set up, or with the new `.deb` from the releases page. apt
-checks the repository's own signing key, which the release workflow holds, not the release key.
+checks the repository's own signing key, which the release workflow holds, not the release key. From v0.2.6 a version
+reaches the apt repository only after its `SHA256SUMS` carries the release key's signature, checked again by the
+workflow that publishes it (`.github/workflows/apt.yml`).
 
 ### Verify your download
 
@@ -66,6 +68,12 @@ Your wallet lives in your own `freebankd` node, and the app runs it for you.
 - **Approve sends on my phone** (v0.2.5, opt in). Once this computer's payments in a day come to more than an amount
   you set, your phone approves the next one with Face ID. It guards the app, not the node: someone with this computer
   and your wallet passphrase could still use the node directly.
+- **Your eCash in the app** (v0.2.6). Two wallets of FreeBank's own in your eCash node (BitWindow's, or one you run),
+  both from the same 24 words: your eCash wallet, which your passphrase opens for each payment, and a small bidding
+  wallet for bidding on FreeBank blocks, holding only what you move into it. The eCash node only watches them:
+  FreeBank checks and signs every payment itself.
+- **Several wallets** (v0.2.6, with the FreeBank node v0.2.19): more wallets from the same words, or a wallet file you
+  already have. Your phone always uses the main wallet.
 - Advanced: the app can also connect to your own node on another computer, over Tailscale.
 
 ## First run (desktop)
@@ -79,6 +87,9 @@ the app just connects to it.
 
 ## Features
 
+Four tabs: **Home** (balance, Send, Receive, From eCash), **Credit** (notes, houses, pools, bills), **eCash** (wallet,
+bidding) and **Node**, with Settings behind the gear.
+
 - Connect to a `freebankd` node via RPC (local / Tailscale / custom)
 - Balance and every amount in **ECX**, the only unit while gold is switched off; transaction
   history
@@ -86,18 +97,21 @@ the app just connects to it.
   confirmations up to 3; **Speed up** while a payment waits; **History** with CSV export
 - **Receive** and **Deposit** (from eCash, through BitWindow) with QR codes; coins still arriving show on Home
 - **Wallet** (Settings): passphrase, recovery words, back up, restore from a file or from the words, change
-  passphrase
+  passphrase; your wallets (more from the same words, or a wallet file), with a switcher in the header
 - **Security** (Settings): the wallet's passphrase, the node's ports, old unencrypted backups, file permissions and
   the node program's signature, with red items on Home until fixed
 - **Phone remote**: pair a phone, set its daily limit, allow or refuse bigger payments here; notes and houses on the
   phone; approve this computer's bigger payments on the phone
 - Keep the node running after you close the app
 - **Notes** — hold / mint / send / redeem / demand, per issuing house
-- **Houses** — directory, registration, reserve attestation
+- **Houses** — directory, registration, reserve attestation; open, members-only or redeem-only houses and their
+  members (node v0.2.19)
 - **Clearing pools** — swap notes ↔ ECX, add/remove liquidity, LP positions
 - **Bills of exchange** — issue / endorse / retire / claim escrow
-- (Planned) v0.3.0: the app's own eCash wallet, and Deposit and Withdraw three ways (at par, atomic swap, money
-  changer); v0.4.0: bidding for FreeBank blocks
+- **eCash wallet** — receive, send, history; move coins into the bidding wallet and back, each with its fee shown
+- **Bid for FreeBank blocks** — off unless you turn it on: a bid on each eCash block from the bidding wallet, up to a
+  daily cap you set; a block you win pays your FreeBank wallet
+- (Planned) Deposit and Withdraw three ways (at par, atomic swap, money changer)
 
 ## Quick Start
 

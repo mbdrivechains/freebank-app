@@ -16,7 +16,9 @@ type Mgr = Arc<NodeManager>;
 /// and what else the banner and the first-run flow need.
 #[tauri::command]
 pub async fn wallet_protection(client: State<'_, ClientState>, mgr: State<'_, Mgr>) -> Result<Protection, String> {
-    let mut c = client.lock().await;
+    // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+    let shared = client.lock().await;
+    let mut c = shared.for_main();
     protection(&mut c, &mgr).await
 }
 
@@ -25,7 +27,9 @@ pub async fn wallet_protection(client: State<'_, ClientState>, mgr: State<'_, Mg
 pub async fn wallet_info(client: State<'_, ClientState>, mgr: State<'_, Mgr>) -> Result<WalletInfo, String> {
     // Copies of backup files chosen earlier and never restored go now.
     ops::forget_uploads(&mgr.app_dir);
-    let mut c = client.lock().await;
+    // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+    let shared = client.lock().await;
+    let mut c = shared.for_main();
     info(&mut c, &mgr).await
 }
 
@@ -54,7 +58,9 @@ pub async fn wallet_setup_start(
     mgr.still_here()?;
     if !fresh {
         let p = {
-            let mut c = client.lock().await;
+            // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+            let shared = client.lock().await;
+            let mut c = shared.for_main();
             protection(&mut c, &mgr).await?
         };
         if p.protected {
@@ -97,7 +103,9 @@ pub fn wallet_setup_words() -> Option<Words> {
 pub async fn wallet_words_confirmed(client: State<'_, ClientState>, mgr: State<'_, Mgr>) -> Result<(), String> {
     mgr.still_here()?;
     let id = {
-        let mut c = client.lock().await;
+        // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+        let shared = client.lock().await;
+        let mut c = shared.for_main();
         c.call_ui("getwalletinfo", vec![]).await?["hdmasterkeyid"].as_str().map(String::from)
     };
     let mut r = Record::load(&mgr.app_dir);
@@ -128,7 +136,9 @@ pub async fn wallet_reveal(
 ) -> Result<ops::Revealed, String> {
     let passphrase = Zeroizing::new(passphrase);
     let r = {
-        let mut c = client.lock().await;
+        // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+        let shared = client.lock().await;
+        let mut c = shared.for_main();
         ops::reveal(&mgr.app_dir, &mut c, passphrase, &what).await?
     };
     if let Some(p) = phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some()) {
@@ -154,7 +164,9 @@ pub async fn wallet_change_passphrase(
     let (old, new) = (Zeroizing::new(old), Zeroizing::new(new));
     mgr.still_here()?;
     let changed = {
-        let mut c = client.lock().await;
+        // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+        let shared = client.lock().await;
+        let mut c = shared.for_main();
         ops::change_passphrase(&mgr.app_dir, &mut c, old, new).await?
     };
     passphrase_changed(&app);
@@ -182,7 +194,9 @@ pub async fn wallet_backup_now(app: AppHandle, client: State<'_, ClientState>, m
         .filter(|d| d.is_dir())
         .or_else(|| path.home_dir().ok())
         .ok_or("FreeBank couldn't find your Documents folder or your home folder.")?;
-    let mut c = client.lock().await;
+    // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+    let shared = client.lock().await;
+    let mut c = shared.for_main();
     ops::backup(&mgr, &mut c, &folder).await
 }
 
@@ -225,7 +239,9 @@ pub async fn wallet_restore_file_start(
 /// The coins that "Move my coins to the new words" would move.
 #[tauri::command]
 pub async fn wallet_move_plan(client: State<'_, ClientState>) -> Result<ops::MovePlan, String> {
-    let mut c = client.lock().await;
+    // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+    let shared = client.lock().await;
+    let mut c = shared.for_main();
     ops::move_plan(&mut c).await
 }
 
@@ -233,6 +249,8 @@ pub async fn wallet_move_plan(client: State<'_, ClientState>) -> Result<ops::Mov
 /// screen runs it inside withUnlock.
 #[tauri::command]
 pub async fn wallet_move_coins(client: State<'_, ClientState>) -> Result<ops::Moved, String> {
-    let mut c = client.lock().await;
+    // The main wallet, whichever the screens chose (v0.2.6, several wallets).
+    let shared = client.lock().await;
+    let mut c = shared.for_main();
     ops::move_coins(&mut c).await
 }

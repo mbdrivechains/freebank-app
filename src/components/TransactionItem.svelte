@@ -7,24 +7,29 @@
   /** A faster send replaced it (Speed up). */
   export let replaced = false;
 
-  $: isReceive = tx.category === "receive";
-  $: formattedAmount = (isReceive ? "+" : "") + tx.amount.toFixed(8);
+  // A block this wallet won by bidding (its coinbase): not a send. It pays the block's fees, often nothing on beta.
+  $: won = tx.category === "generate" || tx.category === "immature" || tx.category === "orphan";
+  $: isReceive = tx.category === "receive" || (won && tx.amount > 0);
+  $: wonLabel =
+    tx.category === "orphan" ? "Won block, not kept" : `Won FreeBank block${tx.blockheight ? ` ${tx.blockheight}` : ""}`;
+  $: formattedAmount = won && tx.amount === 0 ? "no fees" : (isReceive ? "+" : "") + tx.amount.toFixed(8);
   $: formattedDate = new Date(tx.time * 1000).toLocaleDateString();
 </script>
 
-<div class="tx-item" class:receive={isReceive} class:send={!isReceive}>
+<div class="tx-item" class:receive={isReceive && !won} class:send={!isReceive && !won} class:won>
   <div class="tx-icon">
-    {isReceive ? "↓" : "↑"}
+    {won ? "★" : isReceive ? "↓" : "↑"}
   </div>
   <div class="tx-details">
-    <div class="tx-type">{isReceive ? "Received" : "Sent"}</div>
+    <div class="tx-type">{won ? wonLabel : isReceive ? "Received" : "Sent"}</div>
+    {#if tx.category === "immature" && tx.amount > 0}<div class="tx-date">Spendable after 100 blocks</div>{/if}
     <div class="tx-date">{formattedDate}</div>
     {#if tx.address}
       <div class="tx-address">{tx.address.slice(0, 12)}...</div>
     {/if}
   </div>
-  <div class="tx-amount" class:positive={isReceive} class:negative={!isReceive}>
-    {formattedAmount} {BASE_TICKER}
+  <div class="tx-amount" class:positive={isReceive} class:negative={!isReceive && !won}>
+    {formattedAmount}{won && tx.amount === 0 ? "" : ` ${BASE_TICKER}`}
   </div>
   <!-- Confirmed at 3, as on the receipts (CONFIRMED_AT) -->
   <div class="tx-confirmations" class:unconfirmed={!replaced && tx.confirmations < CONFIRMED_AT}>
@@ -59,6 +64,15 @@
   .tx-item.send .tx-icon {
     background: rgba(244, 67, 54, 0.2);
     color: #f44336;
+  }
+
+  .tx-item.won .tx-icon {
+    background: rgba(255, 193, 7, 0.18);
+    color: #c79100;
+  }
+
+  .tx-item.won .tx-amount {
+    color: var(--text-secondary);
   }
 
   .tx-details {

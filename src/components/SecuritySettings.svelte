@@ -70,7 +70,10 @@
       ? `${reds === 1 ? "One thing" : `${reds} things`} to fix${warns ? `, and ${warns} worth fixing` : ""}.`
       : warns
         ? `Nothing urgent; ${warns === 1 ? "one thing is" : `${warns} things are`} worth fixing.`
-        : "All clear.";
+        : `All clear · ${items.length} checks.`;
+  // All clear: the list folds away (v0.2.6, the walk-through counted 9 cards when nothing needed doing).
+  let showAll = false;
+  $: folded = items.length > 0 && reds === 0 && warns === 0 && !showAll;
   $: at = $security?.at ? new Date($security.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 </script>
 
@@ -93,7 +96,10 @@
     <Notice kind="error" message={revealError} on:dismiss={() => (revealError = "")} />
   {/if}
 
-  <ul class="sec-list">
+  {#if folded}
+    <button class="link-btn" on:click={() => (showAll = true)}>Show the checks</button>
+  {/if}
+  <ul class="sec-list" class:hidden={folded}>
     {#each items as it (it.id)}
       <li class="sec-item sec-{it.level}" data-id={it.id}>
         <div class="sec-top">
@@ -117,6 +123,9 @@
 </div>
 
 <style>
+  .sec-list.hidden {
+    display: none;
+  }
   .sec-card {
     margin-top: 16px;
     scroll-margin-top: 12px;

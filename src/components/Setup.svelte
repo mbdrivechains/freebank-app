@@ -10,6 +10,7 @@
   import NodeSettings from "./NodeSettings.svelte";
   import PathText from "./PathText.svelte";
   import {
+    friendlyLog,
     megabytes,
     node,
     openUrl,
@@ -486,7 +487,7 @@
       {#if problem}
         <p class="field-problem">{problem}</p>
       {:else}
-        <p class="hint">When your node wins a block, the explorer shows this name on it. Any name you like, up to 64 characters.</p>
+        <p class="hint">When your node wins a block (it can bid for them later, eCash › Bidding), the explorer shows this name on it. Any name you like, up to 64 characters.</p>
       {/if}
 
       {#if datadir && datadir.kind === "other"}
@@ -539,7 +540,10 @@
                   {/if}
                 </span>
                 <span class="bar">
-                  <span class="bar-fill" class:indeterminate={state === "active" && !install?.total} style="width:{state === 'active' && !install?.total ? 100 : downloadPct}%"></span>
+                  <!-- A new bar once the size is known, so it doesn't slide back from full (v0.2.6). -->
+                  {#key !!install?.total}
+                    <span class="bar-fill" class:indeterminate={state === "active" && !install?.total} style="width:{state === 'active' && !install?.total ? 100 : downloadPct}%"></span>
+                  {/key}
                 </span>
               {:else}
                 {label}
@@ -604,8 +608,8 @@
       {#if view?.reindexing}
         <p class="hint">Your node is rebuilding its data from the blocks it already has. That takes a few minutes; your wallet stays as it is.</p>
       {/if}
-      {#if view?.log_line && view.rpc.state !== "up" && view.log_line !== view.rpc.message}
-        <p class="log-line">{view.log_line}</p>
+      {#if view?.log_line && view.rpc.state !== "up" && view.log_line !== view.rpc.message && friendlyLog(view.log_line)}
+        <p class="log-line">{friendlyLog(view.log_line)}</p>
       {/if}
       {#if view?.rpc.state === "up"}
         <button class="wide secondary" on:click={finish} disabled={finishing}>{finishing ? "Opening FreeBank…" : "Continue while it syncs"}</button>

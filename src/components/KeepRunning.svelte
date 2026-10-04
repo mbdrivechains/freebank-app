@@ -5,6 +5,7 @@
   // would still stop with the app on Linux: a restart fixes that, and this card offers it.
   import { onMount } from "svelte";
   import { node, type NodeStatus } from "../lib/node";
+  import { phone } from "../lib/phone";
 
   export let keepRunning = false;
 
@@ -20,7 +21,13 @@
       st = null;
     }
   }
-  onMount(load);
+  // The phone's own "keep connected" (Settings › Phone), said here too, so both answers to "when FreeBank closes" are
+  // in one place.
+  let phoneKeep = false;
+  onMount(() => {
+    load();
+    phone.keepInfo().then((k) => (phoneKeep = !!k?.keep)).catch(() => {});
+  });
 
   async function toggle(e: Event) {
     const on = (e.target as HTMLInputElement).checked;
@@ -33,7 +40,10 @@
       keepRunning = !on;
     }
     saving = false;
-    load();
+    await load();
+    // A node started before this was on would still stop with the app: restart it now rather than ask
+    // (v0.2.6, the walk-through: it said to restart it yourself).
+    if (needsRestart) await restart();
   }
 
   async function restart() {
@@ -66,9 +76,14 @@
       FreeBank stops its node when you close the app.
     {/if}
   </p>
-  {#if needsRestart}
-    <p class="hint">Your node started before this was on, so it would still stop when you close FreeBank. Restart it to keep it running.</p>
-    <button class="secondary" on:click={restart} disabled={restarting}>{restarting ? "Restarting…" : "Restart the node"}</button>
+  {#if restarting}
+    <p class="hint">Restarting your node so it keeps running when you close FreeBank…</p>
+  {:else if needsRestart}
+    <p class="hint">Your node started before this was on, so it would still stop when you close FreeBank.</p>
+    <button class="secondary" on:click={restart}>Restart the node</button>
+  {/if}
+  {#if phoneKeep}
+    <p class="hint">Your phone stays connected when FreeBank is closed (Settings › Phone).</p>
   {/if}
   {#if error}<p class="soft-error">{error}</p>{/if}
 </div>

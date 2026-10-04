@@ -1,0 +1,107 @@
+name: apt
+
+# The apt repository that GitHub Pages serves at https://apt.ecxfreebank.com (branch gh-pages), after Michael has
+# signed a release's checksums (app v0.2.6). release-app.sh's `after` step runs it once SHA256SUMS.sig checks, and it
+# checks again itself before anything is published: the signature against the release key pinned below (the same key
+# as src-tauri/src/node/release_key.rs; a test there keeps them equal), then the .deb against the signed SUMS. So apt
+# publishes only what the release key signed. Before v0.2.6 the release run published apt at tag time, ahead of it.
+#
+# Secrets, in the environment "apt-signing":
+#   APT_GPG_PRIVATE_KEY  the armored secret key that signs the apt repository
+#   APT_GPG_FINGERPRINT  its fingerprint
+# Pages: source "GitHub Actions", custom domain apt.ecxfreebank.com. The site's files are kept on the
+# gh-pages branch (so every published version stays in the pool) and deployed by the pages job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The signed release, e.g. v0.2.6"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apt:
+    runs-on: ubuntu-latest
+    environment: apt-signing
+    permissions:
+      contents: write
+    # One writer of gh-pages at a time.
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - name: The tag is a release's
+        env:
+          TAG: ${{ inputs.tag }}
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $TAG"; exit 1; }'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Download the release's .deb, SHA256SUMS and its signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir out
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -D out \
+            -p SHA256SUMS -p SHA256SUMS.sig -p 'freebank_*_amd64.deb'
+      - name: Check the release key's signature, and the .deb against it
+        working-directory: out
+        run: |
+          [ -f SHA256SUMS.sig ] || { echo "the release isn't signed yet"; exit 1; }
+          echo 'freebank-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAi2C9Lpi3gHPva6tlbLE+wdF1Cer3uUnmwZYr6SeRjR' > allowed_signers
+          ssh-keygen -Y verify -f allowed_signers -I freebank-release -n file -s SHA256SUMS.sig < SHA256SUMS
+          debs=(freebank_*_amd64.deb)
+          [ "${#debs[@]}" = 1 ] || { echo "expected one .deb, found ${#debs[@]}"; exit 1; }
+          # Its line in the signed SUMS, by exact name ("hash  name").
+          line=$(awk -v f="${debs[0]}" '$2 == f' SHA256SUMS)
+          [ -n "$line" ] || { echo "${debs[0]} isn't in the signed SHA256SUMS"; exit 1; }
+          echo "$line" | sha256sum -c -
+          rm allowed_signers SHA256SUMS SHA256SUMS.sig
+      - name: Check out the published site (gh-pages)
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git fetch origin gh-pages
+            git worktree add site origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages site
+          fi
+      - name: Import the signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+      - name: Build and sign the repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_GPG_FINGERPRINT }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y apt-utils
+          scripts/build-apt-repo.sh site out/freebank_*.deb
+      - name: Publish to gh-pages
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd site
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "apt: freebank ${TAG#v}"
+          git push origin HEAD:gh-pages
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: site
+
+  pages:
+    needs: apt
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

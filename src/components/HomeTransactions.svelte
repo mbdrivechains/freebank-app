@@ -87,7 +87,7 @@
 
 {#if !full}
   <div class="card">
-    <h3>Recent Transactions</h3>
+    <h3>Recent payments</h3>
     {#if transactions.length === 0}
       <p class="muted">No transactions yet.</p>
       {#if balance === 0 && needCoins}<p class="hint">{needCoins}</p>{/if}

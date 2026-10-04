@@ -154,7 +154,8 @@ pub const RELOCK_MARGIN: Duration = crate::wallet::RELOCK_MARGIN;
 pub const ERR_DECLINED: &str = "declined on the desktop";
 /// The fee a phone's note action pays, in ECX: what the desktop's Notes tab pays.
 pub const NOTE_FEE: f64 = 0.001;
-/// freebankd lists a wallet's notes only while it is unlocked, so the phone's Notes need phone sends on.
+/// freebankd before v0.2.19 lists a wallet's notes only while it is unlocked, so there the phone's Notes need phone
+/// sends on. v0.2.19 lists them locked (freebankd's note 2026-10-04-from-freebankd-list-locked-done), and this never shows.
 pub const ERR_NOTES_LOCKED: &str = "Your desktop wallet is locked. To see your notes here, turn on \"Let my phone send while \
                                     FreeBank is open\" in FreeBank on your desktop (Settings, Phone).";
 /// Daemon mode (`background.rs`, light): a paired phone asked, and the node is starting. The reply carries
@@ -603,8 +604,8 @@ fn with_kind(entry: &mut Value, kind: Kind, house: Option<u64>) {
 fn consolidate_hint(kind: Kind, e: String) -> String {
     if matches!(kind, Kind::NoteRedeem | Kind::NoteDemand) && e.contains("sum exactly") {
         format!(
-            "{e} Your notes of this house may sit at more than one of your addresses: send them to one of your own \
-             addresses first (Send notes, to an address from Receive), then try again."
+            "{e} Your notes of this house may sit at more than one of your addresses: gather them first on your \
+             desktop (Notes, Send with the address left empty), then try again."
         )
     } else {
         e
@@ -620,6 +621,16 @@ fn state_name(c: char) -> &'static str {
         'i' => "Insolvent",
         'w' => "Wound down",
         _ => "Unknown",
+    }
+}
+
+/// A house's type (node v0.2.19): "open", "members" (its notes go only to its members) or "redeem" (members only, and
+/// notes pass only back to the house or to the holder's own key). Older nodes don't say: open.
+fn house_type(h: Option<&Value>) -> &'static str {
+    match h.and_then(|h| h["type"].as_str()) {
+        Some("members") => "members",
+        Some("redeem") => "redeem",
+        _ => "open",
     }
 }
 
@@ -641,6 +652,7 @@ fn house_view(h: &Value) -> Value {
         "reserves": h["lastattestreserves"],
         "attested_at": h["lastattestheight"],
         "rate_bps": h["defer_interest_bps"],
+        "type": house_type(Some(h)),
     })
 }
 
@@ -1696,6 +1708,7 @@ impl Phone {
                     "can_redeem": n["redeemable"] == true,
                     "can_demand": n["demandable"] == true,
                     "rate_bps": house.map(|h| h["defer_interest_bps"].clone()).unwrap_or(Value::Null),
+                    "type": house_type(house),
                 })
             })
             .collect();
@@ -1914,6 +1927,33 @@ impl Phone {
         self.held.lock().unwrap().iter().map(|h| h.view(ttl)).collect()
     }
 
+    /// A held send's amount and its fee allowance against the wallet's spendable balance. Only sends: a note action
+    /// pays from notes, and its fee is small. A balance that can't be read lets the payment try, as before.
+    async fn enough_for(&self, confirm: &str) -> Result<(), String> {
+        let p = {
+            let held = self.held.lock().unwrap();
+            let h = held.iter().find(|h| h.confirm == confirm).ok_or("That send is no longer waiting.")?;
+            Pending { kind: h.kind, house: h.house, address: h.address.clone(), sats: h.sats }
+        };
+        if p.kind != Kind::Send {
+            return Ok(());
+        }
+        let Ok(bal) = self.rpc.call("getbalance", vec![]).await else { return Ok(()) };
+        let Ok(have) = store::json_to_sats(&bal) else { return Ok(()) };
+        // Its amount alone: the fee the node picks is smaller than any allowance, so a send of nearly everything can
+        // still go.
+        let need = p.cost();
+        if have < need {
+            return Err(format!(
+                "Not enough ECX: the wallet has {} and this payment is {}, before its fee. Decline it, or add coins and \
+                 try again; it's still waiting.",
+                to_ecx(have),
+                to_ecx(need)
+            ));
+        }
+        Ok(())
+    }
+
     /// Take a held send out, unless the desktop is paying it right now.
     fn take_held(&self, confirm: &str) -> Result<Held, String> {
         let h = {
@@ -1993,6 +2033,9 @@ impl Phone {
             self.events.emit(EV_CHANGED, json!({}));
             return Ok(Confirmed { txid: None, need_passphrase: false });
         }
+        // Not enough ECX for a send: said before a phone is asked or the passphrase is (v0.2.6, the UX walk-through:
+        // the passphrase came first, then the payment failed and its dialog closed without a word). It keeps waiting.
+        self.enough_for(confirm).await?;
         self.clear_held(confirm).await?;
         let _gate = self.wallet_gate.lock().await;
         // Busy while the wallet is unlocked and paid from: expiry and revoke leave it alone.
@@ -2668,6 +2711,10 @@ pub const CREDIT_PAYMENTS: &[&str] = &[
     "endorsebill",
     "retirebill",
     "claimbillescrow",
+    // Node v0.2.19, members-only houses: each pays a fee.
+    "addhousemembers",
+    "removehousemembers",
+    "purgehousemembers",
 ];
 
 /// What a credit call from the desktop's tabs costs this wallet (sats) and how a phone is asked about it; None for the
@@ -2682,8 +2729,13 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
     let ecx = |i: usize| p.get(i).and_then(|v| store::json_to_sats(v).ok());
     let id = |i: usize| p.get(i).and_then(Value::as_u64).map_or("?".to_string(), |n| n.to_string());
     let e = |s: Option<u64>| s.map_or("?".to_string(), |s| to_ecx(s).to_string());
-    // The fee is the last argument (registerhouse's too), except transfernote's: house, units, fee, address.
-    let fee = if method == "transfernote" { p.get(2) } else { p.last() };
+    // The fee is the last argument, except where optional ones follow it: transfernote's and mintnote's (house, units,
+    // fee, address) and registerhouse's (tier, threshold, classid, denommg, pledges, fee, type; node v0.2.19).
+    let fee = match method {
+        "transfernote" | "mintnote" => p.get(2),
+        "registerhouse" => p.get(5),
+        _ => p.last(),
+    };
     let fee = fee.and_then(|v| store::json_to_sats(v).ok());
     let (out, text): (Option<u64>, String) = match method {
         "transfernote" => {
@@ -2704,7 +2756,12 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
         "issuebill" => (ecx(2), format!("Issue a bill for {} ECX, bonded with {} ECX", e(ecx(1)), e(ecx(2)))),
         "endorsebill" => (bill, format!("Hand bill #{} ({} ECX) to another holder", id(0), e(bill))),
         "retirebill" => (bill, format!("Retire bill #{}: pay its holder {} ECX", id(0), e(bill))),
-        "mintnote" => (Some(0), format!("Mint house #{}'s notes", id(0))),
+        // Minted to this wallet: only the fee. Minted to an address (node v0.2.19), the notes leave this wallet's house
+        // to someone who can redeem them from its reserves: they count (security review of v0.2.6, M1).
+        "mintnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
+            None => (Some(0), format!("Mint house #{}'s notes", id(0))),
+            Some(to) => (units(1), format!("Mint {} ECX of house #{}'s notes to {to}", e(units(1)), id(0))),
+        },
         "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} ECX of house #{}'s notes", e(units(1)), id(0))),
         "demandnote" => (Some(NOTE_CARRIER_SATS), format!("Demand {} ECX of house #{}'s notes", e(units(1)), id(0))),
         "registerhouse" => {
@@ -2717,6 +2774,12 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
         "attesthouse" => (Some(0), format!("Attest house #{}'s reserves", id(0))),
         "removepoolliquidity" => (Some(0), format!("Take liquidity out of pool #{}", id(0))),
         "claimbillescrow" => (Some(0), format!("Claim bill #{}'s bond", id(0))),
+        "addhousemembers" | "removehousemembers" => {
+            let n = p.get(1).and_then(Value::as_array).map_or(0, |a| a.len());
+            let (verb, to) = if method == "addhousemembers" { ("Add", "to") } else { ("Remove", "from") };
+            (Some(0), format!("{verb} {n} member{} {to} house #{}", if n == 1 { "" } else { "s" }, id(0)))
+        }
+        "purgehousemembers" => (Some(0), format!("Clear removed members' records from house #{}", id(0))),
         _ => (None, method.to_string()),
     };
     let cost = out.zip(fee).map_or(u64::MAX, |(o, f)| o.saturating_add(f));

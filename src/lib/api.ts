@@ -8,7 +8,10 @@ export interface Transaction {
   confirmations: number;
   time: number;
   address: string | null;
+  /** "send", "receive", or for a block this wallet won (bidding) "generate", "immature" (not yet spendable), "orphan". */
   category: "send" | "receive" | string;
+  /** The block it is in, when confirmed. */
+  blockheight?: number | null;
 }
 
 export interface BlockchainInfo {
@@ -55,7 +58,24 @@ export interface House {
   lastattestreserves: number; // ECX
   denominationmggold: number; // unit-of-account label (mg gold); inert in v1
   defer_interest_bps?: number; // node v0.2.18: the yearly rate on demands queued while suspended (1000 = 10%)
+  type?: HouseType;            // node v0.2.19 (absent before: open)
+  member_records?: number;     // node v0.2.19, members and redeem houses: members listed, removed ones included
   [k: string]: unknown;
+}
+
+/** Node v0.2.19: "open" (anyone may hold its notes), "members" (its notes go only to its members) or "redeem"
+ *  (members only, and notes pass only between the house and the holder). Fixed for the life of the house. */
+export type HouseType = "open" | "members" | "redeem";
+
+export const houseType = (h: House | undefined): HouseType => (h?.type === "members" || h?.type === "redeem" ? h.type : "open");
+
+export interface HouseMember {
+  address: string;
+  added_height: number;
+  /** 0: not removed. */
+  removal_height: number;
+  /** As of the next block. */
+  active: boolean;
 }
 
 // A constant-product AMM pool: house notes on one side, base ECX on the other.
@@ -338,8 +358,12 @@ export const api = {
   },
 
   /** Mint house notes (a house op; the single-wallet regtest plays the house) */
-  async mintNote(houseId: number, units: number, fee = 0.001): Promise<string> {
-    const r = (await fbCall('mintnote', [houseId, units, fee])) as { txid: string };
+  /** `address`: the holder (a member, for a members-only house); none: a fresh key of this wallet, or a members-only
+   *  house's own redemption key (node v0.2.19). */
+  async mintNote(houseId: number, units: number, address = '', fee = 0.001): Promise<string> {
+    const params: unknown[] = [houseId, units, fee];
+    if (address) params.push(address);
+    const r = (await fbCall('mintnote', params)) as { txid: string };
     return r.txid;
   },
 
@@ -376,8 +400,24 @@ export const api = {
     denommg = 1000,
     threshold = 1,
     fee = 0.001,
+    type: HouseType = 'open',
   ): Promise<string> {
-    const r = (await fbCall('registerhouse', [tier, threshold, classid, denommg, [escrowEcx], fee])) as { txid: string };
+    // The type only when it isn't open: a node before v0.2.19 takes six arguments.
+    const params: unknown[] = [tier, threshold, classid, denommg, [escrowEcx], fee];
+    if (type !== 'open') params.push(type);
+    const r = (await fbCall('registerhouse', params)) as { txid: string };
+    return r.txid;
+  },
+
+  /** A members-only or redeem-only house's member list (public on chain). */
+  async listHouseMembers(houseId: number): Promise<HouseMember[]> {
+    return fbCall('listhousemembers', [houseId]) as Promise<HouseMember[]>;
+  },
+
+  /** Add or remove members (1-256 FreeBank addresses): one change per house per block. Your node holds the house's
+   *  keys. A removal takes effect 3 blocks after it confirms. */
+  async changeHouseMembers(houseId: number, add: boolean, addresses: string[], fee = 0.001): Promise<string> {
+    const r = (await fbCall(add ? 'addhousemembers' : 'removehousemembers', [houseId, addresses, fee])) as { txid: string };
     return r.txid;
   },
 

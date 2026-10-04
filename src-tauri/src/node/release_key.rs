@@ -40,6 +40,15 @@ pub(crate) fn verify_with(key: &str, sums: &[u8], sig: &[u8]) -> Result<(), &'st
 
 #[cfg(test)]
 mod tests {
+
+    /// The apt workflow checks a release's signature itself before publishing (app v0.2.6): with this very key.
+    #[test]
+    fn the_apt_workflow_pins_the_same_key() {
+        let apt = include_str!("../../../.github/workflows/apt.yml");
+        assert!(apt.contains(&format!("'freebank-release {}'", RELEASE_KEY)), "apt.yml must pin the release key");
+        assert!(apt.contains("-n file"), "and its namespace");
+    }
+
     use super::*;
 
     const SUMS: &[u8] = include_bytes!("../../testdata/v0.2.16/SHA256SUMS");

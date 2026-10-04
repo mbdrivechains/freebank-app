@@ -53,9 +53,38 @@ impl RpcError {
     }
 }
 
+/// Several wallets in one app (v0.2.6): once the local node has more than its main wallet open, every wallet call
+/// must name its wallet (`/wallet/<name>`), or the node refuses it (-19). Then the app's clients for the local node
+/// name the main wallet unless the screens chose another (`set_wallet`). None: only the main wallet is open, and
+/// calls go to the node's root as before.
+static MAIN_WALLET: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+pub fn set_main_wallet(name: Option<String>) {
+    *MAIN_WALLET.write().unwrap() = name;
+}
+
+pub fn main_wallet() -> Option<String> {
+    MAIN_WALLET.read().unwrap().clone()
+}
+
+/// Core's RPC_WALLET_NOT_FOUND: a wallet named in the path that isn't open (after the node restarted).
+const WALLET_NOT_LOADED: i64 = -18;
+
+/// A wallet name in a URL path: letters, digits and . _ - as they are, anything else %-escaped.
+fn path_name(name: &str) -> String {
+    name.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => (b as char).to_string(),
+            _ => format!("%{:02X}", b),
+        })
+        .collect()
+}
+
 /// FreeBank JSON-RPC client
 pub struct FreeBankClient {
     url: Option<String>,
+    /// The wallet the screens chose (v0.2.6); None: the main wallet.
+    wallet: Option<String>,
     auth: Option<String>,
     client: reqwest::Client,
     timeout: Option<Duration>,
@@ -74,6 +103,7 @@ impl FreeBankClient {
     pub fn with_http(client: reqwest::Client) -> Self {
         Self {
             url: None,
+            wallet: None,
             auth: None,
             client,
             timeout: None,
@@ -81,9 +111,58 @@ impl FreeBankClient {
         }
     }
 
+    /// Which wallet the screens' calls go to (None: the main wallet). The phone's calls always go to the main one
+    /// (`call_fresh_typed_main`).
+    pub fn set_wallet(&mut self, wallet: Option<String>) {
+        self.wallet = wallet;
+    }
+
+    #[cfg(test)]
+    pub fn wallet(&self) -> Option<&str> {
+        self.wallet.as_deref()
+    }
+
+    /// The same connection on the main wallet, whichever the screens chose: for what is about the main wallet and its
+    /// words (Settings › Wallet, the security checks). Hold the shared client's lock while using it.
+    pub fn for_main(&self) -> FreeBankClient {
+        FreeBankClient {
+            url: self.url.clone(),
+            wallet: None,
+            auth: self.auth.clone(),
+            client: self.client.clone(),
+            timeout: self.timeout,
+            local_datadir: self.local_datadir.clone(),
+        }
+    }
+
+    /// The wallet a call names: for the local node, the chosen one or (with other wallets open) the main one; for a
+    /// node elsewhere, only one the screens chose.
+    fn wallet_for(&self, main_only: bool) -> Option<String> {
+        if self.local_datadir.is_none() {
+            return if main_only { None } else { self.wallet.clone() };
+        }
+        if main_only {
+            main_wallet()
+        } else {
+            self.wallet.clone().or_else(main_wallet)
+        }
+    }
+
     /// Give up on a call after `t` (for status polls; wallet calls keep no limit).
     pub fn with_timeout(mut self, t: Duration) -> Self {
         self.timeout = Some(t);
+        self
+    }
+
+    /// The address it calls (tests point other clients at the same stand-in).
+    #[cfg(test)]
+    pub fn url(&self) -> Option<&str> {
+        self.url.as_deref()
+    }
+
+    /// No limit on a call (an eCash wallet's import rescans the chain).
+    pub fn without_timeout(mut self) -> Self {
+        self.timeout = None;
         self
     }
 
@@ -141,6 +220,17 @@ impl FreeBankClient {
         }
     }
 
+    /// `call_fresh_typed` on the main wallet, whichever the screens chose: the phone's (the operator chose "Main
+    /// wallet only" for the phone, 2026-10-04).
+    pub async fn call_fresh_typed_main(&mut self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+        match self.call_with(true, method, params.clone()).await {
+            Err(RpcError::Http(401) | RpcError::NotConfigured) if self.refresh_local_auth() => {
+                self.call_with(true, method, params).await
+            }
+            r => r,
+        }
+    }
+
     /// Check if client is configured
     pub fn is_configured(&self) -> bool {
         self.url.is_some() && self.auth.is_some()
@@ -153,7 +243,41 @@ impl FreeBankClient {
 
     /// Make a JSON-RPC call, keeping the kind of failure.
     pub async fn call_typed(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
-        let url = self.url.as_ref().ok_or(RpcError::NotConfigured)?;
+        self.call_with(false, method, params).await
+    }
+
+    /// A call to the node itself, naming no wallet (createwallet, loadwallet, listwallets).
+    pub async fn call_root(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+        self.post(None, method, params).await
+    }
+
+    /// A call to the wallet `wallet_for` names. A wallet that isn't open (the node restarted since) is opened and the
+    /// call made again, once.
+    async fn call_with(&self, main_only: bool, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+        let Some(w) = self.wallet_for(main_only) else { return self.post(None, method, params).await };
+        match self.post(Some(&w), method, params.clone()).await {
+            Err(RpcError::Rpc { code: WALLET_NOT_LOADED, .. }) => {
+                match self.post(None, "loadwallet", vec![json!(w)]).await {
+                    // -35: opened meanwhile by another call.
+                    Ok(_) | Err(RpcError::Rpc { code: -35, .. }) => {}
+                    Err(e) => return Err(e),
+                }
+                self.post(Some(&w), method, params).await
+            }
+            r => r,
+        }
+    }
+
+    async fn post(&self, wallet: Option<&str>, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+        let base = self.url.as_ref().ok_or(RpcError::NotConfigured)?;
+        let at;
+        let url = match wallet {
+            Some(w) => {
+                at = format!("{}/wallet/{}", base.trim_end_matches('/'), path_name(w));
+                &at
+            }
+            None => base,
+        };
         let auth = self.auth.as_ref().ok_or(RpcError::NotConfigured)?;
 
         let body = json!({
@@ -227,6 +351,15 @@ pub(crate) mod stub {
     where
         F: Fn(&str, &Value) -> Result<Value, (i64, String)> + Send + 'static,
     {
+        serve_paths(move |_, m, p| answer(m, p))
+    }
+
+    /// The same, with the request's path too ("/", "/wallet/<name>"). Calls are recorded as (method, params)
+    /// with the method written "<path> <method>" when the path isn't "/".
+    pub fn serve_paths<F>(answer: F) -> (super::FreeBankClient, Calls)
+    where
+        F: Fn(&str, &str, &Value) -> Result<Value, (i64, String)> + Send + 'static,
+    {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let calls: Calls = Arc::default();
@@ -235,11 +368,14 @@ pub(crate) mod stub {
             for conn in listener.incoming() {
                 let Ok(mut conn) = conn else { return };
                 let mut reader = BufReader::new(conn.try_clone().unwrap());
-                let (mut line, mut len) = (String::new(), 0usize);
+                let (mut line, mut len, mut path) = (String::new(), 0usize, String::new());
                 loop {
                     line.clear();
                     if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim_end().is_empty() {
                         break;
+                    }
+                    if path.is_empty() {
+                        path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
                     }
                     if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                         len = v.trim().parse().unwrap_or(0);
@@ -251,8 +387,9 @@ pub(crate) mod stub {
                 }
                 let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
                 let method = req["method"].as_str().unwrap_or("").to_string();
-                log.lock().unwrap().push((method.clone(), req["params"].clone()));
-                let (status, reply) = match answer(&method, &req["params"]) {
+                let shown = if path == "/" || path.is_empty() { method.clone() } else { format!("{} {}", path, method) };
+                log.lock().unwrap().push((shown, req["params"].clone()));
+                let (status, reply) = match answer(&path, &method, &req["params"]) {
                     Ok(v) => ("200 OK", json!({"result": v, "error": null, "id": req["id"]})),
                     Err((code, message)) => (
                         if code == super::RPC_METHOD_NOT_FOUND { "404 Not Found" } else { "500 Internal Server Error" },

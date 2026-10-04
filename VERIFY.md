@@ -70,6 +70,18 @@ macOS.
   (`approve_first`), `commands.rs` (`rpc_call`, with `phone::credit_payment` for the credit calls' costs),
   `Phone::clear_held` (a phone's held payment confirmed here) and `recovery/commands.rs` (`wallet_reveal`). Someone who
   can change your files can change `config.json` too: it guards the app, not the files.
+- **The eCash wallets** (v0.2.6): `src-tauri/src/ecash/`. Their keys come from the words (`keys.rs`: BIP85's XPRV
+  application at m/83696968'/32'/0', then BIP84 accounts 0 and 1). The eCash node holds both wallets watch-only, with
+  public descriptors; FreeBank checks each payment the node funds (`sign.rs`, `check`: every input its own and its
+  parent transaction matching, one output to the recipient, change to its own change branch, eCash's replay stamp,
+  the fee quoted and under a rate worked out here) and signs it here. The main eCash wallet's key is derived from
+  `seed.enc` with the passphrase for each payment. The bidding wallet's key is in `<app data>/wallet/ecash-bids.key`,
+  readable by your user only, so bids can go out with nobody there; it holds only what you move into it. A typed eCash
+  login's password is in `<app data>/wallet/ecash-login`; the wallets' public record and the bidding settings and
+  rounds are in `ecash.json` and `bmm.json` beside it, all readable by your user only.
+- **Several wallets** (v0.2.6): `src-tauri/src/wallets.rs`. A wallet from the words is BIP85's HD-Seed WIF at index
+  1, 2 and on, given to the node with `sethdseed`; it shares the wallet passphrase. A wallet file is copied into the
+  node's wallet folder, readable by your user only, and keeps its own passphrase.
 - **Copying the words to the clipboard:** `src-tauri/src/clipboard.rs`.
 - **The screens that show or take the words:** `src/components/RecoveryWords.svelte`, `WalletFlow.svelte` and
   `WalletSettings.svelte` (Show recovery words, and Show xprv: the wallet's master extended private key, derived from
@@ -101,7 +113,9 @@ macOS.
     (`<app data>/logs/app.log`) and chosen lines of the node's `debug.log` (progress, start and stop, errors: never
     wallet lines), to the minute, with hashes, coin addresses, amounts, IP addresses, long tokens and your name
     masked (`src-tauri/src/activity.rs`), exactly as the dialog shows them first.
-- **The eCash node and its enforcer** that run beside FreeBank, at the addresses found or entered at setup.
+- **The eCash node and its enforcer** that run beside FreeBank, at the addresses found or entered at setup. The eCash
+  wallets (v0.2.6) reach the eCash node's JSON-RPC with BitWindow's login or the one typed in Settings > Node &
+  connection: plain HTTP only (`https://` is refused), no proxy, host and port only (`src-tauri/src/ecash/conn.rs`).
 - **This computer's own addresses:** Settings > Security tries a few TCP connections to them, to see which of the
   node's ports other computers could reach (`src-tauri/src/security.rs`). They stay on this computer.
 - **Links** (the explorer, GitHub, BitWindow's site) open in your browser, not in the app. The allowed ones are
@@ -138,12 +152,18 @@ another address and key from the environment, for the update's end-to-end test; 
   - `bumpfee` (Speed up);
   - the passphrase: `encryptwallet`, `walletpassphrase`, `walletlock`, `walletpassphrasechange`;
   - `sethdseed` (the key from the words), `backupwallet`, `rescanblockchain` and `stop`;
-  - `getnewaddress` (Receive, a phone's Receive, and moving coins to new words).
+  - `getnewaddress` (Receive, a phone's Receive, and moving coins to new words);
+  - `createwallet` and `loadwallet` (several wallets, v0.2.6).
+- **Bidding** (v0.2.6, `src-tauri/src/ecash/bmm.rs`): the FreeBank node's `get_block_template`, `get_bmm_inclusions`
+  and `connect_block`, the calls for an outside bidder.
+- **The eCash node** (v0.2.6): its wallets watch-only (`createwallet`, `importdescriptors`, `loadwallet`), addresses,
+  balances, history, `walletcreatefundedpsbt` to fund a payment FreeBank then checks and signs, and
+  `sendrawtransaction` for the signed payment. It is never given a passphrase or a private key.
 - **Read-only calls** the Rust side makes for itself: the balance, history, fees, the node's status, Settings >
   Security and the phone link.
 - **Everything else the screens ask** goes through one command, `rpc_call`. It allows only the calls listed in
   `RPC_ALLOWED` (`src-tauri/src/security.rs`): read-only calls, `getdepositaddress`, and FreeBank's notes, houses,
-  pools and bills, including credit actions that sign with the wallet and move coins or notes (`transfernote`,
+  pools and bills (and, node v0.2.19, a house's members), including credit actions that sign with the wallet and move coins or notes (`transfernote`,
   `swapnote`, `addpoolliquidity`, `issuebill` and others). A locked wallet refuses those until you give the
   passphrase.
 - The app never calls `dumpprivkey` or `dumpwallet`. Only a test calls `dumpwallet`, against a scratch node. It can
@@ -187,8 +207,10 @@ Give your assistant the checked-out tree and something like this:
 > (4) anything that lets a paired phone, the relay or a web page do more than the documented limits (the daily
 > limit, approval on the desktop, Face ID; `src-tauri/src/phone/`), and any app path that pays or shows the recovery
 > words without "Approve sends on my phone" asking while it is on;
-> (5) downloads or processes started from untrusted input, and whether the node's signature is checked before it runs;
-> (6) dependencies in `src-tauri/Cargo.lock` or `package-lock.json` that look out of place or come from outside the
+> (5) any way the eCash node can make FreeBank sign a payment other than the one shown, or bid beyond the daily cap
+> (`src-tauri/src/ecash/`);
+> (6) downloads or processes started from untrusted input, and whether the node's signature is checked before it runs;
+> (7) dependencies in `src-tauri/Cargo.lock` or `package-lock.json` that look out of place or come from outside the
 > usual registries.
 > For each finding give the file and line, what an attacker needs, and the impact. Say plainly what you did not
 > check.

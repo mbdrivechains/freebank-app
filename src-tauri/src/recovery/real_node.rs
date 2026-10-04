@@ -397,3 +397,55 @@ async fn real_node_through_the_app() {
     assert!(!crate::node::process::child_alive(&mgr).await);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A second wallet from the same words, through the app (several wallets, v0.2.6; node v0.2.19's createwallet): the
+/// app makes it, encrypts it (its own node stops and starts again), and gives it the words' seed for index 1. The main
+/// wallet answers by name beside it, and after a restart the new one opens on its first call.
+#[tokio::test]
+#[ignore]
+async fn real_node_wallet_from_the_words() {
+    let dir = scratch("fbwallet-words");
+    let (mgr, s) = app_with_release(&dir);
+    let pass = random_pass();
+    let guard = RelockGuard::default();
+    crate::node::process::start(&mgr).await.unwrap();
+    app_client(&mgr, &s).await;
+    let words = job::run(&mgr, &guard, Job::Setup { passphrase: pass.clone(), restore: None, fresh: false }, &Report::default())
+        .await
+        .unwrap()
+        .expect("new words");
+    let e = seed::parse_words(&words.join(" ")).unwrap();
+    let client: crate::commands::ClientState = Default::default();
+
+    let views = crate::wallets::add_words(&mgr, &client, "Savings".into(), pass.clone()).await.unwrap();
+    assert_eq!(views.iter().map(|v| (v.label.as_str(), v.kind.as_str())).collect::<Vec<_>>(), vec![("Main", "main"), ("Savings", "words")]);
+    assert!(views.iter().all(|v| v.encrypted == Some(true)), "{:?}", views.iter().map(|v| v.encrypted).collect::<Vec<_>>());
+    assert!(crate::node::process::child_alive(&mgr).await, "the app's node runs again after encrypting");
+    let s2 = mgr.settings.lock().await.clone();
+    assert_eq!(s2.extra_wallets[0].name, "words-1");
+    assert_eq!(s2.extra_wallets[0].index, Some(1));
+
+    let hd1 = seed::hd_seed_at(&e, 1).unwrap();
+    let mut w = app_client(&mgr, &s).await;
+    w.set_wallet(Some("words-1".into()));
+    let info = call(&mut w, "getwalletinfo", vec![]).await;
+    assert_eq!(info["hdmasterkeyid"], json!(seed::key_id_hex(&seed::key_id(&hd1).unwrap())), "the words' seed for index 1");
+    assert_eq!(info["unlocked_until"], json!(0), "encrypted and locked");
+    assert_eq!(call(&mut w, "getnewaddress", vec![json!(""), json!("legacy")]).await, json!(seed::address(&hd1, false, 0).unwrap()));
+    // The main wallet, named: still the words' index 0.
+    let hd0 = seed::freebank_hd_seed(&e).unwrap();
+    let mut m = app_client(&mgr, &s).await;
+    m.set_wallet(s2.main_wallet.clone());
+    assert_eq!(call(&mut m, "getwalletinfo", vec![]).await["hdmasterkeyid"], json!(seed::key_id_hex(&seed::key_id(&hd0).unwrap())));
+
+    // A restart: only the main wallet opens by itself; the new one opens on its first call.
+    crate::node::process::stop(&mgr).await.unwrap();
+    crate::node::process::start(&mgr).await.unwrap();
+    let mut w = app_client(&mgr, &s).await;
+    w.set_wallet(Some("words-1".into()));
+    assert_eq!(call(&mut w, "getwalletinfo", vec![]).await["hdmasterkeyid"], info["hdmasterkeyid"]);
+
+    crate::rpc::set_main_wallet(None);
+    crate::node::process::stop(&mgr).await.unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

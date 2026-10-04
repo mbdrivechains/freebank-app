@@ -627,8 +627,8 @@
       {/if}
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <p class="hint">
-        From FreeBank app 0.3.0 these words also cover the app's eCash wallet. Other wallets can't read FreeBank's
-        addresses from them directly.
+        These words also cover the app's eCash wallets. Other wallets can't read FreeBank's addresses from them
+        directly.
       </p>
       <div class="row-actions">
         <button on:click={wroteThemDown} disabled={hidden}>I've written them down</button>

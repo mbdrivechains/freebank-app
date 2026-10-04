@@ -50,7 +50,8 @@ pub(crate) struct NodeRpc(pub(crate) Arc<Mutex<FreeBankClient>>);
 impl Rpc for NodeRpc {
     fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>> {
         Box::pin(async move {
-            self.0.lock().await.call_fresh_typed(method, params).await.map_err(|e| match e {
+            // The main wallet always, whichever the screens chose (v0.2.6: several wallets, the phone on the main one).
+            self.0.lock().await.call_fresh_typed_main(method, params).await.map_err(|e| match e {
                 RpcError::Rpc { code, message } => RpcFail::rpc(code, message),
                 e => RpcFail::other(e.to_string()),
             })

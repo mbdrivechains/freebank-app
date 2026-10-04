@@ -2,6 +2,7 @@ mod activity;
 mod app_update;
 mod clipboard;
 mod commands;
+mod ecash;
 mod feedback;
 mod node;
 mod phone;
@@ -11,6 +12,7 @@ mod security;
 mod seed;
 mod send;
 mod wallet;
+mod wallets;
 
 use node::NodeManager;
 use rpc::FreeBankClient;
@@ -117,6 +119,17 @@ pub fn run() {
             let phone = phone::commands::start(app.handle(), &dir, client, relock);
             app.manage(phone);
             let mgr = Arc::new(NodeManager::new(dir));
+            // Several wallets (v0.2.6): the clients name the main wallet once others are listed, and the screens'
+            // client the one chosen last time.
+            {
+                let (m, c) = (mgr.clone(), app.state::<Arc<Mutex<FreeBankClient>>>().inner().clone());
+                tauri::async_runtime::spawn(async move {
+                    let s = m.settings.lock().await.clone();
+                    wallets::apply(&s, &mut *c.lock().await);
+                });
+            }
+            // Bidding for FreeBank blocks (v0.2.6): does nothing until it is turned on in the eCash tab.
+            ecash::bmm::spawn(mgr.clone());
             app.manage(Arc::new(app_update::AppUpdater::new(mgr.http.clone())));
             app.manage(mgr);
             Ok(())
@@ -209,6 +222,25 @@ pub fn run() {
             phone::commands::phone_approve_set,
             phone::commands::phone_approval_cancel,
             phone::commands::phone_approve_cancel_scheduled,
+            // v0.2.6: the app's eCash wallet
+            ecash::commands::ecash_status,
+            ecash::commands::ecash_setup,
+            ecash::commands::ecash_receive,
+            ecash::commands::ecash_history,
+            ecash::commands::ecash_send_prepare,
+            ecash::commands::ecash_send_confirm,
+            ecash::commands::ecash_bids_withdraw_prepare,
+            ecash::commands::ecash_bids_withdraw_confirm,
+            ecash::commands::ecash_login_get,
+            ecash::commands::ecash_login_set,
+            ecash::commands::bmm_status,
+            // v0.2.6: several wallets
+            wallets::wallets_list,
+            wallets::wallet_select,
+            wallets::wallet_forget,
+            wallets::wallet_add_words,
+            wallets::wallet_add_file,
+            ecash::commands::bmm_set,
             phone::commands::phone_devices,
             phone::commands::phone_revoke,
             phone::commands::phone_set_limit,

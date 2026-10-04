@@ -517,6 +517,8 @@ pub struct NodeStatus {
     pub p2p_port: u16,
     /// False when freebank.conf says listen=0: no incoming peers.
     pub listens: bool,
+    /// freebank.conf binds the peer port to this computer only.
+    pub peers_local: bool,
     pub versions: Versions,
 }
 
@@ -629,6 +631,8 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         p2p_port: s.p2p_port,
         listens: std::fs::read_to_string(datadir.join("freebank.conf"))
             .map_or(true, |c| crate::security::parse_conf(&c).listen != Some(false)),
+        peers_local: std::fs::read_to_string(datadir.join("freebank.conf"))
+            .is_ok_and(|c| crate::security::parse_conf(&c).peers_local_only()),
         versions: Versions {
             app: super::APP_VERSION.to_string(),
             ..Default::default()

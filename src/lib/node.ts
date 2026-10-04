@@ -138,6 +138,8 @@ export interface NodeStatus {
   p2p_port: number;
   /** False when freebank.conf says listen=0: no incoming peers. */
   listens: boolean;
+  /** freebank.conf binds the peer port to this computer only (v0.2.6). */
+  peers_local?: boolean;
   versions: Versions;
 }
 
@@ -343,4 +345,24 @@ export function megabytes(bytes: number, total: number | null): string {
   if (!bytes && !total) return "Connecting…";
   const mb = (n: number) => (n / 1e6).toFixed(1);
   return `${mb(bytes)}${total ? ` of ${mb(total)}` : ""} MB`;
+}
+
+/** A node log line in words (v0.2.6, the UX walk-through: the sync screen showed raw node lines for minutes). A line
+ *  that reads like an error is shown as it is; routine lines get a phrase; anything else isn't shown. */
+export function friendlyLog(line: string | null | undefined): string | null {
+  if (!line) return null;
+  if (/error|fail|corrupt|unable|cannot|refus/i.test(line)) return line;
+  const rules: [RegExp, string][] = [
+    [/mainchain block cache|bmm|enforcer/i, "Reading the eCash chain…"],
+    [/mempool/i, "Loading payments that wait for a block…"],
+    [/reindex/i, "Rebuilding the chain index…"],
+    [/block index|loading block|block database/i, "Loading the chain…"],
+    [/verifying/i, "Checking recent blocks…"],
+    [/rewinding|replaying|rolling/i, "Catching up after the last stop…"],
+    [/wallet/i, "Opening your wallet…"],
+    [/updatetip|height=/i, "Taking in blocks…"],
+    [/peer|addrman|bound to|connection/i, "Finding other FreeBank nodes…"],
+  ];
+  for (const [re, words] of rules) if (re.test(line)) return words;
+  return null;
 }

@@ -125,10 +125,15 @@
       }
     } catch (e) {
       error = nice(e);
+      // If it no longer waits (it failed for good), its dialog goes: the reason stays on screen below.
+      if (allow) failed = { confirm: h.confirm, text: `${h.name}'s payment didn't go out: ${error}` };
     }
     busy = false;
     load();
   }
+
+  // A held payment that failed for good (v0.2.6, the walk-through: its dialog closed without a word).
+  let failed: { confirm: string; text: string } | null = null;
 
   function mmss(s: number) {
     s = Math.max(0, s);
@@ -145,6 +150,13 @@
   }
   $: askPass = needPass || (!!wallet && wallet.encrypted === true && wallet.locked && !wallet.phone_send);
 </script>
+
+{#if failed && !held.some((x) => x.confirm === failed?.confirm)}
+  <div class="card phone-failed" role="status" data-testid="phone-failed">
+    <p>{failed.text}</p>
+    <button class="secondary" on:click={() => (failed = null)}>OK</button>
+  </div>
+{/if}
 
 {#if approvals.length}
   {@const a = approvals[0]}

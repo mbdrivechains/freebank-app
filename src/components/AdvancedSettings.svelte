@@ -98,6 +98,14 @@
           </div>
         {/each}
       </div>
+      <!-- The list above the box reads the saved addresses: say so when the typed ones work (v0.2.6, the walk-through:
+           Test connection went green while the checklist still said "not found"). -->
+      {#if dirty && checks.length && checks.every((c) => c.ok) && !lockedReason}
+        <p class="hint ok-note">
+          These addresses work.
+          <button class="link-btn inline" on:click={save} disabled={saving} type="button">{saving ? "Saving…" : "Save them and use them"}</button>
+        </p>
+      {/if}
     {/if}
     <label>
       FreeBank data folder

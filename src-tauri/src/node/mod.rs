@@ -106,6 +106,17 @@ pub struct Settings {
     pub keep_phone: bool,
     /// The question was asked (once, after the first phone pairs) or the switch was used.
     pub keep_phone_asked: bool,
+    /// The eCash node's RPC, host:port, when it isn't on `rest`'s port (v0.2.6, the app's eCash wallet).
+    pub l1_rpc: Option<String>,
+    /// The eCash node's data folder, for its login (its cookie or bitcoin.conf), when it isn't the eCash default.
+    pub l1_datadir: Option<String>,
+    /// The eCash node's RPC user, for a node on another computer (its password: ecash/conn.rs `password_path`).
+    pub l1_user: Option<String>,
+    /// Wallets beside the main one (v0.2.6, wallets.rs), the one the screens use (None: the main), and the main
+    /// wallet's name in the node once others are open.
+    pub extra_wallets: Vec<crate::wallets::ExtraWallet>,
+    pub active_wallet: Option<String>,
+    pub main_wallet: Option<String>,
 }
 
 impl Default for Settings {
@@ -124,6 +135,12 @@ impl Default for Settings {
             keep_running: false,
             keep_phone: false,
             keep_phone_asked: false,
+            l1_rpc: None,
+            l1_datadir: None,
+            l1_user: None,
+            extra_wallets: Vec::new(),
+            active_wallet: None,
+            main_wallet: None,
         }
     }
 }
