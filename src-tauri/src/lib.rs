@@ -117,8 +117,14 @@ pub fn run() {
             // so the app's own link never takes turns with it at the relay.
             app.manage(phone::commands::PhoneBackground(phone::background::take_back(&dir)));
             let phone = phone::commands::start(app.handle(), &dir, client, relock);
+            let hosting = phone.0.as_ref().ok().cloned();
             app.manage(phone);
             let mgr = Arc::new(NodeManager::new(dir));
+            // Hosted wallets (v0.2.8): the phone link makes them in this node, and finishes what a restart cut short.
+            if let Some(p) = hosting {
+                p.set_maker(Arc::new(wallets::HostedMaker { mgr: mgr.clone() }));
+                tauri::async_runtime::spawn(p.resume_hosted());
+            }
             // Several wallets (v0.2.6): the clients name the main wallet once others are listed, and the screens'
             // client the one chosen last time.
             {
@@ -218,6 +224,12 @@ pub fn run() {
             node::commands::refetch_start,
             phone::commands::phone_pair_start,
             phone::commands::phone_pair_answer,
+            phone::commands::phone_hosted,
+            phone::commands::phone_hosted_answer,
+            phone::commands::phone_hosted_remove,
+            phone::commands::phone_hosted_retry,
+            phone::commands::phone_hosted_remove_passkey,
+            commands::member_addresses,
             phone::commands::phone_approve_info,
             phone::commands::phone_approve_set,
             phone::commands::phone_approval_cancel,

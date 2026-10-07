@@ -21,6 +21,8 @@ pub const DEFAULT_RELAY: &str = "wss://app.ecxfreebank.com/ws";
 pub const DEFAULT_LIMIT_SATS: u64 = 10_000_000;
 pub const SATS: f64 = 100_000_000.0;
 pub const MAX_ECX: f64 = 21_000_000.0;
+/// sends.log's size before it starts afresh (the older one kept as sends.log.1).
+pub const SENDS_LOG_MAX: u64 = 2 * 1024 * 1024;
 
 pub fn day_of(unix: u64) -> u64 {
     unix / 86_400
@@ -243,7 +245,7 @@ impl Store {
     }
 
     /// Write via a temp file and rename, mode 0600.
-    fn write_private(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+    pub(super) fn write_private(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
         self.ensure_dir()?;
         let path = self.dir.join(name);
         let tmp = self.dir.join(format!(".{name}.tmp"));
@@ -259,7 +261,7 @@ impl Store {
         std::fs::rename(&tmp, &path).map_err(|e| format!("rename {}: {e}", path.display()))
     }
 
-    fn read_json<T: for<'de> Deserialize<'de> + Default>(&self, name: &str) -> T {
+    pub(super) fn read_json<T: for<'de> Deserialize<'de> + Default>(&self, name: &str) -> T {
         std::fs::read(self.dir.join(name))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -314,7 +316,13 @@ impl Store {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        if let Ok(mut f) = opts.open(self.dir.join("sends.log")) {
+        // Kept to about 2 MB: the older half moves to sends.log.1, written over each time (security review of
+        // v0.2.8, L8: a scripted phone could otherwise grow it without end).
+        let path = self.dir.join("sends.log");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > SENDS_LOG_MAX) {
+            let _ = std::fs::rename(&path, self.dir.join("sends.log.1"));
+        }
+        if let Ok(mut f) = opts.open(&path) {
             let _ = writeln!(f, "{}", entry);
         }
     }

@@ -114,6 +114,18 @@ pub async fn get_new_address(client: State<'_, ClientState>) -> Result<String, S
         .ok_or_else(|| "Invalid address response".to_string())
 }
 
+/// The screens' wallet's member addresses (v0.2.8): one per members-only or redeem-only house where it is a member,
+/// for being paid in that house's notes (a new address wouldn't be a member).
+#[tauri::command]
+pub async fn member_addresses(client: State<'_, ClientState>) -> Result<Vec<serde_json::Value>, String> {
+    let c = client.inner().clone();
+    Ok(crate::phone::hosted::member_addresses(move |m, p| {
+        let c = c.clone();
+        async move { c.lock().await.call_ui(m, p).await }
+    })
+    .await)
+}
+
 /// Get recent transactions
 #[tauri::command]
 pub async fn get_transactions(

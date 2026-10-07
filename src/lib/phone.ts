@@ -159,6 +159,59 @@ export interface KeepInfo {
   at_login_here: boolean;
 }
 
+/** Hosted wallets (v0.2.8, src-tauri/src/phone/hosted.rs): a wallet this desktop keeps for someone else's phone. */
+export type HostedStep = "setup" | "words" | "joining" | "ready" | "moving" | "moved" | "failed";
+
+export interface HostedPhone {
+  id: string;
+  name: string;
+  house: number;
+  house_name: string;
+  /** The inviting phone's name. */
+  by: string;
+  added: number;
+  last_seen: number | null;
+  step: HostedStep;
+  why: string | null;
+  member: string | null;
+  moved_at: number | null;
+  /** The copy here was deleted: at the node's next start its file goes (emptied by the move home) or moves aside. */
+  remove: boolean;
+  /** The move home found it holding nothing. */
+  empty: boolean;
+  /** Moving home: their own computer's address, which the house adds as a member. */
+  move_to: string | null;
+  face_id: boolean;
+  online: boolean;
+}
+
+/** An invited phone asking to join (the inviting phone usually answers it). */
+export interface HostedAsk {
+  id: string;
+  device: string;
+  name: string;
+  code: string;
+  house: number;
+  house_name: string;
+  by: string;
+  expires: number;
+}
+
+export interface HostedInfo {
+  phones: HostedPhone[];
+  asks: HostedAsk[];
+}
+
+export const HOSTED_STEP: Record<HostedStep, string> = {
+  setup: "Making the wallet",
+  words: "Showing its recovery words",
+  joining: "Joining the house",
+  ready: "Ready",
+  moving: "Moving to their own computer",
+  moved: "Moved to their own computer",
+  failed: "Couldn't be made",
+};
+
 export const phone = {
   keepInfo: () => tauriInvoke("phone_keep_info") as Promise<KeepInfo>,
   /** On also keeps the node running. */
@@ -192,9 +245,15 @@ export const phone = {
   status: () => tauriInvoke("phone_relay_status") as Promise<RelayStatus>,
   setRelay: (url: string) => tauriInvoke("phone_set_relay", { url }) as Promise<void>,
   recentSends: () => tauriInvoke("phone_recent_sends") as Promise<PhoneSend[]>,
+  hosted: () => tauriInvoke("phone_hosted") as Promise<HostedInfo>,
+  hostedAnswer: (id: string, allow: boolean) => tauriInvoke("phone_hosted_answer", { id, allow }) as Promise<void>,
+  /** Delete the copy here: its phone is cut off, and its wallet file moves aside at the node's next start. */
+  hostedRemove: (id: string) => tauriInvoke("phone_hosted_remove", { id }) as Promise<void>,
+  hostedRetry: (id: string) => tauriInvoke("phone_hosted_retry", { id }) as Promise<void>,
+  hostedRemovePasskey: (id: string) => tauriInvoke("phone_hosted_remove_passkey", { id }) as Promise<void>,
 };
 
-const EVENTS = ["phone-pair-request", "phone-held-send", "phone-send", "phone-changed", "phone-approval"];
+const EVENTS = ["phone-pair-request", "phone-held-send", "phone-send", "phone-changed", "phone-approval", "phone-hosted-moved", "phone-hosted-moving", "phone-move-notice"];
 
 /** Call `cb` on any phone event. Returns a function that stops listening. */
 export async function onPhoneEvent(cb: (name: string, payload: unknown) => void): Promise<() => void> {

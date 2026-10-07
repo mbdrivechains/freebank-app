@@ -449,3 +449,83 @@ async fn real_node_wallet_from_the_words() {
     crate::node::process::stop(&mgr).await.unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A wallet kept for someone else's phone (v0.2.8, `phone::hosted`), made in the app's own node: created, encrypted (the
+/// node stops and the app starts it again), given fresh words' key; its first address is the member address. Then
+/// those words, restored through the app on a second node, make the same wallet: the shopkeeper's move home.
+#[tokio::test]
+#[ignore]
+async fn real_node_hosted_wallet_and_its_move_home() {
+    use crate::phone::hosted::{HostedPhone, Step};
+    struct NoEvents;
+    impl crate::phone::Events for NoEvents {
+        fn emit(&self, _: &str, _: Value) {}
+    }
+    let dir = scratch("fbwallet-hosted");
+    let (mgr, s) = app_with_release(&dir);
+    let mgr_arc = mgr.clone();
+    crate::node::process::start(&mgr).await.unwrap();
+    let c = app_client(&mgr, &s).await;
+    let client = Arc::new(tokio::sync::Mutex::new(c));
+    let (phone, _rx) = crate::phone::Phone::new(
+        &mgr.app_dir,
+        Arc::new(crate::phone::commands::NodeRpc(client.clone())),
+        Arc::new(NoEvents),
+        Arc::new(crate::phone::unix_now),
+    )
+    .unwrap();
+    phone.set_maker(Arc::new(crate::wallets::HostedMaker { mgr: mgr_arc }));
+    let hid = "testshop00000000".to_string();
+    phone.host_for_test(HostedPhone {
+        id: hid.clone(),
+        name: "Shop".into(),
+        p_pub: "x".into(),
+        house: 5,
+        house_name: "Bank of the Stall".into(),
+        by: "Owner".into(),
+        wallet: format!("hosted-{hid}"),
+        step: Step::Setup,
+        ..Default::default()
+    });
+    phone.clone().make_wallet(hid.clone()).await;
+    let h = phone.hosted_list().into_iter().find(|h| h.id == hid).unwrap();
+    assert_eq!(h.step, Step::Words, "{:?}", h.why);
+    let member = h.member.clone().unwrap();
+    assert!(crate::node::process::child_alive(&mgr).await, "the app's node runs again after encrypting");
+    // The words the phone will show, and their first address.
+    let keys: Value = serde_json::from_slice(&std::fs::read(mgr.app_dir.join("phone/hosted-keys.json")).unwrap()).unwrap();
+    let entropy: [u8; 32] = hex::decode(keys["keys"][0]["entropy"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let hd = seed::freebank_hd_seed(&entropy).unwrap();
+    assert_eq!(seed::address(&hd, false, 0).unwrap(), member);
+    // The hosted wallet: encrypted and locked, with the words' key; the main wallet untouched and named from now on.
+    let mut w = app_client(&mgr, &s).await;
+    w.set_wallet(Some(format!("hosted-{hid}")));
+    let info = call(&mut w, "getwalletinfo", vec![]).await;
+    assert_eq!(info["unlocked_until"], json!(0));
+    assert_eq!(info["hdmasterkeyid"], json!(seed::key_id_hex(&seed::key_id(&hd).unwrap())));
+    assert!(mgr.settings.lock().await.main_wallet.is_some());
+    crate::rpc::set_main_wallet(None);
+    crate::node::process::stop(&mgr).await.unwrap();
+
+    // Home: the same words restored through the app on another node give the same first address.
+    let dir2 = scratch("fbwallet-home");
+    let (mgr2, s2) = app_with_release(&dir2);
+    crate::node::process::start(&mgr2).await.unwrap();
+    app_client(&mgr2, &s2).await;
+    let guard = RelockGuard::default();
+    let words = seed::words(&entropy).join(" ");
+    let typed = Zeroizing::new(words);
+    job::run(
+        &mgr2,
+        &guard,
+        Job::Setup { passphrase: random_pass(), restore: Some(seed::parse_words(&typed).unwrap()), fresh: false },
+        &Report::default(),
+    )
+    .await
+    .unwrap();
+    let mut c2 = app_client(&mgr2, &s2).await;
+    assert_eq!(call(&mut c2, "getnewaddress", vec![json!(""), json!("legacy")]).await, json!(member), "the same wallet at home");
+    crate::node::process::stop(&mgr2).await.unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&dir2).unwrap();
+}

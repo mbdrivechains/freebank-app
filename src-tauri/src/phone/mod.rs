@@ -11,6 +11,7 @@
 pub mod background;
 pub mod commands;
 pub mod crypto;
+pub mod hosted;
 pub mod link;
 pub mod login_item;
 pub mod store;
@@ -103,6 +104,11 @@ impl From<RpcFail> for String {
 /// The node, as the narrow door sees it. The app's implementation wraps the wallet's RPC client.
 pub trait Rpc: Send + Sync {
     fn call<'a>(&'a self, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>>;
+    /// A call to the wallet `wallet` (a hosted wallet, v0.2.8), whichever the screens chose.
+    fn call_in<'a>(&'a self, wallet: &'a str, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>> {
+        let _ = (wallet, method, params);
+        Box::pin(async { Err(RpcFail::other("This desktop keeps no wallets for others.")) })
+    }
 }
 
 /// The screen: "Allow this phone?", held sends, the send log.
@@ -183,6 +189,12 @@ pub const EV_PAIR: &str = "phone-pair-request";
 pub const EV_HELD: &str = "phone-held-send";
 pub const EV_SEND: &str = "phone-send";
 pub const EV_CHANGED: &str = "phone-changed";
+/// A hosted wallet moved home: its copy here can be deleted (v0.2.8).
+pub const EV_HOSTED_MOVED: &str = "phone-hosted-moved";
+/// A hosted wallet started moving home, to this address, which the house adds as a member (the re-review, N4).
+pub const EV_HOSTED_MOVING: &str = "phone-hosted-moving";
+/// One of this desktop's phones is moving a hosted wallet here, to this address (the re-review, N3).
+pub const EV_MOVE_NOTICE: &str = "phone-move-notice";
 /// An approval the desktop is waiting for (`{id, text, expires}`), or one that ended (`{id, done: true}`).
 pub const EV_APPROVAL: &str = "phone-approval";
 
@@ -520,6 +532,12 @@ pub struct Phone {
     granting: Mutex<std::collections::HashSet<String>>,
     /// Phones whose ask was declined or not answered, until when they may ask again.
     grant_refused: Mutex<HashMap<String, u64>>,
+    /// Hosted wallets (v0.2.8, `hosted.rs`): the phones this desktop keeps a wallet for, the open invites, the hosted
+    /// pair requests waiting for the inviting phone, and what makes the wallets.
+    hosted: Mutex<hosted::HostedList>,
+    invites: Mutex<Vec<hosted::Invite>>,
+    hosted_asks: Mutex<Vec<hosted::HostedAsk>>,
+    maker: Mutex<Option<Arc<dyn hosted::Maker>>>,
     out: mpsc::UnboundedSender<Value>,
     /// Wakes the link: the relay URL changed, or it has (or no longer has) something to do.
     pub wake: tokio::sync::Notify,
@@ -673,6 +691,58 @@ fn house_view(h: &Value) -> Value {
 }
 
 /// A FreeBank legacy address: 'X', base58, 26 to 35 characters. The node checks the rest.
+/// A wallet's transactions as the phone shows them, newest first (the node lists oldest first).
+fn history_view(r: &Value) -> Value {
+    let list: Vec<Value> = r
+        .as_array()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .rev()
+        .map(|t| {
+            json!({
+                "txid": t["txid"], "category": t["category"], "amount": t["amount"],
+                "confirmations": t["confirmations"], "time": t["time"], "address": t["address"],
+            })
+        })
+        .collect();
+    Value::Array(list)
+}
+
+/// A wallet's notes (`listmynotes`) as the phone shows them, with their houses' names, states and types.
+fn notes_view(mine: &Value, houses: &Value) -> Value {
+    let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
+    let list = mine
+        .as_array()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .map(|n| {
+            let id = n["house_id"].as_u64().unwrap_or(0);
+            let house = houses.iter().find(|h| h["id"].as_u64() == Some(id));
+            let units = n["units"].as_u64().unwrap_or(0);
+            let redeemable = n["redeemable_units"]
+                .as_u64()
+                .unwrap_or(if n["redeemable"] == true { units } else { 0 });
+            let state = n["house_status"].as_str().unwrap_or("").chars().next().unwrap_or('?');
+            json!({
+                "house": id,
+                "name": house.map(|h| h["classid"].clone()).unwrap_or(Value::Null),
+                "state": state.to_string(),
+                "state_name": state_name(state),
+                "amount": to_ecx(units),
+                "demanded": to_ecx(n["demanded_units"].as_u64().unwrap_or(0)),
+                "redeemable": to_ecx(redeemable),
+                "can_redeem": n["redeemable"] == true,
+                "can_demand": n["demandable"] == true,
+                "rate_bps": house.map(|h| h["defer_interest_bps"].clone()).unwrap_or(Value::Null),
+                "type": house_type(house),
+            })
+        })
+        .collect();
+    Value::Array(list)
+}
+
 fn plausible_address(a: &str) -> bool {
     const B58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     a.starts_with('X') && (26..=35).contains(&a.len()) && a.chars().all(|c| B58.contains(c))
@@ -699,6 +769,10 @@ impl Phone {
         }
         let config = store.load_config();
         let saved = store.load_held();
+        let mut hosted = store.load_hosted();
+        for h in hosted.phones.iter_mut() {
+            h.name = clean_name(&h.name);
+        }
         let (out, rx) = mpsc::unbounded_channel();
         let phone = Arc::new(Self {
             store,
@@ -728,6 +802,10 @@ impl Phone {
             grants: Mutex::default(),
             granting: Mutex::default(),
             grant_refused: Mutex::default(),
+            hosted: Mutex::new(hosted),
+            invites: Mutex::default(),
+            hosted_asks: Mutex::default(),
+            maker: Mutex::new(None),
             out,
             wake: tokio::sync::Notify::new(),
             rpc,
@@ -779,7 +857,7 @@ impl Phone {
 
     /// Whether the link should be up: a phone is paired, or a pairing is open.
     pub fn wanted(&self) -> bool {
-        if !self.devices.lock().unwrap().devices.is_empty() {
+        if !self.devices.lock().unwrap().devices.is_empty() || self.hosting_wanted() {
             return true;
         }
         let p = self.pairing.lock().unwrap();
@@ -806,6 +884,7 @@ impl Phone {
         self.chans.lock().unwrap().clear();
         self.auth.lock().unwrap().clear();
         self.idle.lock().unwrap().clear();
+        self.hosted_asks.lock().unwrap().clear();
         let mut p = self.pairing.lock().unwrap();
         if !p.asks.is_empty() {
             p.asks.clear();
@@ -842,10 +921,11 @@ impl Phone {
                 self.chans.lock().unwrap().remove(&ch);
                 self.auth.lock().unwrap().remove(&ch);
                 self.idle.lock().unwrap().remove(&ch);
+                let hosted_gone = self.drop_hosted_asks_on(ch);
                 let mut p = self.pairing.lock().unwrap();
                 let before = p.asks.len();
                 p.asks.retain(|a| a.ch != ch);
-                if p.asks.len() != before {
+                if p.asks.len() != before || hosted_gone {
                     drop(p);
                     self.events.emit(EV_CHANGED, json!({}));
                 }
@@ -866,7 +946,8 @@ impl Phone {
     /// request; stop it for one that has either.
     fn note_idle(&self, ch: u64) {
         let active = self.chans.lock().unwrap().contains_key(&ch)
-            || self.pairing.lock().unwrap().asks.iter().any(|a| a.ch == ch);
+            || self.pairing.lock().unwrap().asks.iter().any(|a| a.ch == ch)
+            || self.hosted_ask_on(ch);
         let mut idle = self.idle.lock().unwrap();
         if active {
             idle.remove(&ch);
@@ -886,22 +967,11 @@ impl Phone {
     /// Open a pairing: a fresh one-use code for 5 minutes (any earlier code stops working).
     /// Returns the URL the QR code shows and when it expires.
     pub fn pair_start(&self) -> Result<(String, u64), String> {
-        let relay = self.relay_url();
-        let u = url::Url::parse(&relay).map_err(|_| format!("The relay address {relay} isn't a URL."))?;
-        let page_scheme = match u.scheme() {
-            "wss" => "https",
-            "ws" => "http",
-            _ => return Err("The relay address must start with ws:// or wss://.".into()),
-        };
-        let host = u.host_str().ok_or("The relay address has no host.")?;
-        let host = match u.port() {
-            Some(p) => format!("{host}:{p}"),
-            None => host.to_string(),
-        };
+        let page = self.page_url()?;
         let c = rand16();
         let expires = self.now() + PAIR_TTL_SECS;
-        let link = json!({"v": 1, "relay": relay, "room": self.room, "d": self.d_pub, "c": crypto::b64u(&c)});
-        let url = format!("{page_scheme}://{host}/#pair={}", crypto::b64u(link.to_string().as_bytes()));
+        let link = json!({"v": 1, "relay": self.relay_url(), "room": self.room, "d": self.d_pub, "c": crypto::b64u(&c)});
+        let url = format!("{page}/#pair={}", crypto::b64u(link.to_string().as_bytes()));
         let mut p = self.pairing.lock().unwrap();
         p.code = Some(Code { c, expires, state: CodeState::Live });
         // Requests for an earlier code are refused: that code stops working.
@@ -910,6 +980,22 @@ impl Phone {
         self.refuse_asks(&old);
         self.wake.notify_one();
         Ok((url, expires))
+    }
+
+    /// The phone page's address: the relay's host, over https (http for a local ws:// relay).
+    fn page_url(&self) -> Result<String, String> {
+        let relay = self.relay_url();
+        let u = url::Url::parse(&relay).map_err(|_| format!("The relay address {relay} isn't a URL."))?;
+        let page_scheme = match u.scheme() {
+            "wss" => "https",
+            "ws" => "http",
+            _ => return Err("The relay address must start with ws:// or wss://.".into()),
+        };
+        let host = u.host_str().ok_or("The relay address has no host.")?;
+        Ok(match u.port() {
+            Some(p) => format!("{page_scheme}://{host}:{p}"),
+            None => format!("{page_scheme}://{host}"),
+        })
     }
 
     /// Tell these phones no, and let their channels go idle.
@@ -933,25 +1019,54 @@ impl Phone {
 
     fn on_pair(&self, ch: u64, d: &Value) {
         let refuse = || self.send_clear(ch, json!({"t": "pair-refused"}));
-        let mut p = self.pairing.lock().unwrap();
-        let Some(code) = p.code.as_ref() else { return refuse() };
-        if code.state != CodeState::Live || self.now() >= code.expires {
-            return refuse();
-        }
-        let c = code.c;
-        let opened = (|| -> Result<(p256::PublicKey, p256::PublicKey, String), String> {
+        let open = |c: &[u8; 16]| -> Result<(p256::PublicKey, p256::PublicKey, String, bool), String> {
             let e = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
             let n: [u8; 12] = crypto::unb64u(d["n"].as_str().ok_or("n")?)?
                 .try_into()
                 .map_err(|_| "nonce must be 12 bytes")?;
             let ct = crypto::unb64u(d["ct"].as_str().ok_or("ct")?)?;
-            let k = crypto::pair_key(&self.d, &e, &c);
+            let k = crypto::pair_key(&self.d, &e, c);
             let pt: Value = serde_json::from_slice(&crypto::open(&k, &n, &ct)?).map_err(|_| "not JSON")?;
             let phone = crypto::parse_pub(pt["p"].as_str().ok_or("p")?)?;
-            Ok((e, phone, clean_name(pt["name"].as_str().unwrap_or(""))))
-        })();
-        // A frame that doesn't open with the live code is refused, and changes nothing.
-        let Ok((e, phone, name)) = opened else { return refuse() };
+            Ok((e, phone, clean_name(pt["name"].as_str().unwrap_or("")), pt["hosted"] == true))
+        };
+        // The pairing code first, then the open invites (v0.2.8). A frame that opens with none of them is refused,
+        // and changes nothing; a hosted request needs an invite's code, and an owner's the pairing code.
+        let live = {
+            let p = self.pairing.lock().unwrap();
+            p.code.as_ref().filter(|c| c.state == CodeState::Live && self.now() < c.expires).map(|c| c.c)
+        };
+        if let Some(c) = live {
+            if let Ok((e, phone, name, hosted)) = open(&c) {
+                if hosted {
+                    return refuse();
+                }
+                return self.owner_ask(ch, &e, &phone, name, c);
+            }
+        }
+        for c in self.invite_codes() {
+            if let Ok((e, phone, name, hosted)) = open(&c) {
+                if !hosted {
+                    return refuse();
+                }
+                return self.hosted_ask(ch, &e, &phone, name, c);
+            }
+        }
+        refuse()
+    }
+
+    /// A pair request that opened with the pairing code: "Allow this phone?".
+    fn owner_ask(&self, ch: u64, e: &p256::PublicKey, phone: &p256::PublicKey, name: String, c: [u8; 16]) {
+        let refuse = || self.send_clear(ch, json!({"t": "pair-refused"}));
+        let mut p = self.pairing.lock().unwrap();
+        // A newer pairing code since: this request's is gone.
+        if p.code.as_ref().is_none_or(|code| code.c != c || code.state != CodeState::Live) {
+            return refuse();
+        }
+        // A hosted phone can't pair as an owner's too.
+        if self.hosted_by_pub(&crypto::pub_b64u(phone)).is_some() {
+            return refuse();
+        }
         // One waiting request per channel (a later one replaces it), and a few at most.
         p.asks.retain(|a| a.ch != ch);
         if p.asks.len() >= MAX_ASKS {
@@ -959,11 +1074,11 @@ impl Phone {
         }
         let ask = Ask {
             ch,
-            p_pub: crypto::pub_b64u(&phone),
+            p_pub: crypto::pub_b64u(phone),
             id: hex::encode(&rand16()[..8]),
-            device: Device::id_for(&phone),
+            device: Device::id_for(phone),
             name,
-            code: crypto::pair_code(&self.d.public_key(), &phone, &e, &c),
+            code: crypto::pair_code(&self.d.public_key(), phone, e, &c),
         };
         p.asks.push(ask.clone());
         drop(p);
@@ -1120,7 +1235,7 @@ impl Phone {
 
     fn on_hello(&self, ch: u64, d: &Value) {
         let p_str = d["p"].as_str().unwrap_or("");
-        let dev = self.devices.lock().unwrap().by_pub(p_str).map(|x| x.id.clone());
+        let dev = self.devices.lock().unwrap().by_pub(p_str).map(|x| x.id.clone()).or_else(|| self.hosted_by_pub(p_str));
         let keys = (|| -> Result<_, String> {
             let p = crypto::parse_pub(p_str)?;
             let ep = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
@@ -1142,10 +1257,17 @@ impl Phone {
         let gen = rand::RngCore::next_u64(&mut rand::rngs::OsRng);
         self.auth.lock().unwrap().insert(ch, Auth { gen, ..Default::default() });
         // Revoked while this hello was on its way (security review L2): no session for it.
-        if !self.devices.lock().unwrap().devices.iter().any(|d| d.id == dev) {
+        if self.device_has_passkey(dev).is_none() {
             self.chans.lock().unwrap().remove(&ch);
             self.auth.lock().unwrap().remove(&ch);
             return self.send_clear(ch, json!({"t": "denied"}));
+        }
+        if let Some(hid) = hosted::hosted_id(dev) {
+            let now = self.now();
+            let _ = self.with_hosted(hid, |h| h.last_seen = Some(now));
+            self.send_clear(ch, json!({"t": "hello-ok", "e": crypto::pub_b64u(&ed.public_key())}));
+            self.events.emit(EV_CHANGED, json!({}));
+            return;
         }
         {
             let mut devs = self.devices.lock().unwrap();
@@ -1216,6 +1338,10 @@ impl Phone {
     // ----- the narrow door -------------------------------------------------------------------
 
     async fn serve(self: &Arc<Self>, ch: u64, dev: &str, req: &Value) -> Result<Value, String> {
+        // A hosted phone has its own door, and never this one (v0.2.8).
+        if let Some(hid) = hosted::hosted_id(dev) {
+            return self.serve_hosted(ch, dev, hid, req).await;
+        }
         let a = &req["a"];
         let m = req["m"].as_str().unwrap_or("");
         // A request that was on its way when the phone was revoked (security review L2).
@@ -1233,6 +1359,8 @@ impl Phone {
             "auth" => return self.auth_open(ch, dev, a),
             // Its own Face ID (an assertion over the approval's challenge), or a decline: not behind the session's.
             "approve" => return self.approve_answer(ch, dev, a),
+            // The same for an invited phone asking to join (v0.2.8).
+            "allow" => return self.allow_answer(ch, dev, a),
             "passkey-add" => {
                 self.first_passkey_allowed(dev)?;
                 let r = self.passkey_add(ch, dev, a);
@@ -1283,21 +1411,7 @@ impl Phone {
             "history" => {
                 let count = a["count"].as_u64().unwrap_or(20).clamp(1, HISTORY_MAX);
                 let r = self.rpc.call("listtransactions", vec![json!("*"), json!(count)]).await?;
-                // The node lists oldest first; the phone shows newest first.
-                let list: Vec<Value> = r
-                    .as_array()
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[])
-                    .iter()
-                    .rev()
-                    .map(|t| {
-                        json!({
-                            "txid": t["txid"], "category": t["category"], "amount": t["amount"],
-                            "confirmations": t["confirmations"], "time": t["time"], "address": t["address"],
-                        })
-                    })
-                    .collect();
-                Ok(Value::Array(list))
+                Ok(history_view(&r))
             }
             "receive" => {
                 // A new wallet gives out no address until it has its passphrase and recovery words
@@ -1307,7 +1421,14 @@ impl Phone {
                     return Err(crate::recovery::WALLET_NOT_SET_UP.into());
                 }
                 let r = self.rpc.call("getnewaddress", vec![json!(""), json!("legacy")]).await?;
-                Ok(json!({"address": r.as_str().ok_or("bad address")?}))
+                // And the wallet's member addresses, for being paid in a members-only house's notes (v0.2.8).
+                let rpc = self.rpc.clone();
+                let members = hosted::member_addresses(move |m, p| {
+                    let rpc = rpc.clone();
+                    async move { rpc.call(m, p).await.map_err(|e| e.plain()) }
+                })
+                .await;
+                Ok(json!({"address": r.as_str().ok_or("bad address")?, "members": members}))
             }
             "status" => {
                 let r = self.rpc.call("getblockchaininfo", vec![]).await?;
@@ -1327,6 +1448,20 @@ impl Phone {
                 }))
             }
             "notes" => self.notes().await,
+            // Hosted wallets (v0.2.8): this wallet's members-only houses, and an invite into one.
+            "houses-mine" => self.houses_mine().await,
+            // A phone moving a hosted wallet to this computer says so first (the re-review of v0.2.8, N3): the desktop
+            // shows the address, and says whether it is this wallet's, so a wrong computer can't take the money unseen.
+            "move-notice" => {
+                let address = a["address"].as_str().unwrap_or("").trim().to_string();
+                let mine = self.rpc.call("getaddressinfo", vec![json!(address)]).await.is_ok_and(|i| i["ismine"] == true);
+                self.events.emit(
+                    EV_MOVE_NOTICE,
+                    json!({"device": self.device_name(dev), "address": address, "house_name": a["house_name"], "mine": mine}),
+                );
+                Ok(json!({"mine": mine}))
+            }
+            "invite" => self.invite(ch, dev, a).await,
             "houses" => {
                 let r = self.rpc.call("listhouses", vec![]).await?;
                 Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(house_view).collect()))
@@ -1358,7 +1493,20 @@ impl Phone {
     // ----- Face ID: passkeys -----------------------------------------------------------------
 
     fn passkey_of(&self, dev: &str) -> Option<store::Passkey> {
+        if let Some(hid) = hosted::hosted_id(dev) {
+            return self.hosted_get(hid).and_then(|h| h.passkey);
+        }
         self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).and_then(|d| d.passkey.clone())
+    }
+
+    /// Keep (or drop) a phone's passkey: an owner's or a hosted one.
+    fn set_passkey(&self, dev: &str, key: Option<store::Passkey>) -> Result<(), String> {
+        if let Some(hid) = hosted::hosted_id(dev) {
+            self.with_hosted(hid, |h| h.passkey = key)?;
+            self.events.emit(EV_CHANGED, json!({}));
+            return Ok(());
+        }
+        self.with_device(dev, |d| d.passkey = key)
     }
 
     /// Change a device and save the list.
@@ -1408,6 +1556,9 @@ impl Phone {
 
     /// Whether the device has a passkey; None if it is gone.
     fn device_has_passkey(&self, dev: &str) -> Option<bool> {
+        if let Some(hid) = hosted::hosted_id(dev) {
+            return self.hosted_get(hid).filter(|h| !h.remove).map(|h| h.passkey.is_some());
+        }
         self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.passkey.is_some())
     }
 
@@ -1437,8 +1588,8 @@ impl Phone {
     /// `auth-start`: a fresh challenge for this session and purpose.
     fn auth_start(&self, ch: u64, dev: &str, a: &Value) -> Result<Value, String> {
         let purpose = a["for"].as_str().unwrap_or("");
-        if !matches!(purpose, "open" | "send" | "add" | "change") {
-            return Err("for is open, send, add or change".into());
+        if !matches!(purpose, "open" | "send" | "add" | "change" | "invite") {
+            return Err("for is open, send, add, change or invite".into());
         }
         let mut c = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut c);
@@ -1482,6 +1633,17 @@ impl Phone {
         let (origin, rp_id) = webauthn::origin_for(&self.relay_url()).ok_or(ERR_AUTH_FAILED)?;
         let part = |k: &str| crypto::unb64u(x[k].as_str().unwrap_or("")).map_err(|_| ERR_AUTH_FAILED.to_string());
         let (ad, cdj, sig) = (part("ad")?, part("cdj")?, part("sig")?);
+        if let Some(hid) = hosted::hosted_id(dev) {
+            let mut list = self.hosted.lock().unwrap();
+            let key = list.phones.iter_mut().find(|h| h.id == hid).and_then(|h| h.passkey.as_mut()).ok_or("This phone has no Face ID set up.")?;
+            let count = webauthn::verify(&crypto::unb64u(&key.pk)?, &rp_id, &origin, challenge, &ad, &cdj, &sig, key.count)
+                .map_err(|_| ERR_AUTH_FAILED.to_string())?;
+            if count != key.count {
+                key.count = count;
+                self.store.save_hosted(&list)?;
+            }
+            return Ok(count);
+        }
         let mut devs = self.devices.lock().unwrap();
         let key = devs.get_mut(dev).and_then(|d| d.passkey.as_mut()).ok_or("This phone has no Face ID set up.")?;
         let count = webauthn::verify(&crypto::unb64u(&key.pk)?, &rp_id, &origin, challenge, &ad, &cdj, &sig, key.count)
@@ -1502,6 +1664,7 @@ impl Phone {
         self.tell_restart(ch, dev);
         self.replay_finals(ch, dev);
         self.tell_approvals(ch, dev);
+        self.tell_allows(ch, dev);
         Ok(json!({}))
     }
 
@@ -1525,14 +1688,15 @@ impl Phone {
         let sends = a["sends"].as_bool().unwrap_or(false);
         let (count, gen) = self.check_assertion(ch, dev, "add", a, Some(&pk))?;
         let key = store::Passkey { pk: crypto::b64u(&pk), cred: cred.to_string(), sends, count, added: self.now() };
-        self.with_device(dev, |d| d.passkey = Some(key))?;
+        self.set_passkey(dev, Some(key))?;
         self.mark_verified(ch, gen);
         Ok(json!({}))
     }
 
     /// Desktop Settings: "Remove Face ID" for a phone that lost its passkey.
     pub fn remove_passkey(&self, dev: &str) -> Result<(), String> {
-        self.with_device(dev, |d| d.passkey = None)
+        // A hosted phone's too ("h:<id>"), for one that lost its passkey (security review of v0.2.8, info).
+        self.set_passkey(dev, None)
     }
 
     /// The desktop's "Remove Face ID": while "Approve sends on my phone" is on, a phone approves it first, since that
@@ -1546,6 +1710,9 @@ impl Phone {
     }
 
     fn device_name(&self, dev: &str) -> String {
+        if let Some(hid) = hosted::hosted_id(dev) {
+            return self.hosted_get(hid).map(|h| h.name).unwrap_or_default();
+        }
         self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.name.clone()).unwrap_or_default()
     }
 
@@ -1705,36 +1872,7 @@ impl Phone {
             }
         };
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-        let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
-        let list = mine
-            .as_array()
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .map(|n| {
-                let id = n["house_id"].as_u64().unwrap_or(0);
-                let house = houses.iter().find(|h| h["id"].as_u64() == Some(id));
-                let units = n["units"].as_u64().unwrap_or(0);
-                let redeemable = n["redeemable_units"]
-                    .as_u64()
-                    .unwrap_or(if n["redeemable"] == true { units } else { 0 });
-                let state = n["house_status"].as_str().unwrap_or("").chars().next().unwrap_or('?');
-                json!({
-                    "house": id,
-                    "name": house.map(|h| h["classid"].clone()).unwrap_or(Value::Null),
-                    "state": state.to_string(),
-                    "state_name": state_name(state),
-                    "amount": to_ecx(units),
-                    "demanded": to_ecx(n["demanded_units"].as_u64().unwrap_or(0)),
-                    "redeemable": to_ecx(redeemable),
-                    "can_redeem": n["redeemable"] == true,
-                    "can_demand": n["demandable"] == true,
-                    "rate_bps": house.map(|h| h["defer_interest_bps"].clone()).unwrap_or(Value::Null),
-                    "type": house_type(house),
-                })
-            })
-            .collect();
-        Ok(Value::Array(list))
+        Ok(notes_view(&mine, &houses))
     }
 
     /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody
@@ -1759,6 +1897,11 @@ impl Phone {
     /// Daemon mode: `f` runs whenever a paired phone asks for anything, after its session and Face ID checked out.
     pub fn set_waker(&self, f: Arc<dyn Fn() + Send + Sync>) {
         *self.waker.lock().unwrap() = Some(f);
+    }
+
+    /// What makes hosted wallets (v0.2.8). Without it, an allowed hosted phone's wallet fails to be made.
+    pub fn set_maker(&self, m: Arc<dyn hosted::Maker>) {
+        *self.maker.lock().unwrap() = Some(m);
     }
 
     /// Daemon mode: the node is starting (requests that need it are answered `ERR_STARTING`), or answers again.
@@ -1841,6 +1984,7 @@ impl Phone {
     /// whose time is up. The app runs this every second (`expire_forever`); the screens run it too.
     pub fn expire(&self) {
         self.expire_pairing();
+        self.expire_hosted();
         self.close_idle_channels();
         self.settle_scheduled();
         let (now, ttl) = (self.now(), self.held_ttl());
@@ -2667,7 +2811,8 @@ impl Phone {
     /// review M2). Ok once one has, in the last 10 minutes. Otherwise that approval is asked now (once at a time), and
     /// the phone hears to try again after it.
     fn first_passkey_allowed(self: &Arc<Self>, dev: &str) -> Result<(), String> {
-        if self.approve_over().is_none() || self.passkey_of(dev).is_some() {
+        // A hosted phone never approves the owner's payments (v0.2.8).
+        if hosted::hosted_id(dev).is_some() || self.approve_over().is_none() || self.passkey_of(dev).is_some() {
             return Ok(());
         }
         if self.grants.lock().unwrap().get(dev).is_some_and(|&until| self.now() <= until) {

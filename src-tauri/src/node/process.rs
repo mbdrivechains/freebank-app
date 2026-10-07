@@ -157,6 +157,8 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     // child lock held here.)
     *mgr.last_exit.lock().unwrap() = None;
     let s = mgr.settings.lock().await.clone();
+    // Hosted copies whose owner deleted them (v0.2.8): their wallet files move aside while the node is down.
+    crate::phone::hosted::sweep_removed(&mgr.app_dir, Path::new(&s.datadir));
     let tag = s.installed_tag.clone().ok_or("FreeBank isn't installed yet.")?;
     let bin = mgr.freebankd(&tag);
     if !bin.is_file() {

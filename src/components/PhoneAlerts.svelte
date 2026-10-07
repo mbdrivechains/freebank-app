@@ -16,6 +16,7 @@
     paymentWhat,
     phone,
     type HeldSend,
+    type HostedAsk,
     type PairAsk,
     type PhoneWallet,
   } from "../lib/phone";
@@ -23,6 +24,14 @@
   import { showReceipt } from "../lib/receipts";
 
   let asks: PairAsk[] = [];
+  // Hosted wallets (v0.2.8): an invited phone asking to join (its inviting phone usually answers first), and a hosted
+  // wallet that moved home, whose copy here can go.
+  let hostedAsks: HostedAsk[] = [];
+  let moved: { id: string; name: string } | null = null;
+  // The re-review of v0.2.8: the owner sees who is moving home and the member address the house adds (N4); and a
+  // computer a phone moves a hosted wallet to shows the address, and whether it is this wallet's (N3).
+  let moving: { name: string; address: string; house_name: string } | null = null;
+  let arriving: { device: string; address: string; house_name: string | null; mine: boolean } | null = null;
   let held: HeldSend[] = [];
   let wallet: PhoneWallet | null = null;
   let busy = false;
@@ -48,6 +57,7 @@
       now = Math.floor(Date.now() / 1000);
       asks = s.pair_pending;
       held = s.held;
+      hostedAsks = (await phone.hosted().catch(() => null))?.asks ?? [];
       approvals = (await phone.approveInfo()).waiting;
     } catch {
       // The phone relay isn't available; nothing to show.
@@ -64,7 +74,10 @@
   let tick: ReturnType<typeof setInterval>;
   onMount(async () => {
     await load();
-    off = await onPhoneEvent((name) => {
+    off = await onPhoneEvent((name, payload) => {
+      if (name === "phone-hosted-moved") moved = payload as { id: string; name: string };
+      if (name === "phone-hosted-moving") moving = payload as typeof moving;
+      if (name === "phone-move-notice") arriving = payload as typeof arriving;
       if (name !== "phone-send") load();
     });
     tick = setInterval(() => {
@@ -103,6 +116,33 @@
     }
     busy = false;
     load();
+  }
+
+  async function answerHosted(a: HostedAsk, allow: boolean) {
+    busy = true;
+    error = "";
+    try {
+      await phone.hostedAnswer(a.id, allow);
+    } catch (e) {
+      error = nice(e);
+    }
+    busy = false;
+    load();
+  }
+
+  async function deleteMoved(yes: boolean) {
+    const m = moved;
+    if (!m) return;
+    error = "";
+    if (yes) {
+      try {
+        await phone.hostedRemove(m.id);
+      } catch (e) {
+        error = nice(e);
+        return;
+      }
+    }
+    moved = null;
   }
 
   async function answerSend(h: HeldSend, allow: boolean) {
@@ -209,6 +249,75 @@
         </div>
       {/each}
       {#if error}<p class="soft-error">{error}</p>{/if}
+    </div>
+  </div>
+{:else if hostedAsks.length}
+  <div class="phone-modal-back">
+    <div class="phone-modal card" role="dialog" aria-modal="true" aria-labelledby="hosted-title">
+      <h3 id="hosted-title">Let this phone join your house?</h3>
+      <p class="muted small">
+        Someone opened an invite made on your phone. Allowed, this computer keeps a wallet for them, with recovery words
+        of their own, until they move it to a computer of theirs. Their phone reaches only that wallet.
+      </p>
+      {#each hostedAsks as a (a.id)}
+        <div class="ask" data-testid="hosted-ask">
+          <p class="phone-name">{a.name}</p>
+          <p class="small">Joining {a.house_name || `house #${a.house}`}, invited by {a.by}.</p>
+          <p>Allow only if their phone shows <strong class="pair-code">{a.code}</strong></p>
+          <div class="row-actions">
+            <button on:click={() => answerHosted(a, true)} disabled={busy}>Allow</button>
+            <button class="secondary" on:click={() => answerHosted(a, false)} disabled={busy}>Deny</button>
+          </div>
+        </div>
+      {/each}
+      {#if error}<p class="soft-error">{error}</p>{/if}
+    </div>
+  </div>
+{:else if arriving}
+  <div class="phone-modal-back">
+    <div class="phone-modal card" role="dialog" aria-modal="true" aria-labelledby="arriving-title">
+      <h3 id="arriving-title">{arriving.device} is moving a wallet to this computer</h3>
+      {#if arriving.mine}
+        <p class="small">
+          Its money{arriving.house_name ? ` at ${arriving.house_name}` : ""} will arrive at this wallet's address:
+        </p>
+        <p><code>{arriving.address}</code></p>
+        <p class="small">Check that the phone shows the same address before it goes on.</p>
+      {:else}
+        <p class="soft-error">
+          The address that phone is about to move money to isn't this wallet's: <code>{arriving.address}</code>. Tell it
+          to stop.
+        </p>
+      {/if}
+      <div class="row-actions"><button on:click={() => (arriving = null)}>OK</button></div>
+    </div>
+  </div>
+{:else if moving}
+  <div class="phone-modal-back">
+    <div class="phone-modal card" role="dialog" aria-modal="true" aria-labelledby="moving-title">
+      <h3 id="moving-title">{moving.name} is moving their wallet home</h3>
+      <p class="small">
+        Your house adds their computer's address as a member of {moving.house_name || "your house"}, then this computer
+        sends their notes and ECX there:
+      </p>
+      <p><code>{moving.address}</code></p>
+      <p class="small">Their old address is taken off the house once the move is done.</p>
+      <div class="row-actions"><button on:click={() => (moving = null)}>OK</button></div>
+    </div>
+  </div>
+{:else if moved}
+  <div class="phone-modal-back">
+    <div class="phone-modal card" role="dialog" aria-modal="true" aria-labelledby="moved-title">
+      <h3 id="moved-title">{moved.name} has moved their wallet home</h3>
+      <p class="small">
+        Their notes and coins are on their own computer now, and the copy this computer kept holds nothing. Delete
+        it? Their phone is cut off here, and at the node's next start the wallet file and its passphrase are deleted.
+      </p>
+      {#if error}<p class="soft-error">{error}</p>{/if}
+      <div class="row-actions">
+        <button on:click={() => deleteMoved(true)}>Delete the copy</button>
+        <button class="secondary" on:click={() => deleteMoved(false)}>Later</button>
+      </div>
     </div>
   </div>
 {:else if send}

@@ -309,9 +309,14 @@ pub fn address(hd_seed: &[u8; 32], internal: bool, index: u32) -> Result<String,
     let mut child = child.map_err(|e| e.to_string())?;
     let pk = PublicKey::from_secret_key(&secp, &child.private_key).serialize();
     wipe(&mut child);
+    Ok(p2pkh_address(&pk))
+}
+
+/// A public key's P2PKH address with FreeBank's prefix (a house partner's, `gethouse`).
+pub fn p2pkh_address(pubkey: &[u8]) -> String {
     let mut data = vec![PUBKEY_ADDRESS];
-    data.extend_from_slice(hash160::Hash::hash(&pk).as_byte_array());
-    Ok(base58::encode_check(&data))
+    data.extend_from_slice(hash160::Hash::hash(pubkey).as_byte_array());
+    base58::encode_check(&data)
 }
 
 // ---- The seed file ----

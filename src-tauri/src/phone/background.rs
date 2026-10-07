@@ -221,6 +221,10 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
     crate::activity::init(&app_dir);
     let mgr = Arc::new(crate::node::NodeManager::new(app_dir.clone()));
     let s = mgr.settings.lock().await.clone();
+    // Other wallets may be open in the node (several wallets, hosted ones): name the main one, as the app does.
+    if !s.extra_wallets.is_empty() || s.main_wallet.is_some() {
+        crate::rpc::set_main_wallet(Some(s.main_wallet.clone().unwrap_or_else(|| crate::wallets::MAIN.into())));
+    }
     let mut client = FreeBankClient::default();
     client.configure_local(&format!("http://127.0.0.1:{}", s.rpc_port), s.datadir.clone().into());
     let mut probe = FreeBankClient::default();
@@ -243,6 +247,7 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
         return 1;
     };
     phone.set_background(true);
+    phone.set_maker(Arc::new(crate::wallets::HostedMaker { mgr: mgr.clone() }));
     if let Some(w) = waker {
         crate::activity::note("daemon: started at login; the node starts when a phone asks");
         let _ = w.phone.set(Arc::downgrade(&phone));
@@ -263,6 +268,7 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
     }
     let link = tokio::spawn(link::run(phone.clone(), out));
     tokio::spawn(phone.clone().expire_forever());
+    tokio::spawn(phone.clone().resume_hosted());
     // Until stopped, or until the app takes the relay room back (the link ends then, L1).
     tokio::select! {
         _ = stopped() => {}
@@ -418,6 +424,24 @@ impl super::Rpc for WakingRpc {
                 Err(e) if e.unreachable() && !e.maybe => Err(self.waker.unreachable()),
                 // The node may have had it and gone (the review of v0.2.7): wake it, but keep the failure as it is,
                 // so a payment that may have gone out says so and keeps its count.
+                Err(e) if e.unreachable() => {
+                    let _ = self.waker.unreachable();
+                    Err(e)
+                }
+                r => r,
+            }
+        })
+    }
+
+    fn call_in<'a>(
+        &'a self,
+        wallet: &'a str,
+        method: &'a str,
+        params: Vec<Value>,
+    ) -> futures_util::future::BoxFuture<'a, Result<Value, RpcFail>> {
+        Box::pin(async move {
+            match self.inner.call_in(wallet, method, params).await {
+                Err(e) if e.unreachable() && !e.maybe => Err(self.waker.unreachable()),
                 Err(e) if e.unreachable() => {
                     let _ = self.waker.unreachable();
                     Err(e)

@@ -54,6 +54,12 @@ impl Rpc for NodeRpc {
             self.0.lock().await.call_fresh_typed_main(method, params).await.map_err(fail_of)
         })
     }
+
+    fn call_in<'a>(&'a self, wallet: &'a str, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>> {
+        Box::pin(async move {
+            self.0.lock().await.call_fresh_typed_in(wallet, method, params).await.map_err(fail_of)
+        })
+    }
 }
 
 /// A call's failure for the narrow door: the node's own error, a call that never reached it, or one it may have had.
@@ -300,6 +306,47 @@ pub async fn phone_approve_set(
 pub fn phone_approve_cancel_scheduled(phone: State<'_, PhoneState>) -> Result<(), String> {
     phone.get()?.cancel_scheduled();
     Ok(())
+}
+
+/// Hosted wallets (v0.2.8): the phones this desktop keeps a wallet for, and the invited phones asking to join.
+#[derive(Serialize)]
+pub struct HostedInfo {
+    pub phones: Vec<super::hosted::HostedView>,
+    pub asks: Vec<super::hosted::HostedAsk>,
+}
+
+#[tauri::command]
+pub fn phone_hosted(phone: State<'_, PhoneState>) -> Result<HostedInfo, String> {
+    let p = phone.get()?;
+    Ok(HostedInfo { phones: p.hosted_list(), asks: p.hosted_pending() })
+}
+
+/// Allow or refuse an invited phone from the desktop (the inviting phone can too).
+#[tauri::command]
+pub fn phone_hosted_answer(phone: State<'_, PhoneState>, id: String, allow: bool) -> Result<(), String> {
+    phone.get()?.hosted_answer(&id, allow)
+}
+
+/// "Try again" for a hosted wallet that failed.
+#[tauri::command]
+pub fn phone_hosted_retry(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
+    phone.get()?.hosted_retry(&id)
+}
+
+/// "Remove Face ID" for a hosted phone that lost its passkey.
+#[tauri::command]
+pub fn phone_hosted_remove_passkey(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
+    phone.get()?.remove_passkey(&format!("{}{}", super::hosted::PREFIX, id))
+}
+
+/// Delete the copy here of a hosted wallet: its phone is no longer served, and its file moves aside at the node's
+/// next start.
+#[tauri::command]
+pub async fn phone_hosted_remove(phone: State<'_, PhoneState>, id: String) -> Result<(), String> {
+    let p = phone.get()?.clone();
+    // A copy the move emptied is looked at again first: money that arrived since is sent on (the re-review, N2).
+    p.hosted_empty_now(&id).await?;
+    p.hosted_remove(&id)
 }
 
 /// "Cancel" on the desktop's screen while it waits for a phone's approval.

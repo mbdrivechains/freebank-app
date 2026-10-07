@@ -82,6 +82,13 @@ macOS.
 - **Several wallets** (v0.2.6): `src-tauri/src/wallets.rs`. A wallet from the words is BIP85's HD-Seed WIF at index
   1, 2 and on, given to the node with `sethdseed`; it shares the wallet passphrase. A wallet file is copied into the
   node's wallet folder, readable by your user only, and keeps its own passphrase.
+- **Wallets kept for others** (v0.2.8): `src-tauri/src/phone/hosted.rs`. An invited phone's wallet is made in your node
+  (`createwallet hosted-<id>`, `encryptwallet` with a random 32-byte passphrase, `sethdseed` from fresh words, BIP85
+  index 0). The passphrase, and the words' entropy until their phone confirms them, are in
+  `<app data>/phone/hosted-keys.json` (readable by your user only, with a `.bak` of the last one); the list of those
+  phones is `hosted.json` beside it. The words are shown once to their phone and never stored after. A hosted phone
+  is served by `serve_hosted` only, never by the owner's narrow door. Deleting a copy: emptied by the move home, the
+  file and its passphrase are deleted at the node's next start; otherwise they move into `<app data>/hosted-removed/`.
 - **Copying the words to the clipboard:** `src-tauri/src/clipboard.rs`.
 - **The screens that show or take the words:** `src/components/RecoveryWords.svelte`, `WalletFlow.svelte` and
   `WalletSettings.svelte` (Show recovery words, and Show xprv: the wallet's master extended private key, derived from
@@ -153,7 +160,11 @@ another address and key from the environment, for the update's end-to-end test; 
   - the passphrase: `encryptwallet`, `walletpassphrase`, `walletlock`, `walletpassphrasechange`;
   - `sethdseed` (the key from the words), `backupwallet`, `rescanblockchain` and `stop`;
   - `getnewaddress` (Receive, a phone's Receive, and moving coins to new words);
-  - `createwallet` and `loadwallet` (several wallets, v0.2.6).
+  - `createwallet` and `loadwallet` (several wallets, v0.2.6; and wallets kept for others, v0.2.8);
+  - for wallets kept for others (v0.2.8): `addhousemembers` and `removehousemembers` from your wallet (signed with the
+    phone-send passphrase), a 0.01 ECX fee float to them, and from their wallet `transfernote`, `redeemnote` and
+    `sendtoaddress` (each with their phone's Face ID, or moving their money home), `listmynotes`, `getbalance`;
+    `listhousemembers` and `listreceivedbyaddress` to find member addresses.
 - **Bidding** (v0.2.6, `src-tauri/src/ecash/bmm.rs`): the FreeBank node's `get_block_template`, `get_bmm_inclusions`
   and `connect_block`, the calls for an outside bidder.
 - **The eCash node** (v0.2.6): its wallets watch-only (`createwallet`, `importdescriptors`, `loadwallet`), addresses,
@@ -208,7 +219,8 @@ Give your assistant the checked-out tree and something like this:
 > limit, approval on the desktop, Face ID; `src-tauri/src/phone/`), and any app path that pays or shows the recovery
 > words without "Approve sends on my phone" asking while it is on;
 > (5) any way the eCash node can make FreeBank sign a payment other than the one shown, or bid beyond the daily cap
-> (`src-tauri/src/ecash/`);
+> (`src-tauri/src/ecash/`); any way a hosted phone (`src-tauri/src/phone/hosted.rs`) reaches the owner's wallet,
+> another hosted wallet, or more than its own house's member changes;
 > (6) downloads or processes started from untrusted input, and whether the node's signature is checked before it runs;
 > (7) dependencies in `src-tauri/Cargo.lock` or `package-lock.json` that look out of place or come from outside the
 > usual registries.

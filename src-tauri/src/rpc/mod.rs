@@ -244,6 +244,20 @@ impl FreeBankClient {
         }
     }
 
+    /// `call_fresh_typed` on the wallet named `wallet`, whatever the screens chose: a wallet the desktop keeps for
+    /// someone else's phone (v0.2.8, `phone::hosted`). Only the local node has those.
+    pub async fn call_fresh_typed_in(&mut self, wallet: &str, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+        if self.local_datadir.is_none() {
+            return Err(RpcError::NotConfigured);
+        }
+        match self.call_named(wallet, method, params.clone()).await {
+            Err(RpcError::Http(401) | RpcError::NotConfigured) if self.refresh_local_auth() => {
+                self.call_named(wallet, method, params).await
+            }
+            r => r,
+        }
+    }
+
     /// Check if client is configured
     pub fn is_configured(&self) -> bool {
         self.url.is_some() && self.auth.is_some()
@@ -268,14 +282,19 @@ impl FreeBankClient {
     /// call made again, once.
     async fn call_with(&self, main_only: bool, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
         let Some(w) = self.wallet_for(main_only) else { return self.post(None, method, params).await };
-        match self.post(Some(&w), method, params.clone()).await {
+        self.call_named(&w, method, params).await
+    }
+
+    /// A call to the wallet `w`, opened first if the node restarted since.
+    async fn call_named(&self, w: &str, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+        match self.post(Some(w), method, params.clone()).await {
             Err(RpcError::Rpc { code: WALLET_NOT_LOADED, .. }) => {
                 match self.post(None, "loadwallet", vec![json!(w)]).await {
                     // -35: opened meanwhile by another call.
                     Ok(_) | Err(RpcError::Rpc { code: -35, .. }) => {}
                     Err(e) => return Err(e),
                 }
-                self.post(Some(&w), method, params).await
+                self.post(Some(w), method, params).await
             }
             r => r,
         }

@@ -19,6 +19,8 @@
     type PhoneWallet,
     type RelayStatus,
     type ApproveInfo,
+    type HostedPhone,
+    HOSTED_STEP,
   } from "../lib/phone";
   import { node } from "../lib/node";
   import { nice } from "../lib/errors";
@@ -46,7 +48,38 @@
   let sendBusy = false;
   let sendNote = "";
 
+  // Hosted wallets (v0.2.8): wallets this computer keeps for other people's phones, invited from yours.
+  let hosted: HostedPhone[] = [];
+  let deleting: string | null = null;
+  async function retryHosted(id: string) {
+    try {
+      await phone.hostedRetry(id);
+      load();
+    } catch (e) {
+      error = nice(e);
+    }
+  }
+  async function hostedFaceIdOff(id: string) {
+    try {
+      await phone.hostedRemovePasskey(id);
+      load();
+    } catch (e) {
+      error = nice(e);
+    }
+  }
+
+  async function deleteHosted(id: string) {
+    try {
+      await phone.hostedRemove(id);
+      deleting = null;
+      load();
+    } catch (e) {
+      error = nice(e);
+    }
+  }
+
   async function load() {
+    phone.hosted().then((h) => (hosted = h.phones), () => (hosted = []));
     try {
       [status, devices, sends] = await Promise.all([phone.status(), phone.devices(), phone.recentSends()]);
       if (!relayDirty) relayInput = status.url;
@@ -527,6 +560,60 @@
     </ul>
   {:else if status}
     <p class="hint">No phone is paired yet.</p>
+  {/if}
+
+  {#if hosted.length}
+    <h4 class="hosted-title">Wallets kept for others</h4>
+    <p class="hint">
+      Invited from your phone into your house. This computer keeps each wallet, and could spend it, until its owner
+      moves the money to a computer of their own; the copy here is then empty.
+    </p>
+    <ul class="phone-list" data-testid="hosted-list">
+      {#each hosted as h (h.id)}
+        <li>
+          <div class="phone-head">
+            <strong>{h.name}</strong>
+            {#if h.online}<span class="pill pill-ok">connected</span>{/if}
+            <span class="pill">{h.remove ? "deleting at the node's next start" : HOSTED_STEP[h.step]}</span>
+          </div>
+          <span class="muted small">
+            {h.house_name || `House #${h.house}`} · invited by {h.by} {when(h.added)} · last seen {when(h.last_seen)}
+          </span>
+          {#if h.move_to && (h.step === "moving" || h.step === "moved")}
+            <span class="muted small">Moving to their computer's address <code>{h.move_to}</code></span>
+          {/if}
+          {#if h.why}<span class="muted small">{h.why}</span>{/if}
+          {#if !h.remove && h.step === "failed"}
+            <button class="link-btn inline" on:click={() => retryHosted(h.id)}>Try again</button>
+          {/if}
+          {#if !h.remove && h.face_id && h.step !== "moved"}
+            <button class="link-btn inline" on:click={() => hostedFaceIdOff(h.id)} title="For a phone that lost its passkey: it sets up Face ID again">Remove Face ID</button>
+          {/if}
+          {#if !h.remove}
+            {#if deleting === h.id}
+              <div class="confirm-box">
+                <p>
+                  {#if h.step === "moved" && h.empty}
+                    {h.name}'s money is on their own computer, and this copy holds nothing. Delete it? At the node's
+                    next start the wallet file and its passphrase are deleted.
+                  {:else}
+                    {h.name}'s money is still in this wallet: deleted here, their phone can't use it, and only their
+                    recovery words bring it back. At the node's next start the file moves aside, with its passphrase,
+                    into this app's folder.
+                  {/if}
+                </p>
+                <div class="row-actions">
+                  <button class="danger" on:click={() => deleteHosted(h.id)}>Delete the copy</button>
+                  <button class="secondary" on:click={() => (deleting = null)}>Cancel</button>
+                </div>
+              </div>
+            {:else}
+              <button class="link-btn inline" on:click={() => (deleting = h.id)}>Delete the copy here…</button>
+            {/if}
+          {/if}
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   {#if devices.length && keep}

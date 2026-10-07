@@ -74,6 +74,9 @@ Your wallet lives in your own `freebankd` node, and the app runs it for you.
   FreeBank checks and signs every payment itself.
 - **Several wallets** (v0.2.6, with the FreeBank node v0.2.19): more wallets from the same words, or a wallet file you
   already have. Your phone always uses the main wallet.
+- **Join my bank** (v0.2.8): invite someone with only a phone into a members-only house your wallet runs. This computer
+  keeps a wallet for them, with their own recovery words, until they move their money to a computer of theirs; their
+  phone reaches only that wallet. Custodial while kept here, and said so.
 - Advanced: the app can also connect to your own node on another computer, over Tailscale.
 
 ## First run (desktop)
@@ -101,7 +104,8 @@ bidding) and **Node**, with Settings behind the gear.
 - **Security** (Settings): the wallet's passphrase, the node's ports, old unencrypted backups, file permissions and
   the node program's signature, with red items on Home until fixed
 - **Phone remote**: pair a phone, set its daily limit, allow or refuse bigger payments here; notes and houses on the
-  phone; approve this computer's bigger payments on the phone
+  phone; approve this computer's bigger payments on the phone; invite someone into your house and Scan to pay
+- **Wallets kept for others** (Settings › Phone): the phones invited into your house, their wallets, moving home
 - Keep the node running after you close the app
 - **Notes** — hold / mint / send / redeem / demand, per issuing house
 - **Houses** — directory, registration, reserve attestation; open, members-only or redeem-only houses and their

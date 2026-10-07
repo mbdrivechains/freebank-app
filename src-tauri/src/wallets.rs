@@ -58,7 +58,9 @@ pub struct WalletView {
 /// Make the app's clients follow the settings: name the main wallet once others are listed, and the screens' client the
 /// chosen one. At start and after each change.
 pub fn apply(s: &Settings, client: &mut FreeBankClient) {
-    if s.extra_wallets.is_empty() {
+    // A main wallet named once (another wallet was added, v0.2.6, or a hosted one made, v0.2.8) stays named: other
+    // wallets may be open in the node.
+    if s.extra_wallets.is_empty() && s.main_wallet.is_none() {
         crate::rpc::set_main_wallet(None);
         client.set_wallet(None);
         return;
@@ -381,5 +383,43 @@ mod real {
         assert!(matches!(e, RpcError::Rpc { code: -18, .. }), "{e:?}");
         crate::rpc::set_main_wallet(None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Makes hosted wallets for the phone link (v0.2.8, `phone::hosted`): create the wallet, encrypt it, start the node
+/// again. The main wallet is named from then on, as for a wallet from the words.
+pub struct HostedMaker {
+    pub mgr: Arc<NodeManager>,
+}
+
+impl crate::phone::hosted::Maker for HostedMaker {
+    fn create_encrypted<'a>(&'a self, name: &'a str, pass: &'a str) -> crate::phone::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let mgr = &self.mgr;
+            let mut s = mgr.settings.lock().await.clone();
+            if s.main_wallet.is_none() {
+                s.main_wallet = Some(main_name(mgr, &s).await);
+                mgr.save_settings(s.clone()).await?;
+            }
+            crate::rpc::set_main_wallet(s.main_wallet.clone());
+            let root = client_for(mgr, &s, None, Duration::from_secs(60))?;
+            match root.call_root("createwallet", vec![json!(name)]).await {
+                Ok(_) => {}
+                // Made before an interruption: open it and carry on.
+                Err(RpcError::Rpc { code: -4, message }) if message.contains("already exists") => {
+                    let _ = root.call_root("loadwallet", vec![json!(name)]).await;
+                }
+                Err(e) => return Err(format!("The node couldn't make the wallet: {}", say(e))),
+            }
+            let mut w = client_for(mgr, &s, Some(name), Duration::from_secs(600))?;
+            let info = w.call_fresh_typed("getwalletinfo", vec![]).await.map_err(say)?;
+            if info.get("unlocked_until").is_none() {
+                let ours = crate::node::process::child_alive(mgr).await;
+                let pass = Zeroizing::new(pass.to_string());
+                crate::recovery::job::encrypt(&mut w, &pass).await?;
+                crate::recovery::job::restart_after_encrypt(mgr, &s, ours, &Default::default()).await?;
+            }
+            Ok(())
+        })
     }
 }

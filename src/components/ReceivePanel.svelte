@@ -5,7 +5,7 @@
   import { onMount } from "svelte";
   import { writable } from "svelte/store";
   import QrCode from "./QrCode.svelte";
-  import { api } from "../lib/api";
+  import { api, tauriInvoke } from "../lib/api";
   import { BASE_TICKER } from "../lib/brand";
   import { nice } from "../lib/errors";
   import { withUnlock } from "../lib/wallet";
@@ -47,8 +47,28 @@
     }
   }
 
+  // A members-only house's notes go only to its member addresses (v0.2.8; Michael, 2026-10-05: "yes to both"): a new
+  // address wouldn't be one, so the wallet's member addresses show too.
+  let members: { house: number; name: string | null; address: string }[] = [];
+  let shownMember: string | null = null;
+  async function loadMembers() {
+    try {
+      members = (await tauriInvoke("member_addresses")) as typeof members;
+    } catch {
+      members = [];
+    }
+  }
+  async function copyText(t: string) {
+    try {
+      await navigator.clipboard.writeText(t);
+    } catch {
+      error = "Couldn't copy it; select the address and copy it by hand.";
+    }
+  }
+
   onMount(() => {
     if (canShowAddresses && !address) fresh();
+    if (canShowAddresses) loadMembers();
   });
 </script>
 
@@ -74,5 +94,34 @@
       <p class="muted small">Getting your address…</p>
     {/if}
     <button class="link-btn" on:click={fresh} disabled={busy}>New address</button>
+    {#if members.length}
+      <div class="member-addresses" data-testid="member-addresses">
+        <p class="small"><strong>To be paid in a members-only house's notes</strong>, give its member address:</p>
+        {#each members as m (m.house)}
+          <div class="member-row">
+            <span class="small">Your address at {m.name || `house #${m.house}`}</span>
+            <div class="address-display">
+              <code>{m.address}</code>
+              <button class="secondary" on:click={() => copyText(m.address)}>Copy</button>
+              <button class="link-btn inline" on:click={() => (shownMember = shownMember === m.address ? null : m.address)}>
+                {shownMember === m.address ? "Hide code" : "Show code"}
+              </button>
+            </div>
+            {#if shownMember === m.address}<div class="qr-placeholder"><QrCode text={m.address} size={180} /></div>{/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </div>
+
+<style>
+  .member-addresses {
+    margin-top: 1rem;
+    border-top: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
+    padding-top: 0.75rem;
+  }
+  .member-row {
+    margin-top: 0.5rem;
+  }
+</style>

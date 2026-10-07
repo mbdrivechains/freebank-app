@@ -12,6 +12,8 @@ use std::time::Duration;
 
 const VECTORS: &str = include_str!("../../testdata/phone/kk-v1.json");
 const TO: &str = "XkPvjfFq8Hj9wy9Wq3pRr1sBdXJxZ5nT2m";
+/// Another address the mock node calls valid (v0.2.8: a second destination).
+const TO2: &str = "XqTBMbUvWWb6zKj2yuLV1m8nZr3Cu6uE7R";
 /// The mock wallet's passphrase when it is encrypted.
 const PASS: &str = "correct horse battery staple";
 const LOCKED_MSG: &str = "Error: Please enter the wallet passphrase with walletpassphrase first.";
@@ -32,6 +34,14 @@ struct MockRpc {
     lock_after_look: AtomicBool,
     now: Arc<AtomicU64>,
     wallet: Mutex<MockWallet>,
+    /// Hosted wallets (v0.2.8, tests/hosted.rs): a members-only house 5 run by this wallet, the wallets made for
+    /// others, and the house's members (address, active).
+    hosting: AtomicBool,
+    hosted: Mutex<HashMap<String, MockWallet>>,
+    members: Mutex<Vec<(String, bool)>>,
+    /// Each hosted wallet's notes at house 5 (units) and ECX, as payments and moving home spend them.
+    hosted_notes: Mutex<HashMap<String, u64>>,
+    hosted_ecx: Mutex<HashMap<String, f64>>,
 }
 
 #[derive(Default)]
@@ -56,6 +66,11 @@ impl MockRpc {
             lock_after_look: AtomicBool::new(false),
             now,
             wallet: Mutex::new(MockWallet { txcount: 3, ..Default::default() }),
+            hosting: AtomicBool::new(false),
+            hosted: Mutex::default(),
+            members: Mutex::default(),
+            hosted_notes: Mutex::default(),
+            hosted_ecx: Mutex::default(),
         }
     }
 
@@ -111,7 +126,15 @@ impl Rpc for MockRpc {
                 "getbalance" => Ok(json!(1.5)),
                 "getunconfirmedbalance" => Ok(json!(0.0)),
                 "getnewaddress" => Ok(json!(TO)),
-                "validateaddress" => Ok(json!({"isvalid": params[0] == TO})),
+                // TO, and the hosted wallets' own first addresses (v0.2.8).
+                "validateaddress" => {
+                    let hosted_first = self.hosted.lock().unwrap().values().any(|w| {
+                        w.hd.as_deref().and_then(|h| hex::decode(h).ok()).and_then(|b| <[u8; 32]>::try_from(b).ok())
+                            .is_some_and(|hd| params[0] == json!(crate::seed::address(&hd, false, 0).unwrap()))
+                    });
+                    let partner = crate::seed::p2pkh_address(&hex::decode(hosted::tests_partner_pubkey()).unwrap());
+                    Ok(json!({"isvalid": params[0] == TO || params[0] == TO2 || hosted_first || params[0] == json!(partner)}))
+                }
                 "getblockchaininfo" => Ok(json!({"blocks": 120, "headers": 120, "initialblockdownload": false})),
                 // Oldest first, as Core lists them.
                 "listtransactions" => Ok(json!([
@@ -190,12 +213,55 @@ impl Rpc for MockRpc {
                          "redeemable": true, "redeemable_units": 500_000, "demandable": true}
                     ]))
                 }
-                "listhouses" => Ok(json!([
-                    {"id": 3, "classid": "Bank of Leith", "tier": 1, "effective_status": "open", "mintedunits": 90_000_000,
-                     "attestedratiobps": 12_500, "lastattestreserves": 1.2, "lastattestheight": 110, "defer_interest_bps": 1000},
-                    {"id": 4, "classid": "Ayr Bank", "tier": 1, "effective_status": "deferred", "mintedunits": 40_000_000,
-                     "attestedratiobps": 6_000, "lastattestreserves": 0.24, "lastattestheight": 100, "defer_interest_bps": 1000}
-                ])),
+                "listhouses" => {
+                    let mut l = json!([
+                        {"id": 3, "classid": "Bank of Leith", "tier": 1, "effective_status": "open", "mintedunits": 90_000_000,
+                         "attestedratiobps": 12_500, "lastattestreserves": 1.2, "lastattestheight": 110, "defer_interest_bps": 1000},
+                        {"id": 4, "classid": "Ayr Bank", "tier": 1, "effective_status": "deferred", "mintedunits": 40_000_000,
+                         "attestedratiobps": 6_000, "lastattestreserves": 0.24, "lastattestheight": 100, "defer_interest_bps": 1000}
+                    ]);
+                    if self.hosting.load(Ordering::SeqCst) {
+                        l.as_array_mut().unwrap().push(json!(
+                            {"id": 5, "classid": "Bank of the Stall", "tier": 1, "effective_status": "open", "type": "members",
+                             "mintedunits": 10_000_000, "attestedratiobps": 12_000, "lastattestreserves": 0.1,
+                             "lastattestheight": 115, "defer_interest_bps": 1000, "member_records": 1}));
+                        l.as_array_mut().unwrap().push(json!(
+                            {"id": 6, "classid": "Someone Else's", "tier": 1, "effective_status": "open", "type": "members",
+                             "mintedunits": 1, "attestedratiobps": 12_000, "lastattestreserves": 0.1,
+                             "lastattestheight": 115, "defer_interest_bps": 1000, "member_records": 0}));
+                    }
+                    Ok(l)
+                }
+                // House 5's partner key is this wallet's; house 6's isn't.
+                "gethouse" => Ok(json!({"id": params[0], "partners": [
+                    {"index": 0, "pubkey": if params[0] == json!(5) { hosted::tests_partner_pubkey() } else { "02".to_string() + &"11".repeat(32) },
+                     "status": "active"}]})),
+                "getaddressinfo" => Ok(json!({"address": params[0],
+                    "ismine": params[0] == json!(crate::seed::p2pkh_address(&hex::decode(hosted::tests_partner_pubkey()).unwrap()))})),
+                // In key order (here: by address), from `start` (inclusive), at most `count`.
+                "listhousemembers" => {
+                    let start = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let count = params.get(2).and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+                    let mut l: Vec<(String, bool)> = self.members.lock().unwrap().clone();
+                    l.sort();
+                    Ok(Value::Array(l.into_iter().filter(|(a, _)| *a >= start).take(count).map(|(a, on)| json!({"address": a, "active": on})).collect()))
+                }
+                "removehousemembers" => {
+                    let gone: Vec<String> = params[1].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect();
+                    self.members.lock().unwrap().iter_mut().filter(|m| gone.contains(&m.0)).for_each(|m| m.1 = false);
+                    Ok(json!({"txid": format!("txid-{n}")}))
+                }
+                "addhousemembers" => {
+                    let w = self.wallet.lock().unwrap();
+                    if w.pass.is_some() && w.unlocked_until <= now {
+                        return Err(RpcFail::rpc(-13, LOCKED_MSG));
+                    }
+                    drop(w);
+                    for a in params[1].as_array().unwrap() {
+                        self.members.lock().unwrap().push((a.as_str().unwrap().to_string(), false));
+                    }
+                    Ok(json!({"txid": format!("txid-{n}")}))
+                }
                 "transfernote" | "redeemnote" | "demandnote" => {
                     let locked = {
                         let w = self.wallet.lock().unwrap();
@@ -208,6 +274,84 @@ impl Rpc for MockRpc {
                     } else {
                         Ok(json!({"txid": format!("txid-{n}")}))
                     }
+                }
+                _ => Err(RpcFail::rpc(-32601, "Method not found")),
+            }
+        })
+    }
+
+    /// Hosted wallets (v0.2.8): each its own encryption, unlock time and HD seed (from `sethdseed`'s WIF).
+    fn call_in<'a>(&'a self, wallet: &'a str, method: &'a str, params: Vec<Value>) -> BoxFuture<'a, Result<Value, RpcFail>> {
+        Box::pin(async move {
+            let n = {
+                let mut c = self.calls.lock().unwrap();
+                c.push((format!("{wallet}/{method}"), params.clone()));
+                c.len()
+            };
+            let now = self.now.load(Ordering::SeqCst);
+            let mut all = self.hosted.lock().unwrap();
+            let w = all.get_mut(wallet).ok_or_else(|| RpcFail::rpc(-18, "Requested wallet does not exist or is not loaded"))?;
+            let locked = w.pass.is_some() && w.unlocked_until <= now;
+            let hd = || -> Option<[u8; 32]> { w.hd.as_deref().and_then(|h| hex::decode(h).ok()).and_then(|b| b.try_into().ok()) };
+            match method {
+                "getwalletinfo" => {
+                    let mut info = json!({"walletname": wallet, "txcount": 0});
+                    if let Some(hd) = hd() {
+                        info["hdmasterkeyid"] = json!(crate::seed::key_id_hex(&crate::seed::key_id(&hd).unwrap()));
+                    }
+                    if w.pass.is_some() {
+                        info["unlocked_until"] = json!(if locked { 0 } else { w.unlocked_until });
+                    }
+                    Ok(info)
+                }
+                "walletpassphrase" => match w.pass.clone() {
+                    Some(p) if params[0] == json!(p) => {
+                        w.unlocked_until = now + params[1].as_u64().unwrap();
+                        Ok(Value::Null)
+                    }
+                    Some(_) => Err(RpcFail::rpc(-14, WRONG_MSG)),
+                    None => Err(RpcFail::rpc(-15, "unencrypted")),
+                },
+                "walletlock" => {
+                    w.unlocked_until = 0;
+                    Ok(Value::Null)
+                }
+                "sethdseed" if locked => Err(RpcFail::rpc(-13, LOCKED_MSG)),
+                "sethdseed" => {
+                    let raw = bitcoin::base58::decode_check(params[1].as_str().unwrap()).unwrap();
+                    w.hd = Some(hex::encode(&raw[1..33]));
+                    Ok(Value::Null)
+                }
+                "getnewaddress" => Ok(json!(crate::seed::address(&hd().ok_or_else(|| RpcFail::rpc(-4, "no seed"))?, false, 0).unwrap())),
+                "getaddressinfo" => {
+                    let first = hd().map(|h| crate::seed::address(&h, false, 0).unwrap());
+                    Ok(json!({"address": params[0], "ismine": first.is_some_and(|f| params[0] == json!(f))}))
+                }
+                "getbalance" => Ok(json!(*self.hosted_ecx.lock().unwrap().entry(wallet.to_string()).or_insert(0.25))),
+                "getunconfirmedbalance" => Ok(json!(0.0)),
+                "gettransaction" => Ok(json!({"txid": params[0], "confirmations": 1})),
+                "listtransactions" => Ok(json!([])),
+                "listmynotes" => {
+                    let units = *self.hosted_notes.lock().unwrap().entry(wallet.to_string()).or_insert(7_000_000);
+                    if units == 0 {
+                        return Ok(json!([]));
+                    }
+                    Ok(json!([{"house_id": 5, "units": units, "demanded_units": 0, "house_status": "o",
+                        "redeemable": true, "redeemable_units": units, "demandable": true}]))
+                }
+                "transfernote" | "redeemnote" | "sendtoaddress" if locked => Err(RpcFail::rpc(-13, LOCKED_MSG)),
+                "transfernote" | "redeemnote" => {
+                    let mut notes = self.hosted_notes.lock().unwrap();
+                    let left = notes.entry(wallet.to_string()).or_insert(7_000_000);
+                    *left = left.saturating_sub(params[1].as_u64().unwrap_or(0));
+                    Ok(json!({"txid": format!("txid-{n}")}))
+                }
+                "sendtoaddress" => {
+                    let mut ecx = self.hosted_ecx.lock().unwrap();
+                    let left = ecx.entry(wallet.to_string()).or_insert(0.25);
+                    // subtractfeefromamount (the move home's sweep) takes it all.
+                    *left = if params.get(4) == Some(&json!(true)) { 0.0 } else { (*left - params[1].as_f64().unwrap_or(0.0)).max(0.0) };
+                    Ok(json!(format!("txid-{n}")))
                 }
                 _ => Err(RpcFail::rpc(-32601, "Method not found")),
             }
@@ -879,13 +1023,13 @@ async fn receive_waits_until_a_new_wallet_is_protected() {
     crate::seed::write_private(&crate::seed::seed_path(&h.dir), &crate::seed::seal(&e, &id, PASS, quick).unwrap()).unwrap();
     h.rpc.wallet.lock().unwrap().hd = Some(crate::seed::key_id_hex(&id));
     let r = ask(&mut h, &mut sim, 7, 3, "receive", json!({})).await;
-    assert_eq!(r, json!({"id": 3, "ok": {"address": TO}}));
+    assert_eq!(r, json!({"id": 3, "ok": {"address": TO, "members": []}}));
     // An older wallet without protection (it has transactions) still gives addresses.
     let mut h2 = harness(None);
     let mut sim2 = Sim::new();
     paired(&mut h2, &mut sim2, 7).await;
     let r = ask(&mut h2, &mut sim2, 7, 1, "receive", json!({})).await;
-    assert_eq!(r, json!({"id": 1, "ok": {"address": TO}}));
+    assert_eq!(r, json!({"id": 1, "ok": {"address": TO, "members": []}}));
 }
 
 #[tokio::test]
@@ -909,7 +1053,7 @@ async fn door_methods_and_replay() {
     assert!(h.phone.online(&id));
 
     let r = ask(&mut h, &mut sim, 7, 1, "receive", json!({})).await;
-    assert_eq!(r, json!({"id": 1, "ok": {"address": TO}}));
+    assert_eq!(r, json!({"id": 1, "ok": {"address": TO, "members": []}}));
 
     let r = ask(&mut h, &mut sim, 7, 2, "history", json!({"count": 500})).await;
     assert_eq!(r["ok"][0]["txid"], "cc");
@@ -1851,6 +1995,15 @@ fn put(dir: &Path, name: &str, text: &str) {
 }
 
 /// One control command for `page_host`: `<seq> <verb> [args]`. Returns the ack and whether to stop.
+/// page_host's node (FB_NODE_URL, FB_NODE_COOKIE), on its main wallet.
+fn node_client() -> Result<crate::rpc::FreeBankClient, String> {
+    let url = std::env::var("FB_NODE_URL").map_err(|_| "no FB_NODE_URL")?;
+    let cookie = std::env::var("FB_NODE_COOKIE").map_err(|_| "no FB_NODE_COOKIE")?;
+    let mut c = crate::rpc::FreeBankClient::default();
+    c.configure_local(&url, Path::new(&cookie).parent().ok_or("no cookie folder")?.to_path_buf());
+    Ok(c)
+}
+
 async fn host_command(phone: &Arc<Phone>, line: &str, pass_file: Option<&str>) -> (Value, bool) {
     let mut w = line.split_whitespace();
     let seq = w.next().unwrap_or("0").to_string();
@@ -1900,6 +2053,59 @@ async fn host_command(phone: &Arc<Phone>, line: &str, pass_file: Option<&str>) -
                 }
                 Ok(json!({}))
             }
+            // Hosted wallets (v0.2.8, scripts/hosted-real-node.sh): delete a hosted copy; sweep the deleted copies
+            // (as the node's start does) for a node data folder; set this desktop's node up as a new wallet, as Setup
+            // leaves it (fresh words, the passphrase from FB_PASS_FILE, the node restarted by FB_RESTART_CMD, the
+            // words sealed in the app folder); this wallet's member addresses (the desktop's `member_addresses`).
+            "hosted-remove" => {
+                // As the desktop's Delete does: an emptied copy is looked at again first.
+                phone.hosted_empty_now(&arg(0)).await?;
+                phone.hosted_remove(&arg(0))?;
+                Ok(json!({}))
+            }
+            "sweep" => {
+                let app_dir = phone.store.dir.parent().ok_or("no app folder")?.to_path_buf();
+                super::hosted::sweep_removed(&app_dir, Path::new(&arg(0)));
+                Ok(json!({}))
+            }
+            "setup-new" => {
+                let pass = pass_from_file(pass_file).ok_or("no FB_PASS_FILE")?;
+                let restart = std::env::var("FB_RESTART_CMD").map_err(|_| "no FB_RESTART_CMD")?;
+                let mut c = node_client()?;
+                let e = crate::seed::new_entropy();
+                let hd = crate::seed::freebank_hd_seed(&e)?;
+                let _ = c.call_fresh_typed("encryptwallet", vec![json!(pass.as_str())]).await;
+                for _ in 0..120 {
+                    if c.call_root("getblockcount", vec![]).await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let ok = tokio::process::Command::new("bash").arg("-c").arg(&restart).status().await.map_err(|e| e.to_string())?;
+                if !ok.success() {
+                    return Err("the node didn't start again".into());
+                }
+                let chain = crate::seed::Chain::from_name(c.call_fresh_typed("getblockchaininfo", vec![]).await.map_err(|e| e.to_string())?["chain"].as_str().unwrap_or("main"))?;
+                let wif = crate::seed::wif(&hd, chain);
+                c.call_fresh_typed("walletpassphrase", vec![json!(pass.as_str()), json!(60)]).await.map_err(|e| e.to_string())?;
+                let r = c.call_fresh_typed("sethdseed", vec![json!(true), json!(wif.as_str())]).await;
+                let _ = c.call_fresh_typed("walletlock", vec![]).await;
+                r.map_err(|e| e.to_string())?;
+                let id = crate::seed::key_id(&hd)?;
+                let app_dir = phone.store.dir.parent().ok_or("no app folder")?.to_path_buf();
+                crate::seed::write_private(&crate::seed::seed_path(&app_dir), &crate::seed::seal(&e, &id, pass.as_str(), crate::seed::KDF)?)?;
+                Ok(json!({"hd": crate::seed::key_id_hex(&id)}))
+            }
+            "members" => {
+                let c = Arc::new(tokio::sync::Mutex::new(node_client()?));
+                let list = super::hosted::member_addresses(move |m, p| {
+                    let c = c.clone();
+                    async move { c.lock().await.call_ui(m, p).await }
+                })
+                .await;
+                Ok(Value::Array(list))
+            }
             "quit" => Ok(json!({})),
             _ => Err(format!("unknown command {verb:?}")),
         }
@@ -1917,6 +2123,47 @@ async fn host_command(phone: &Arc<Phone>, line: &str, pass_file: Option<&str>) -
         Err(e) => json!({"seq": seq, "err": e}),
     };
     (ack, verb == "quit")
+}
+
+/// Makes hosted wallets in an outside node (page_host): createwallet, encryptwallet (the node stops), then
+/// FB_RESTART_CMD starts it again; the main wallet is named from then on, as `wallets::HostedMaker` does.
+struct ExternalMaker {
+    client: tokio::sync::Mutex<crate::rpc::FreeBankClient>,
+    restart: String,
+}
+
+impl super::hosted::Maker for ExternalMaker {
+    fn create_encrypted<'a>(&'a self, name: &'a str, pass: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let mut c = self.client.lock().await;
+            let main = c.call_root("listwallets", vec![]).await.ok().and_then(|v| v[0].as_str().map(String::from));
+            crate::rpc::set_main_wallet(Some(main.unwrap_or_else(|| "wallet.dat".into())));
+            match c.call_root("createwallet", vec![json!(name)]).await {
+                Ok(_) => {}
+                Err(crate::rpc::RpcError::Rpc { code: -4, message }) if message.contains("already exists") => {
+                    let _ = c.call_root("loadwallet", vec![json!(name)]).await;
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+            let info = c.call_fresh_typed_in(name, "getwalletinfo", vec![]).await.map_err(|e| e.to_string())?;
+            if info.get("unlocked_until").is_none() {
+                let _ = c.call_fresh_typed_in(name, "encryptwallet", vec![json!(pass)]).await;
+                for _ in 0..120 {
+                    if c.call_root("getblockcount", vec![]).await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let ok = tokio::process::Command::new("bash").arg("-c").arg(&self.restart).status().await.map_err(|e| e.to_string())?;
+                if !ok.success() {
+                    return Err("the node didn't start again".into());
+                }
+                eprintln!("hosted maker: {name} encrypted; the node restarted");
+            }
+            Ok(())
+        })
+    }
 }
 
 /// The desktop side as a host for driving the real phone page, by hand or from a browser script
@@ -1968,9 +2215,23 @@ async fn page_host() {
         }
         None => Arc::new(MockRpc::new(mock_now.clone())),
     };
-    let (phone, rx) = Phone::new(&dir, rpc, Arc::new(MockEvents::default()), Arc::new(unix_now)).unwrap();
+    let events = Arc::new(MockEvents::default());
+    let (phone, rx) = Phone::new(&dir, rpc, events.clone(), Arc::new(unix_now)).unwrap();
     if let Some(s) = env("FB_HELD_SECS").and_then(|s| s.parse().ok()) {
         phone.set_held_ttl(s);
+    }
+    // Hosted wallets on an outside node (v0.2.8): FB_RESTART_CMD starts it again after encryptwallet stops it.
+    if let (Some((node, cookie)), Some(restart)) = (&real, env("FB_RESTART_CMD")) {
+        let mut c = crate::rpc::FreeBankClient::default();
+        c.configure_local(node, Path::new(cookie).parent().unwrap().to_path_buf());
+        // A node with other wallets open already: name the main one, as the app does from its settings.
+        if let Ok(l) = c.call_root("listwallets", vec![]).await {
+            if l.as_array().is_some_and(|a| a.len() > 1) {
+                crate::rpc::set_main_wallet(l[0].as_str().map(String::from));
+            }
+        }
+        phone.set_maker(Arc::new(ExternalMaker { client: tokio::sync::Mutex::new(c), restart }));
+        tokio::spawn(phone.clone().resume_hosted());
     }
     phone.set_relay(&url).unwrap();
     tokio::spawn(link::run(phone.clone(), rx));
@@ -2032,6 +2293,8 @@ async fn page_host() {
                 let state = json!({
                     "link": phone.status().state, "devices": devices, "held": phone.held(),
                     "phone_send": phone.phone_send_is_on(), "asks": phone.pair_pending(),
+                    "hosted": phone.hosted_list(), "hosted_asks": phone.hosted_pending(),
+                    "moved_events": events.named(EV_HOSTED_MOVED).len(),
                 })
                 .to_string();
                 if state != *last {
@@ -3008,3 +3271,5 @@ async fn a_held_send_the_wallet_cant_pay_says_so_before_the_passphrase() {
     assert_eq!(h.rpc.methods(), ["getbalance"], "no unlock, no send");
     assert_eq!(h.phone.held().len(), 1, "it keeps waiting");
 }
+
+mod hosted;
