@@ -115,7 +115,7 @@ nav.segments button {
 /* Settings' index: even rows of three, nothing stretched alone on a second row (the walk-through). */
 nav.settings-index {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
 }
 
 nav.settings-index button {
@@ -1122,6 +1122,9 @@ button.wide {
 
 .facts dd {
   text-align: right;
+  overflow-wrap: anywhere;
+}
+.facts dd.mono {
   word-break: break-all;
 }
 
@@ -1638,10 +1641,10 @@ button.secondary.danger-text:not(:disabled):hover {
 }
 
 
-/* Home's Send / Receive / From eCash (v0.2.6): open in place, as on the phone page. */
+/* Home's Send / Receive / Deposit / Withdraw (v0.2.6; four from v0.3.0): open in place, as on the phone page. */
 .home-actions {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   margin: 12px 0;
 }

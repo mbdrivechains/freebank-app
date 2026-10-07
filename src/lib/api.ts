@@ -12,6 +12,10 @@ export interface Transaction {
   category: "send" | "receive" | string;
   /** The block it is in, when confirmed. */
   blockheight?: number | null;
+  /** The address's label: "sidechain" for a deposit address, "withdrawal refund" for a refund address (v0.3.0). */
+  label?: string | null;
+  /** A send's fee, sats. */
+  fee?: number | null;
 }
 
 export interface BlockchainInfo {

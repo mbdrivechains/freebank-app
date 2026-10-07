@@ -58,6 +58,15 @@ impl RpcError {
     /// address (403, rpcallowip), nothing listened at the address, or the call never left the app. A timeout, a dropped
     /// connection or an answer that can't be read may come after the node acted, a payment sent included (v0.2.7: such
     /// a payment keeps its "Approve sends on my phone" count).
+    /// A resend the node refused because it has the transaction already: in a block (-27) or in its mempool. It went
+    /// out (re-review 6).
+    pub fn already_there(&self) -> bool {
+        match self {
+            RpcError::Rpc { code, message } => *code == -27 || message.contains("already"),
+            _ => false,
+        }
+    }
+
     pub fn did_nothing(&self) -> bool {
         matches!(
             self,
@@ -130,7 +139,6 @@ impl FreeBankClient {
         self.wallet = wallet;
     }
 
-    #[cfg(test)]
     pub fn wallet(&self) -> Option<&str> {
         self.wallet.as_deref()
     }

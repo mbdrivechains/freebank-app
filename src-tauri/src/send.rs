@@ -1131,6 +1131,9 @@ pub struct HistoryItem {
     pub max: Option<bool>,
     /// A send from this app's Send tab.
     pub logged: bool,
+    /// The address's label: "sidechain" for a deposit address (getdepositaddress), withdraw.rs REFUND_LABEL for a
+    /// withdrawal's refund address (v0.3.0), so the list can say what a coinbase credit is.
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1166,6 +1169,7 @@ fn history_item(e: &Value, log: &HashMap<&str, &LogEntry>) -> Option<HistoryItem
         speed: l.map(|l| l.speed),
         max: l.map(|l| l.max),
         logged: l.is_some(),
+        label: text("label"),
         txid,
     })
 }

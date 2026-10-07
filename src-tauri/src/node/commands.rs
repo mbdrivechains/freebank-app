@@ -375,6 +375,45 @@ pub async fn obliterate(
     obliterate::run(&mgr, places, ticks).await
 }
 
+/// "Remove the app too", on the last screen after Obliterate: the .deb through the password prompt (its apt source
+/// goes with it), the Mac app to the Bin through Finder. The screen then closes the app. Other kinds keep the
+/// instructions on the screen.
+#[tauri::command]
+pub async fn remove_app_itself(mgr: State<'_, Mgr>) -> Result<(), String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REMOVING: AtomicBool = AtomicBool::new(false);
+    if !mgr.obliterated.load(Ordering::SeqCst) {
+        return Err("Remove FreeBank's data first.".into());
+    }
+    if REMOVING.swap(true, Ordering::SeqCst) {
+        return Err("FreeBank is being removed already.".into());
+    }
+    let r = remove_now().await;
+    REMOVING.store(false, Ordering::SeqCst);
+    r
+}
+
+async fn remove_now() -> Result<(), String> {
+    let how = obliterate::how_to_remove_app();
+    if !how.can_remove {
+        return Err("Remove this copy by hand, as the screen says.".into());
+    }
+    match how.kind {
+        "deb" => tokio::task::spawn_blocking(|| crate::admin::run_as_root(crate::admin::REMOVE_DEB_SCRIPT))
+            .await
+            .map_err(|_| "FreeBank couldn't ask for your password.".to_string())?,
+        "mac" => {
+            let bundle = PathBuf::from(how.path.unwrap_or_default());
+            tokio::task::spawn_blocking(move || {
+                crate::admin::trash_mac_bundle(&bundle).inspect_err(|_| crate::admin::reveal_mac_bundle(&bundle))
+            })
+            .await
+            .map_err(|_| "FreeBank couldn't ask Finder.".to_string())?
+        }
+        _ => Err("Remove this copy by hand, as the screen says.".into()),
+    }
+}
+
 /// "Close FreeBank" on the last screen. Exiting runs lib.rs's exit handler, which stops the node
 /// and deletes what "Obliterate" left for then.
 #[tauri::command]

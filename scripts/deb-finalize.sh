@@ -7,6 +7,7 @@
 #   - the desktop file is named after the app id, com.ecxfreebank.freebank.desktop, which is what GNOME
 #     matches a running window to (so the dock shows the FreeBank icon, not a generic one);
 #   - it takes over from an earlier "free-bank" install;
+#   - on remove or purge it removes the apt source that names FreeBank's repository (postrm);
 #   - it ships the apt repository's public key at /usr/share/keyrings/freebank-archive-keyring.gpg, the path
 #     the install instructions use, so a key extension or rotation reaches users with the next update.
 # Writes <out dir>/freebank_<version>_<arch>.deb and prints its path.
@@ -46,6 +47,22 @@ sed -i -e 's/^Categories=$/Categories=Office;Finance;/' "$apps/$app_id.desktop"
 
 # The repository key, so apt keeps trusting the repository across key changes.
 install -D -m 644 "$keyring" "$work/pkg/usr/share/keyrings/freebank-archive-keyring.gpg"
+
+# On remove and purge (never on upgrade), the apt source goes too: the file Settings > App updates writes
+# (freebank.sources) or the apt page's command (freebank.list), each only if it names FreeBank's repository. A
+# remove takes the package's key away, and a source still naming it would make every apt update fail.
+[ ! -e "$work/pkg/DEBIAN/postrm" ] || { echo "deb-finalize: the package already has a postrm" >&2; exit 1; }
+cat > "$work/pkg/DEBIAN/postrm" <<'POSTRM'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+  for f in /etc/apt/sources.list.d/freebank.sources /etc/apt/sources.list.d/freebank.list; do
+    if [ -f "$f" ] && grep -q 'apt.ecxfreebank.com' "$f"; then rm -f "$f"; fi
+  done
+fi
+exit 0
+POSTRM
+chmod 755 "$work/pkg/DEBIAN/postrm"
 
 # dpkg checks installed files against md5sums; rebuild it after the changes above.
 (cd "$work/pkg" && find . -path ./DEBIAN -prune -o -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 md5sum) \

@@ -32,7 +32,10 @@
   loadSendLog();
 
   // listtransactions answers oldest first: the newest ten, newest first.
-  $: recent = transactions.slice(-10).reverse();
+  // A zero-amount send line beside another line of the same transaction (a withdrawal's marker output) says nothing.
+  const meaningful = <T extends { txid: string; amount: number; category: string }>(list: T[]) =>
+    list.filter((t) => !(t.category === "send" && t.amount === 0 && list.some((o) => o !== t && o.txid === t.txid)));
+  $: recent = meaningful(transactions).slice(-10).reverse();
 
   // Sends a Speed up replaced: their rows say so.
   $: replaced = new Set($sendLog.filter((e) => e.replaced_by).map((e) => e.txid));
@@ -127,7 +130,7 @@
       <p class="muted">No transactions yet.</p>
     {:else if items.length}
       <div class="tx-list" aria-busy={loading}>
-        {#each items as tx}
+        {#each meaningful(items) as tx}
           <div class="ht-row" role="button" tabindex="0" on:click={() => (open = tx.txid)} on:keydown={(e) => key(e, tx.txid)}>
             <TransactionItem {tx} replaced={!!tx.replaced_by || tx.confirmations < 0} />
           </div>

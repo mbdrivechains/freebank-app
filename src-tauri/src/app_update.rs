@@ -296,7 +296,7 @@ fn writable(p: &Path) -> Result<(), String> {
 /// A line in /etc/apt's sources that isn't commented out names apt.ecxfreebank.com (one-line or deb822 style). Only
 /// the files apt reads count (sources.list, *.list, *.sources: not .save or .dpkg-old), and not a deb822 file turned
 /// off with "Enabled: no".
-fn apt_repository_set_up(etc_apt: &Path) -> bool {
+pub(crate) fn apt_repository_set_up(etc_apt: &Path) -> bool {
     let mut files = vec![etc_apt.join("sources.list")];
     if let Ok(d) = std::fs::read_dir(etc_apt.join("sources.list.d")) {
         files.extend(d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "list" || x == "sources")));
@@ -361,6 +361,34 @@ pub async fn app_update_check(upd: State<'_, Arc<AppUpdater>>, force: bool) -> R
     let c = check_result(found, &install_kind().await);
     *upd.checked.lock().unwrap() = Some((Instant::now(), c.clone()));
     Ok(c)
+}
+
+/// Settings > App updates and the one-time question: whether to offer "Get FreeBank updates with Software Updater".
+/// Only for the .deb with FreeBank's apt repository not set up, its key in place (the .deb ships it) and pkexec there
+/// to ask for the password.
+#[tauri::command]
+pub async fn apt_updates_offer() -> bool {
+    matches!(install_kind().await, Install::Deb { apt: false })
+        && Path::new(crate::admin::APT_KEYRING).is_file()
+        && crate::admin::pkexec().is_some()
+}
+
+/// The user said yes: FreeBank's apt source is written through the password prompt, and Software Updater offers new
+/// versions from then on.
+#[tauri::command]
+pub async fn apt_updates_enable(upd: State<'_, Arc<AppUpdater>>) -> Result<(), String> {
+    if !apt_updates_offer().await {
+        return Err("FreeBank's apt repository can't be set up from here.".into());
+    }
+    tokio::task::spawn_blocking(|| crate::admin::run_as_root(&crate::admin::apt_enable_script()))
+        .await
+        .map_err(|_| "FreeBank couldn't ask for your password.".to_string())??;
+    // The cached check said "deb".
+    *upd.checked.lock().unwrap() = None;
+    if !apt_repository_set_up(Path::new("/etc/apt")) {
+        return Err("The apt source was written, but apt doesn't read it.".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]

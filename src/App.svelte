@@ -28,8 +28,9 @@
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
   import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
-  import { appUpdate, startAppUpdateChecks } from "./lib/appUpdate";
+  import { appUpdate, loadAptOffer, startAppUpdateChecks } from "./lib/appUpdate";
   import AppUpdate from "./components/AppUpdate.svelte";
+  import AptOffer from "./components/AptOffer.svelte";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "./lib/amount";
   import { nice } from "./lib/errors";
   import { cancelUnlock, submitUnlock, unlockRequest, walletLocked, withUnlock } from "./lib/wallet";
@@ -41,11 +42,12 @@
   import { openReport, reportDraft } from "./lib/report";
   import SecurityAlerts from "./components/SecurityAlerts.svelte";
   import DepositPanel from "./components/DepositPanel.svelte";
+  import WithdrawPanel from "./components/WithdrawPanel.svelte";
   import EcashPanel from "./components/EcashPanel.svelte";
   import CreditPanel from "./components/CreditPanel.svelte";
   import ReceivePanel from "./components/ReceivePanel.svelte";
   import EcashLogin from "./components/EcashLogin.svelte";
-  import { depositOpen } from "./lib/deposit";
+  import ChangerSettings from "./components/ChangerSettings.svelte";
   import WalletsCard from "./components/WalletsCard.svelte";
   import { loadWallets, walletList, walletSelect } from "./lib/wallets";
   import { runSecurityCheck } from "./lib/security";
@@ -63,16 +65,14 @@
   // v0.2.6 (the UX walk-through): four tabs, Home · Credit · eCash · Node, and Settings behind the gear. Send, Receive
   // and Deposit open in place on Home, as on the phone page.
   let currentView: "home" | "credit" | "ecash" | "node" | "settings" = "home";
-  let homeAction: "" | "send" | "receive" | "deposit" = "";
-  function openHome(a: "send" | "receive" | "deposit") {
+  let homeAction: "" | "send" | "receive" | "deposit" | "withdraw" = "";
+  function openHome(a: "send" | "receive" | "deposit" | "withdraw") {
     if (homeAction === a) { homeAction = ""; return; }
-    if (a === "deposit") depositOpen.set(true);
     // Send shows "Available" and Max from the balance: fresh when it opens (found in the coin tests).
     if (a === "send") refresh();
     homeAction = a;
   }
   // The Deposit panel's own Hide closes it here too.
-  $: if (homeAction === "deposit" && !$depositOpen) homeAction = "";
   // Several wallets (v0.2.6): the header's switcher, shown once there is more than one. Switching remounts the views,
   // so each reads the chosen wallet afresh.
   let walletKey = 0;
@@ -96,10 +96,17 @@
     currentView = "settings";
     settingsPart = part === "wallet" ? "wallet" : "node";
     if (settingsPart !== "node") return;
-    for (let i = 0; i < 20; i++) {
+    // The node's card above it loads after it appears and pushes it down: follow it until the page settles.
+    let last = NaN;
+    for (let i = 0; i < 30; i++) {
       await tick();
       const el = document.querySelector('[data-testid="ecash-login"]');
-      if (el) return el.scrollIntoView({ block: "start" });
+      if (el) {
+        const top = el.getBoundingClientRect().top + window.scrollY;
+        if (top === last && i > 5) return;
+        last = top;
+        el.scrollIntoView({ block: "start" });
+      }
       await new Promise((r) => setTimeout(r, 100));
     }
   }
@@ -148,6 +155,20 @@
     update.set(null);
     versions.set(null);
   }
+  // "Remove the app too" (v0.2.9): the .deb through the password prompt, the Mac app to the Bin; then the app closes.
+  let removingApp = false;
+  let removeAppError = "";
+  async function removeAppToo() {
+    removingApp = true;
+    removeAppError = "";
+    try {
+      await node.removeAppItself();
+      await closeApp();
+    } catch (e) {
+      removeAppError = String(e);
+    }
+    removingApp = false;
+  }
   async function closeApp() {
     closing = true;
     try {
@@ -157,7 +178,7 @@
     }
   }
 
-  const NEED_COINS = "You need FreeBank coins first: From eCash, above, shows how to deposit them.";
+  const NEED_COINS = "You need FreeBank coins first: Deposit, above, brings them in from eCash.";
 
   // Connection form (Model A: remote-control your own custodial node)
   let connMode: ConnMode = "local";
@@ -249,6 +270,7 @@
     if (isPWA) return;
     // The app's own updates: a notice when a signed release is out (lib/appUpdate.ts).
     startAppUpdateChecks();
+    loadAptOffer();
     let stop: (() => void) | null = null;
     import("@tauri-apps/api/event")
       .then(({ listen }) => listen("report-open", () => openReport("problem")))
@@ -334,7 +356,7 @@
     <Notice kind="error" message={error} on:dismiss={() => (error = "")} />
   {/if}
 
-  {#if !isPWA && !gone}<AppUpdate notice />{/if}
+  {#if !isPWA && !gone}<AppUpdate notice />{#if connected}<AptOffer ask />{/if}{/if}
 
   {#if gone}
     <div class="card removed">
@@ -348,16 +370,32 @@
           {#each gone.kept as kept}<div><dt>Left in place</dt><dd class="mono"><PathText path={kept} /></dd></div>{/each}
         </dl>
       {/if}
-      {#if gone.app_removed}
+      {#if gone.app_removed && gone.app.can_remove}
+        <p>The FreeBank app itself is still installed{gone.app.kind === "deb" ? ", with its entry in your software sources if you added one" : ""}.</p>
+        <button class="wide" on:click={removeAppToo} disabled={removingApp || closing}>
+          {removingApp ? (gone.app.kind === "deb" ? "Removing FreeBank…" : "Moving it to the Bin…") : "Remove the app too"}
+        </button>
+        {#if gone.app.kind === "deb"}<p class="muted small">Your computer asks for your password. FreeBank closes when it's done.</p>{/if}
+        {#if removeAppError}
+          <p class="soft-error">{removeAppError}</p>
+          <p class="hint">
+            {#if gone.app.kind === "deb"}
+              Or, once FreeBank has closed, run <code>sudo apt purge freebank</code> in a terminal.
+            {:else}
+              Or drag FreeBank{gone.app.path ? ` (${gone.app.path})` : ""} to the Bin once it has closed.
+            {/if}
+          </p>
+        {/if}
+      {:else if gone.app_removed}
         <p>FreeBank can't remove the app itself while it runs. Once it has closed:</p>
         <div class="gone-step">
           {#if gone.app.kind === "deb"}
-            <p>Run <code>sudo apt remove freebank</code> in a terminal.</p>
+            <p>Run <code>sudo apt purge freebank</code> in a terminal.</p>
           {:else if gone.app.kind === "appimage"}
             <p>Delete the AppImage file:</p>
             <p class="mono gone-path"><PathText path={gone.app.path ?? ""} /></p>
           {:else if gone.app.kind === "mac"}
-            <p>Drag FreeBank from Applications to the Trash.</p>
+            <p>Drag FreeBank from Applications to the Bin.</p>
           {:else}
             <p>Delete the FreeBank program{gone.app.path ? ":" : "."}</p>
             {#if gone.app.path}<p class="mono gone-path"><PathText path={gone.app.path} /></p>{/if}
@@ -492,7 +530,8 @@
       <div class="home-actions">
         <button class:active={homeAction === "send"} on:click={() => openHome("send")} data-testid="home-send">Send</button>
         <button class:active={homeAction === "receive"} on:click={() => openHome("receive")} data-testid="home-receive">Receive</button>
-        <button class:active={homeAction === "deposit"} on:click={() => openHome("deposit")} data-testid="home-deposit">From eCash</button>
+        <button class:active={homeAction === "deposit"} on:click={() => openHome("deposit")} data-testid="home-deposit">Deposit</button>
+        <button class:active={homeAction === "withdraw"} on:click={() => openHome("withdraw")} data-testid="home-withdraw">Withdraw</button>
       </div>
       {#if homeAction === "send"}
         <!-- Send: Max, a speed, the fee shown before Confirm; the receipt has Speed up -->
@@ -500,7 +539,9 @@
       {:else if homeAction === "receive"}
         <ReceivePanel {canShowAddresses} />
       {:else if homeAction === "deposit"}
-        <DepositPanel {canShowAddresses} />
+        <DepositPanel {canShowAddresses} on:ecash={() => (currentView = "ecash")} />
+      {:else if homeAction === "withdraw"}
+        <WithdrawPanel {balance} />
       {/if}
 
       <HomeTransactions {transactions} {balance} needCoins={NEED_COINS} on:changed={() => refresh()} />
@@ -524,6 +565,7 @@
         {#if localNode}
           <NodeSettings part="connection" on:removed={onRemoved} on:obliterated={onObliterated} />
           <EcashLogin />
+          <ChangerSettings />
         {:else}
           <div class="card">
             <h3>Connection</h3>

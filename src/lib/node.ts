@@ -212,6 +212,8 @@ export interface ObliteratePlan {
 export interface RemoveApp {
   kind: "deb" | "appimage" | "mac" | "other";
   path: string | null;
+  /** "Remove the app too" can do it (v0.2.9): the .deb through the password prompt, the Mac app to the Bin. */
+  can_remove: boolean;
 }
 
 export interface Obliterated {
@@ -321,6 +323,8 @@ export const node = {
   obliteratePlan: () => tauriInvoke("obliterate_plan") as Promise<ObliteratePlan>,
   walletBackup: () => tauriInvoke("wallet_backup") as Promise<string[]>,
   obliterate: (ticks: WipeTick[]) => tauriInvoke("obliterate", { ticks }) as Promise<Obliterated>,
+  /** "Remove the app too", after Obliterate removed the app's own folder. */
+  removeAppItself: () => tauriInvoke("remove_app_itself") as Promise<void>,
   quit: () => tauriInvoke("app_quit") as Promise<void>,
   /** Ctrl+Q (Linux): ask what to stop, as ⌘Q does on a Mac; quits at once when there is nothing to ask. */
   quitAsked: () => tauriInvoke("app_quit_asked") as Promise<void>,

@@ -352,8 +352,8 @@
       </div>
 
       <p class="muted small">
-        eCash and ECX are worth the same: a deposit turns eCash into ECX one for one. Deposits go through BitWindow for
-        now (Home › From eCash); from this wallet in a later version.
+        eCash and ECX are worth the same: a deposit turns eCash into ECX one for one, from this wallet (Home › Deposit),
+        and a withdrawal turns it back (Home › Withdraw).
       </p>
       {#if address}
         <div class="ec-receive">

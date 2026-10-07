@@ -57,7 +57,7 @@ const UNCERTAIN_LIFE: Duration = Duration::from_secs(1800);
 
 /// The coins the next payment from `wallet_name` must spend one of, if an earlier one may have gone out and doesn't
 /// show yet.
-async fn must_spend(c: &Conn, wallet_name: &str) -> Option<Vec<bitcoin::OutPoint>> {
+pub(crate) async fn must_spend(c: &Conn, wallet_name: &str) -> Option<Vec<bitcoin::OutPoint>> {
     let (txid, inputs, at) = UNCERTAIN.lock().unwrap().get(wallet_name).cloned()?;
     if at.elapsed() >= UNCERTAIN_LIFE {
         UNCERTAIN.lock().unwrap().remove(wallet_name);
@@ -77,7 +77,7 @@ async fn must_spend(c: &Conn, wallet_name: &str) -> Option<Vec<bitcoin::OutPoint
 }
 
 /// After a payment: forget the uncertain one if this one spent one of its coins; remember this one if it may have gone.
-fn after_send(wallet_name: &str, r: &Result<String, wallet::SendFail>, must: &Option<Vec<bitcoin::OutPoint>>) {
+pub(crate) fn after_send(wallet_name: &str, r: &Result<String, wallet::SendFail>, must: &Option<Vec<bitcoin::OutPoint>>) {
     let mut u = UNCERTAIN.lock().unwrap();
     match r {
         Ok(_) if must.is_some() => {
@@ -487,4 +487,323 @@ pub async fn ecash_login_set(
         conn::save_password(&mgr.app_dir, Some(p.as_str()))?;
     }
     Ok(status_of(&mgr).await)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Deposit at par (v0.3.0 "In and out", deposit.rs): eCash from the main eCash wallet into FreeBank through the peg.
+
+use super::deposit;
+
+struct PendingDeposit {
+    built: deposit::Built,
+    ctip: deposit::Ctip,
+    address: String,
+    fb_wallet: Option<String>,
+    sats: u64,
+    at: Instant,
+}
+
+static DEPOSITS: LazyLock<Mutex<HashMap<String, PendingDeposit>>> = LazyLock::new(Default::default);
+/// deposits.json is read, changed and written by one call at a time, and a deposit is confirmed by one at a time,
+/// from the treasury's last check to its broadcast (security review M1).
+static DEPOSIT_FILE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+static DEPOSIT_SEND: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+
+/// What a deposit will do, shown before the passphrase is asked.
+#[derive(Debug, Serialize)]
+pub struct DepositQuote {
+    pub id: String,
+    /// What leaves for the treasury, at par.
+    pub sats: u64,
+    /// What FreeBank credits: sats less its deposit fee (deposit::FREEBANK_DEPOSIT_FEE).
+    pub credited: u64,
+    pub fee: u64,
+    /// What leaves the eCash wallet: sats + fee.
+    pub total: u64,
+    /// The FreeBank address credited, and the wallet it is in (None: the main one).
+    pub address: String,
+    pub fb_wallet: Option<String>,
+}
+
+/// Prepare a deposit at par of `amount` eCash, or with `max` of everything the eCash wallet can spend less the fee,
+/// from the main eCash wallet into the FreeBank wallet in use. Nothing is signed yet.
+#[tauri::command]
+pub async fn deposit_prepare(
+    mgr: State<'_, Arc<NodeManager>>,
+    client: State<'_, crate::commands::ClientState>,
+    amount: Option<String>,
+    max: Option<bool>,
+) -> Result<DepositQuote, String> {
+    let max = max.unwrap_or(false);
+    let sats = if max { 0 } else { parse_amount(&amount)?.ok_or("Enter the amount to deposit.")? };
+    let (c, r) = ready(&mgr).await?;
+    if must_spend(&c, &r.main_name).await.is_some() {
+        return Err(MAY_HAVE_GONE.into());
+    }
+    let enforcer = settings(&mgr).await.enforcer;
+    let ctip = deposit::treasury(&mgr.http, &enforcer, &c).await?;
+    let (answer, fb_wallet) = {
+        let mut fb = client.lock().await;
+        let w = fb.wallet().map(str::to_string);
+        let a = fb.call_fresh_typed("getdepositaddress", vec![]).await.map_err(|e| format!("FreeBank: {e}"))?;
+        (a, w)
+    };
+    let address = deposit::plain_deposit_address(answer.as_str().ok_or("FreeBank gave no deposit address.")?)?;
+    let acct = r.public(Account::Main)?;
+    let coins = deposit::coins(&c, &r.main_name, &acct).await?;
+    let rate = wallet::fee_rate(&c).await.ceil() as u64;
+    let built = if max {
+        deposit::build_max(&ctip, &address, &coins, rate)?
+    } else {
+        let (change_addr, _) = wallet::change_address(&c, &r.main_name, &acct).await?;
+        let change = c.script_of(&change_addr)?;
+        deposit::build(&ctip, &address, sats, &coins, rate, &change)?
+    };
+    if built.fee > wallet::MAX_FEE {
+        return Err(format!("The fee would be {} eCash, more than FreeBank allows. Nothing was done.", to_coins(built.fee)));
+    }
+    let sats = built.deposit;
+    let fee = built.fee;
+    let id = format!("{:016x}", rand::random::<u64>());
+    {
+        let mut book = DEPOSITS.lock().unwrap();
+        book.retain(|_, p| p.at.elapsed() < QUOTE_LIFE);
+        book.insert(id.clone(), PendingDeposit { built, ctip, address: address.clone(), fb_wallet: fb_wallet.clone(), sats, at: Instant::now() });
+    }
+    Ok(DepositQuote { id, sats, credited: sats - deposit::FREEBANK_DEPOSIT_FEE, fee, total: sats + fee, address, fb_wallet })
+}
+
+const MAY_HAVE_GONE: &str = "Your last payment from this eCash wallet may still go out (the eCash node didn't say it took \
+     it). Wait until it shows under Payments, or half an hour.";
+
+/// Sign and send a prepared deposit. The passphrase opens the words here (a wrong one leaves it prepared) and the
+/// deposit is signed; then "Approve sends on my phone" counts it or asks a phone; then, holding the send lock, the
+/// treasury and every coin must still be unspent and the wallet clear of an uncertain payment; it is recorded in
+/// deposits.json, and only then goes out (security review M1, L1).
+#[tauri::command]
+pub async fn deposit_confirm(
+    mgr: State<'_, Arc<NodeManager>>,
+    phone: State<'_, PhoneState>,
+    id: String,
+    passphrase: String,
+) -> Result<String, String> {
+    let pass = Zeroizing::new(passphrase);
+    if !DEPOSITS.lock().unwrap().get(&id).is_some_and(|p| p.at.elapsed() < QUOTE_LIFE) {
+        return Err(EXPIRED.into());
+    }
+    let (c, r) = ready(&mgr).await?;
+    let (root, _) = root_from_words(&mgr, &pass, c.chain).await?;
+    let key = root.account(c.chain, Account::Main)?;
+    drop(root);
+    if key.public != r.public(Account::Main)? {
+        return Err("These words don't give this eCash wallet's key.".into());
+    }
+    let p = DEPOSITS.lock().unwrap().remove(&id).filter(|p| p.at.elapsed() < QUOTE_LIFE).ok_or(EXPIRED)?;
+    // Signed before anything counts, so a failure here gives nothing back to give.
+    let txid = p.built.tx.compute_txid().to_string();
+    let hex = super::sign::sign(p.built.tx.clone(), &p.built.spends, &key)?;
+    let ceiling = super::sign::max_fee_rate(&hex, p.built.fee)?;
+    let total = p.sats + p.built.fee;
+    let guard = phone.guard(&mgr.app_dir)?.filter(|ph| ph.approve_over().is_some());
+    let cleared = match guard {
+        Some(ph) => Some(
+            ph.clear_desktop(total, Approve::Action { text: format!("Deposit {} eCash into FreeBank", to_coins(p.sats)), sats: Some(total) })
+                .await?,
+        ),
+        None => None,
+    };
+    let give_back = || {
+        if let (Some(cl), Some(ph)) = (cleared, guard) {
+            ph.uncount(cl);
+        }
+    };
+    let _send = DEPOSIT_SEND.lock().await;
+    // After the phone's approval, which can take minutes: the treasury and every coin must still be what it spends.
+    let enforcer = settings(&mgr).await.enforcer;
+    let still = async {
+        if deposit::treasury(&mgr.http, &enforcer, &c).await? != p.ctip {
+            return Err("Another deposit reached FreeBank's treasury first. Nothing was sent; prepare yours again.".to_string());
+        }
+        if must_spend(&c, &r.main_name).await.is_some() {
+            return Err(MAY_HAVE_GONE.to_string());
+        }
+        for i in p.built.tx.input.iter().skip(1) {
+            let out = c
+                .node()
+                .call_typed("gettxout", vec![serde_json::json!(i.previous_output.txid.to_string()), serde_json::json!(i.previous_output.vout), serde_json::json!(true)])
+                .await
+                .map_err(|e| format!("The eCash node: {e}"))?;
+            if out.is_null() {
+                return Err("A coin this deposit spends was spent meanwhile. Nothing was sent; prepare it again.".to_string());
+            }
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = still {
+        give_back();
+        return Err(e);
+    }
+    let rec = deposit::Record {
+        txid: txid.clone(),
+        hex: hex.clone(),
+        sats: p.sats,
+        fee: p.built.fee,
+        address: p.address.clone(),
+        time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        state: "signed".into(),
+        fb_wallet: p.fb_wallet.clone(),
+    };
+    {
+        let _g = DEPOSIT_FILE.lock().await;
+        let saved = deposit::load(&mgr.app_dir).and_then(|mut all| {
+            all.push(rec.clone());
+            deposit::save(&mgr.app_dir, &all)
+        });
+        if let Err(e) = saved {
+            give_back();
+            return Err(format!("FreeBank couldn't record the deposit, so it didn't send it: {e}"));
+        }
+    }
+    let sent = c.node().call_typed("sendrawtransaction", vec![serde_json::json!(hex), serde_json::json!(ceiling)]).await;
+    let state = match &sent {
+        Ok(v) if v.as_str() == Some(txid.as_str()) => "sent",
+        Err(e) if e.already_there() => "sent",
+        // The node refused it (security review M2): nothing went out.
+        Err(e) if e.did_nothing() => "failed",
+        // Whatever else it answered, it may have gone out: kept as signed, and sent again by the list.
+        _ => "signed",
+    };
+    {
+        let _g = DEPOSIT_FILE.lock().await;
+        if let Ok(mut all) = deposit::load(&mgr.app_dir) {
+            if let Some(x) = all.iter_mut().find(|x| x.txid == txid) {
+                x.state = state.into();
+            }
+            let _ = deposit::save(&mgr.app_dir, &all);
+        }
+    }
+    match (state, sent) {
+        ("sent", _) => {
+            crate::activity::note("ecash: deposit sent");
+            Ok(txid)
+        }
+        ("failed", Err(e)) => {
+            give_back();
+            Err(format!("The eCash node refused the deposit, so nothing went out: {}", e.for_ui()))
+        }
+        _ => {
+            let inputs: Vec<bitcoin::OutPoint> = p.built.tx.input.iter().skip(1).map(|i| i.previous_output).collect();
+            let fail = wallet::SendFail { sent: true, message: String::new(), txid: Some(txid.clone()), inputs };
+            after_send(&r.main_name, &Err(fail), &None);
+            Err("The eCash node didn't say it took the deposit, so it may have gone out. It shows under Deposits, and \
+                 FreeBank sends it again if it didn't."
+                .into())
+        }
+    }
+}
+
+/// A deposit as the screens show it.
+#[derive(Debug, Serialize)]
+pub struct DepositView {
+    pub txid: String,
+    pub sats: u64,
+    pub fee: u64,
+    pub address: String,
+    pub time: u64,
+    /// "signed", "sent", "confirmed" (on eCash, waiting for FreeBank), "credited", "failed".
+    pub state: String,
+    /// eCash confirmations (0 while waiting in the mempool).
+    pub confirmations: i64,
+}
+
+/// How long a "failed" deposit is still looked for among FreeBank's credits: its txid can be changed by anyone who
+/// relays it (the treasury input carries no signature), so a deposit seen as conflicted may still be credited
+/// (security review L3).
+const FAILED_WATCH_SECS: u64 = 3 * 86_400;
+
+/// The deposits FreeBank made, newest first, each followed: sent again if it may not have gone out, failed when it
+/// can't confirm, its eCash confirmations, and whether FreeBank has credited it.
+#[tauri::command]
+pub async fn deposit_list(
+    mgr: State<'_, Arc<NodeManager>>,
+    client: State<'_, crate::commands::ClientState>,
+) -> Result<Vec<DepositView>, String> {
+    let _g = DEPOSIT_FILE.lock().await;
+    let mut all = deposit::load(&mgr.app_dir)?;
+    let ready = ready(&mgr).await.ok();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut changed = false;
+    let mut views = Vec::new();
+    for rec in all.iter_mut() {
+        let mut confirmations = 0;
+        if let Some((c, r)) = &ready {
+            if rec.state == "signed" || rec.state == "sent" {
+                let t = c.wallet(&r.main_name).call_typed("gettransaction", vec![serde_json::json!(rec.txid), serde_json::json!(true)]).await;
+                match t {
+                    Ok(t) => {
+                        confirmations = t["confirmations"].as_i64().unwrap_or(0);
+                        if rec.state == "signed" {
+                            rec.state = "sent".into();
+                            changed = true;
+                        }
+                        // Conflicted: another spend of the treasury or of its coins confirmed. Its coins are free again.
+                        if confirmations < 0 {
+                            let _ = c.wallet(&r.main_name).call_typed("abandontransaction", vec![serde_json::json!(rec.txid)]).await;
+                            rec.state = "failed".into();
+                            changed = true;
+                        }
+                    }
+                    Err(_) if rec.state == "signed" => {
+                        let ceiling = super::sign::max_fee_rate(&rec.hex, rec.fee).unwrap_or_else(|_| "0.001".into());
+                        match c.node().call_typed("sendrawtransaction", vec![serde_json::json!(rec.hex), serde_json::json!(ceiling)]).await {
+                            Ok(_) => {
+                                rec.state = "sent".into();
+                                changed = true;
+                            }
+                            Err(e) if e.already_there() => {
+                                rec.state = "sent".into();
+                                changed = true;
+                            }
+                            // Refused for good (its treasury or coins spent by another): it can't go out (review M2).
+                            Err(e) if e.did_nothing() => {
+                                rec.state = "failed".into();
+                                changed = true;
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        let watch = rec.state == "sent" && confirmations > 0 || rec.state == "failed" && now.saturating_sub(rec.time) < FAILED_WATCH_SECS;
+        if watch {
+            let mut fb = client.lock().await;
+            let args = vec![serde_json::json!("*"), serde_json::json!(1000)];
+            let got = match &rec.fb_wallet {
+                Some(w) => fb.call_fresh_typed_in(w, "listtransactions", args).await,
+                None => fb.call_fresh_typed_main("listtransactions", args).await,
+            };
+            if got.is_ok_and(|v| deposit::credited_in(&v, &rec.address, rec.sats)) {
+                rec.state = "credited".into();
+                changed = true;
+            }
+        }
+        let state = if rec.state == "sent" && confirmations > 0 { "confirmed".to_string() } else { rec.state.clone() };
+        views.push(DepositView {
+            txid: rec.txid.clone(),
+            sats: rec.sats,
+            fee: rec.fee,
+            address: rec.address.clone(),
+            time: rec.time,
+            state,
+            confirmations,
+        });
+    }
+    if changed {
+        deposit::save(&mgr.app_dir, &all)?;
+    }
+    views.reverse();
+    Ok(views)
 }

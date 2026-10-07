@@ -809,17 +809,22 @@ pub struct RemoveApp {
     /// to the Trash), or "other" (delete the program at `path`).
     pub kind: &'static str,
     pub path: Option<String>,
+    /// "Remove the app too" can do it: the .deb through the password prompt (pkexec), the Mac app to the Bin through
+    /// Finder.
+    pub can_remove: bool,
 }
 
 pub fn how_to_remove_app() -> RemoveApp {
     let exe = std::env::current_exe().ok();
     let show = |p: &Path| Some(p.to_string_lossy().into_owned());
     if cfg!(target_os = "macos") {
-        let bundle = exe
-            .as_deref()
-            .and_then(|e| e.ancestors().find(|a| a.extension().is_some_and(|x| x == "app")));
+        let real = exe.as_deref().map(|e| std::fs::canonicalize(e).unwrap_or_else(|_| e.to_path_buf()));
+        let bundle = real.as_deref().and_then(|e| e.ancestors().find(|a| a.extension().is_some_and(|x| x == "app")));
+        // Run from the disk image, or a translocated copy macOS made: Finder can't move that to the Bin.
+        let movable = bundle.is_some_and(|b| !b.starts_with("/Volumes") && !b.to_string_lossy().contains("/AppTranslocation/"));
         return RemoveApp {
             kind: "mac",
+            can_remove: movable,
             path: bundle.and_then(show),
         };
     }
@@ -827,13 +832,20 @@ pub fn how_to_remove_app() -> RemoveApp {
         return RemoveApp {
             kind: "appimage",
             path: show(Path::new(&image)),
+            can_remove: false,
         };
     }
     match exe {
-        Some(e) if e.starts_with("/usr") => RemoveApp { kind: "deb", path: None },
+        // The package's own program only (as app_update.rs this_install): a copy elsewhere under /usr isn't the .deb.
+        Some(e) if e == Path::new("/usr/bin/freebank") => RemoveApp {
+            kind: "deb",
+            path: None,
+            can_remove: crate::admin::pkexec().is_some(),
+        },
         e => RemoveApp {
             kind: "other",
             path: e.as_deref().and_then(show),
+            can_remove: false,
         },
     }
 }

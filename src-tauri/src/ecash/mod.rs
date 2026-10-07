@@ -13,6 +13,7 @@
 pub mod bmm;
 pub mod commands;
 pub mod conn;
+pub mod deposit;
 pub mod keys;
 pub mod sign;
 pub mod wallet;

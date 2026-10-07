@@ -21,7 +21,10 @@ From v0.2.4 on, FreeBank says when a new version is out (and Settings > App upda
 and the Mac app update themselves: **Update and restart** downloads the new version, checks it and opens it. They take
 an update only when the release's `SHA256SUMS` carries the release key's signature (below) and the package matches its
 line there: the same check FreeBank makes before installing the node. The `.deb` updates with Software Updater once
-[FreeBank's apt repository](https://apt.ecxfreebank.com) is set up, or with the new `.deb` from the releases page. apt
+[FreeBank's apt repository](https://apt.ecxfreebank.com) is set up, or with the new `.deb` from the releases page. From
+v0.2.9 the app offers to set the repository up (once, and in Settings > App updates): a yes writes
+`/etc/apt/sources.list.d/freebank.sources` through the computer's password prompt, and nothing is added without it;
+`apt purge freebank` takes it out again. apt
 checks the repository's own signing key, which the release workflow holds, not the release key. From v0.2.6 a version
 reaches the apt repository only after its `SHA256SUMS` carries the release key's signature, checked again by the
 workflow that publishes it (`.github/workflows/apt.yml`).
@@ -90,7 +93,7 @@ the app just connects to it.
 
 ## Features
 
-Four tabs: **Home** (balance, Send, Receive, From eCash), **Credit** (notes, houses, pools, bills), **eCash** (wallet,
+Four tabs: **Home** (balance, Send, Receive, Deposit, Withdraw), **Credit** (notes, houses, pools, bills), **eCash** (wallet,
 bidding) and **Node**, with Settings behind the gear.
 
 - Connect to a `freebankd` node via RPC (local / Tailscale / custom)
@@ -98,7 +101,13 @@ bidding) and **Node**, with Settings behind the gear.
   history
 - **Send** with Max, a speed choice and the fee shown before you confirm; a receipt with the transaction id and its
   confirmations up to 3; **Speed up** while a payment waits; **History** with CSV export
-- **Receive** and **Deposit** (from eCash, through BitWindow) with QR codes; coins still arriving show on Home
+- **Receive** with QR codes; coins still arriving show on Home
+- **Deposit** (v0.3.0): at par from the app's eCash wallet, built and signed by the app (FreeBank keeps 0.00001 of
+  each for the block that credits it), with Max and the deposits in flight; or from another eCash wallet (BitWindow)
+- **Withdraw** (v0.3.0): at par through the peg, to the app's eCash wallet or a pasted address, behind a warning
+  (months on mainnet; probably never on the beta), cancellable until it joins a bundle
+- **Money changer** (v0.3.0, Settings › Node & connection): sell FreeBank ECX for eCash fast, or buy it below par,
+  from a changer whose signed quotes the app checks against its pinned key; you trust it with one order at a time
 - **Wallet** (Settings): passphrase, recovery words, back up, restore from a file or from the words, change
   passphrase; your wallets (more from the same words, or a wallet file), with a switcher in the header
 - **Security** (Settings): the wallet's passphrase, the node's ports, old unencrypted backups, file permissions and
@@ -115,7 +124,7 @@ bidding) and **Node**, with Settings behind the gear.
 - **eCash wallet** — receive, send, history; move coins into the bidding wallet and back, each with its fee shown
 - **Bid for FreeBank blocks** — off unless you turn it on: a bid on each eCash block from the bidding wallet, up to a
   daily cap you set; a block you win pays your FreeBank wallet
-- (Planned) Deposit and Withdraw three ways (at par, atomic swap, money changer)
+- (Planned) The trustless swap, the third way in and out
 
 ## Quick Start
 

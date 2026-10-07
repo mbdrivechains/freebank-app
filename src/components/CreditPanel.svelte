@@ -56,7 +56,7 @@
   const SEGS: [Seg, string][] = [["notes", "Notes"], ["houses", "Houses"], ["pools", "Pools"], ["bills", "Bills"]];
   let seg: Seg = "notes";
   let error = "";
-  const NEED_COINS = "You need FreeBank coins first: Home › From eCash shows how to deposit them.";
+  const NEED_COINS = "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
 
   function open(s: Seg) {
     seg = s;

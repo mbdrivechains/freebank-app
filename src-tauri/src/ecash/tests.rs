@@ -910,3 +910,310 @@ async fn bmm_real_stack() {
     assert!(b.rounds.iter().filter(|r| r.outcome == "won").count() >= 2, "a later bid won too");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Deposit at par end to end on freebankd's standing stack (FB_IO_L1, FB_IO_FB, FB_IO_ENFORCER, FB_GRPCURL,
+/// FB_IO_BMM: a command that makes one FreeBank block; the stack's test login t/t; scripts/inout-real-chain.sh sets it
+/// up): the app's main eCash wallet funded, a deposit built and signed here, the treasury grown by it, FreeBank credits
+/// the address; then a second deposit on the new treasury output.
+#[tokio::test]
+#[ignore]
+async fn deposit_real_stack() {
+    use super::deposit;
+    let get = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+    let (l1, fb_at, enf, grpcurl, bmm) = (get("FB_IO_L1"), get("FB_IO_FB"), get("FB_IO_ENFORCER"), get("FB_GRPCURL"), get("FB_IO_BMM"));
+    let dir = std::env::temp_dir().join(format!("fb-deposit-real-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bitcoin.conf"), "rpcuser=t\nrpcpassword=t\n").unwrap();
+    let s = crate::node::Settings { rest: l1, l1_datadir: Some(dir.to_string_lossy().into_owned()), ..Default::default() };
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let conn = super::conn::connect(&http, &s, None).await.unwrap();
+    let r = Root::from_words(&[7u8; 32], Chain::Regtest).unwrap();
+    let main = r.account(Chain::Regtest, Account::Main).unwrap();
+    let (mname, _) = wallet::names(&r.fingerprint().to_string());
+    wallet::create(&conn, &mname, &main.public).await.unwrap();
+    let mut fb = crate::rpc::FreeBankClient::with_http(http.clone()).with_timeout(std::time::Duration::from_secs(200));
+    fb.configure(&format!("http://{}", fb_at), "t", "t");
+    let l1_mine = |n: u64, to: String| {
+        let (enf, grpcurl) = (enf.clone(), grpcurl.clone());
+        async move {
+            let out = std::process::Command::new(&grpcurl)
+                .args(["-plaintext", "-d", &format!("{{\"blocks\":{},\"address\":\"{}\"}}", n, to), &enf])
+                .arg("cusf.mainchain.v1.MiningService/GenerateToAddress")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+    };
+    let fb_block = || {
+        let out = std::process::Command::new(&bmm).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    };
+    let credited = |addr: String, sats: u64| {
+        let fb = &fb;
+        async move { deposit::credited_in(&fb.call_typed("listtransactions", vec![json!("*"), json!(1000)]).await.unwrap(), &addr, sats) }
+    };
+
+    // Coins for the main wallet: mined to it, then matured.
+    let to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    l1_mine(101, to).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let coins = deposit::coins(&conn, &mname, &main.public).await.unwrap();
+    assert!(!coins.is_empty(), "the mined coins are the wallet's");
+
+    for (round, sats) in [(1, 150_000_000u64), (2, 25_000_000)] {
+        let ctip = deposit::treasury(&http, &enf, &conn).await.unwrap();
+        let answer = fb.call_typed("getdepositaddress", vec![]).await.unwrap();
+        let address = deposit::plain_deposit_address(answer.as_str().unwrap()).unwrap();
+        let coins = deposit::coins(&conn, &mname, &main.public).await.unwrap();
+        let (change_addr, _) = wallet::change_address(&conn, &mname, &main.public).await.unwrap();
+        let change = conn.script_of(&change_addr).unwrap();
+        let built = deposit::build(&ctip, &address, sats, &coins, 2, &change).unwrap();
+        let txid = built.tx.compute_txid().to_string();
+        let hex = sign::sign(built.tx.clone(), &built.spends, &main).unwrap();
+        let ceiling = sign::max_fee_rate(&hex, built.fee).unwrap();
+        let sent = conn.node().call_typed("sendrawtransaction", vec![json!(hex), json!(ceiling)]).await;
+        assert_eq!(sent.unwrap().as_str(), Some(txid.as_str()), "round {round}: the eCash node took the deposit");
+        // While it waits, the treasury output is spent in the mempool: no second deposit on it.
+        let busy = deposit::treasury(&http, &enf, &conn).await.unwrap_err();
+        assert!(busy.contains("already waiting"), "{busy}");
+        // FreeBank blocks until it is credited.
+        let mut done = false;
+        for _ in 0..8 {
+            fb_block();
+            done = credited(address.clone(), sats).await;
+            if done {
+                break;
+            }
+        }
+        assert!(done, "round {round}: FreeBank credited the deposit at par, less its fee");
+        let after = deposit::treasury(&http, &enf, &conn).await.unwrap();
+        assert_eq!(after.value, ctip.value + sats, "round {round}: the treasury grew by the deposit");
+        assert_eq!(after.outpoint.txid.to_string(), txid);
+        eprintln!("round {round}: {} eCash deposited, fee {} sats, treasury now {}", super::to_coins(sats), built.fee, after.value);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Withdraw at par on freebankd's standing stack (as deposit_real_stack): to a fresh address of the app's eCash wallet,
+/// with createwithdrawal's arguments as the app gives them; it waits for a bundle ("Unspent"); cancelled, it is
+/// refunded in the next FreeBank blocks.
+#[tokio::test]
+#[ignore]
+async fn withdraw_real_stack() {
+    let get = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+    let (l1, fb_at, bmm) = (get("FB_IO_L1"), get("FB_IO_FB"), get("FB_IO_BMM"));
+    let dir = std::env::temp_dir().join(format!("fb-withdraw-real-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bitcoin.conf"), "rpcuser=t\nrpcpassword=t\n").unwrap();
+    let s = crate::node::Settings { rest: l1, l1_datadir: Some(dir.to_string_lossy().into_owned()), ..Default::default() };
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let conn = super::conn::connect(&http, &s, None).await.unwrap();
+    let r = Root::from_words(&[8u8; 32], Chain::Regtest).unwrap();
+    let main = r.account(Chain::Regtest, Account::Main).unwrap();
+    let (mname, _) = wallet::names(&r.fingerprint().to_string());
+    wallet::create(&conn, &mname, &main.public).await.unwrap();
+    let mut fb = crate::rpc::FreeBankClient::with_http(http.clone()).with_timeout(std::time::Duration::from_secs(200));
+    fb.configure(&format!("http://{}", fb_at), "t", "t");
+    let fb_block = || {
+        let out = std::process::Command::new(&bmm).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    };
+    let status = |id: String| {
+        let fb = &fb;
+        async move { fb.call_typed("getwithdrawal", vec![json!(id)]).await.unwrap()["status"].as_str().unwrap().to_string() }
+    };
+
+    let to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    let refund = fb.call_typed("getnewaddress", vec![json!(""), json!("legacy")]).await.unwrap().as_str().unwrap().to_string();
+    let v = fb.call_typed("createwithdrawal", crate::withdraw::create_args(&to, &refund, 50_000_000, crate::withdraw::FREEBANK_FEE, 10_000)).await.unwrap();
+    let id = v["id"].as_str().unwrap().to_string();
+    assert_eq!(v["destination"].as_str(), Some(to.as_str()), "freebankd takes the eCash wallet's bech32 address as it is");
+    fb_block();
+    assert_eq!(status(id.clone()).await, "Unspent");
+    assert_eq!(crate::withdraw::state_of(Some("Unspent"), None, None), "waiting");
+    let mine = fb.call_typed("listmywithdrawals", vec![]).await.unwrap();
+    assert!(mine.as_array().unwrap().iter().any(|x| x["id"].as_str() == Some(id.as_str())));
+    // What left the wallet: the amount and the eCash fee, plus the FreeBank fee.
+    let t = fb.call_typed("gettransaction", vec![v["txid"].clone()]).await.unwrap();
+    assert_eq!(super::sats_of(&json!(-t["amount"].as_f64().unwrap())).unwrap(), 50_010_000, "{t}");
+    assert_eq!(super::sats_of(&json!(-t["fee"].as_f64().unwrap())).unwrap(), crate::withdraw::FREEBANK_FEE, "{t}");
+
+    // Cancelled while it waits: refunded.
+    fb.call_typed("createwithdrawalrefundrequest", vec![json!(id)]).await.unwrap();
+    let mut refunded = false;
+    for _ in 0..6 {
+        fb_block();
+        if status(id.clone()).await == "Spent" {
+            refunded = true;
+            break;
+        }
+    }
+    assert!(refunded, "the cancel took");
+    assert_eq!(crate::withdraw::state_of(Some("Spent"), Some(true), None), "refunded");
+    // The refund: a coinbase output to the refund address, of the amount and the eCash fee.
+    let list = fb.call_typed("listtransactions", vec![json!("*"), json!(1000)]).await.unwrap();
+    assert!(super::deposit::credited_in(&list, &refund, 50_010_000), "the amount and the eCash fee came back");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The money changer end to end (scripts/changer-real-chain.sh: the stack, then the changer bot with wallets of its
+/// own; FB_CHANGER_URL, FB_CHANGER_KEY besides deposit_real_stack's): sell 1 ECX for eCash, buy ECX with 0.5 eCash, and
+/// a pay-in after the quote expired refunded. Every quote checked as the app checks it.
+#[tokio::test]
+#[ignore]
+async fn changer_real_stack() {
+    use crate::changer::{check, Asked, Quote};
+    let get = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+    let (l1, fb_at, enf, grpcurl, bmm) = (get("FB_IO_L1"), get("FB_IO_FB"), get("FB_IO_ENFORCER"), get("FB_GRPCURL"), get("FB_IO_BMM"));
+    let (url, key) = (get("FB_CHANGER_URL"), get("FB_CHANGER_KEY"));
+    let dir = std::env::temp_dir().join(format!("fb-changer-real-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bitcoin.conf"), "rpcuser=t\nrpcpassword=t\n").unwrap();
+    let s = crate::node::Settings { rest: l1, l1_datadir: Some(dir.to_string_lossy().into_owned()), ..Default::default() };
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let conn = super::conn::connect(&http, &s, None).await.unwrap();
+    let r = Root::from_words(&[6u8; 32], Chain::Regtest).unwrap();
+    let main = r.account(Chain::Regtest, Account::Main).unwrap();
+    let (mname, _) = wallet::names(&r.fingerprint().to_string());
+    wallet::create(&conn, &mname, &main.public).await.unwrap();
+    // The user's FreeBank wallet: the stack's first node (the changer has the second).
+    let mut fb = crate::rpc::FreeBankClient::with_http(http.clone()).with_timeout(std::time::Duration::from_secs(200));
+    fb.configure(&format!("http://{}", fb_at), "t", "t");
+    let l1_mine = |n: u64, to: String| {
+        let (enf, grpcurl) = (enf.clone(), grpcurl.clone());
+        async move {
+            let out = std::process::Command::new(&grpcurl)
+                .args(["-plaintext", "-d", &format!("{{\"blocks\":{},\"address\":\"{}\"}}", n, to), &enf])
+                .arg("cusf.mainchain.v1.MiningService/GenerateToAddress")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+    };
+    let fb_block = || {
+        let out = std::process::Command::new(&bmm).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    };
+    let fb_call = |m: &'static str, p: Vec<Value>| {
+        let fb = &fb;
+        async move { fb.call_typed(m, p).await.unwrap() }
+    };
+    let ask = |side: &'static str, amount: u64, payout_to: String, refund_to: String| {
+        let (http, url) = (http.clone(), url.clone());
+        async move {
+            let v: Value = http
+                .post(format!("{url}/v1/quote"))
+                .json(&json!({"side": side, "amount": amount, "payout_to": payout_to, "refund_to": refund_to}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            serde_json::from_value::<Quote>(v.clone()).unwrap_or_else(|_| panic!("a quote: {v}"))
+        }
+    };
+    let order_state = |id: String| {
+        let (http, url) = (http.clone(), url.clone());
+        async move { http.get(format!("{url}/v1/order/{id}")).send().await.unwrap().json::<Value>().await.unwrap() }
+    };
+    let genesis = fb_call("getblockhash", vec![json!(0)]).await.as_str().unwrap().to_string();
+
+    // eCash for the app's wallet. 101 eCash blocks with no FreeBank block look like a BMM stall to the changer (it
+    // stops quoting): a FreeBank block after them, and a pass of the changer's, as on a live chain.
+    let to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    l1_mine(101, to).await;
+    fb_block();
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    // OUT: sell 1 ECX for eCash.
+    let payout_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    let refund_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
+    let q = ask("out", 100_000_000, payout_to.clone(), refund_to.clone()).await;
+    let height = fb_call("getblockcount", vec![]).await.as_u64().unwrap();
+    check(&q, &key, &Asked { side: "out", amount: 100_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
+        .unwrap();
+    assert_eq!(q.discount_bps, 100, "the beta default: 1% out");
+    let v = fb_call("validateaddress", vec![json!(q.pay_in)]).await;
+    assert!(v["isvalid"].as_bool().unwrap() && !v["ismine"].as_bool().unwrap_or(false));
+    fb_call("sendtoaddress", vec![json!(q.pay_in), json!(super::to_coins(q.amount)), json!(format!("fb-changer {}", q.id))]).await;
+    let mut paid = Value::Null;
+    for _ in 0..15 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        paid = order_state(q.id.clone()).await;
+        if paid["state"] == "paid" {
+            break;
+        }
+    }
+    assert_eq!(paid["state"], "paid", "the changer paid out: {paid}");
+    l1_mine(1, payout_to.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let got = super::sats_of(&conn.wallet(&mname).call_typed("getreceivedbyaddress", vec![json!(payout_to), json!(1)]).await.unwrap()).unwrap();
+    assert_eq!(got, q.payout, "the eCash payout arrived");
+    eprintln!("out: sold 1 ECX, got {} eCash ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
+
+    // IN: buy ECX with 0.5 eCash.
+    let payout_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
+    let refund_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    let q = ask("in", 50_000_000, payout_to.clone(), refund_to.clone()).await;
+    let height = conn.node().call_typed("getblockcount", vec![]).await.unwrap().as_u64().unwrap();
+    check(&q, &key, &Asked { side: "in", amount: 50_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
+        .unwrap();
+    let ec_quote = wallet::quote(&conn, &mname, &q.pay_in, Some(q.amount)).await.unwrap();
+    wallet::sign_and_send(&conn, &ec_quote, &main, None).await.unwrap();
+    let mut paid = Value::Null;
+    for _ in 0..15 {
+        l1_mine(1, refund_to.clone()).await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        paid = order_state(q.id.clone()).await;
+        if paid["state"] == "paid" {
+            break;
+        }
+    }
+    assert_eq!(paid["state"], "paid", "the changer paid out: {paid}");
+    // The payout comes from the changer's node: blocks until it is in one.
+    let mut got = 0;
+    for _ in 0..6 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        got = super::sats_of(&fb_call("getreceivedbyaddress", vec![json!(payout_to), json!(1)]).await).unwrap();
+        if got > 0 {
+            break;
+        }
+    }
+    assert_eq!(got, q.payout, "the FreeBank payout arrived");
+    eprintln!("in: paid 0.5 eCash, got {} ECX ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
+
+    // LATE: a pay-in after the quote expired is refunded, less the refund's fee.
+    let payout_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    let refund_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
+    let q = ask("out", 20_000_000, payout_to, refund_to.clone()).await;
+    for _ in 0..7 {
+        fb_block();
+    }
+    fb_call("sendtoaddress", vec![json!(q.pay_in), json!(super::to_coins(q.amount))]).await;
+    let mut done = Value::Null;
+    for _ in 0..15 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        done = order_state(q.id.clone()).await;
+        if done["state"] == "refunded" {
+            break;
+        }
+    }
+    assert_eq!(done["state"], "refunded", "a late pay-in is refunded: {done}");
+    // The refund comes from the changer's node: blocks until it is in one.
+    let mut back = 0;
+    for _ in 0..6 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        back = super::sats_of(&fb_call("getreceivedbyaddress", vec![json!(refund_to), json!(1)]).await).unwrap();
+        if back > 0 {
+            break;
+        }
+    }
+    assert_eq!(back, q.amount - 20_000, "all of it back, less the refund's fee");
+    eprintln!("late: refunded {}", super::to_coins(back));
+    let _ = std::fs::remove_dir_all(&dir);
+}

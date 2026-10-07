@@ -1,8 +1,10 @@
 <script lang="ts">
   // The app's own updates (v0.2.4, lib/appUpdate.ts). As a notice at the top of the app when a signed release is out
   // (`notice`), and as Settings > App updates.
+  import AptOffer from "./AptOffer.svelte";
   import {
     APT_PAGE,
+    aptOffer,
     appUpdate,
     appUpdateLater,
     appUpdateProgress,
@@ -73,12 +75,13 @@
         </div>
       {:else if c.how === "deb"}
         <p class="hint">
-          Download the new .deb from the release page and open it. Or set up FreeBank's apt repository once, and
-          Software Updater keeps FreeBank up to date.
+          Download the new .deb from the release page and open it. Or let Software Updater keep FreeBank up to date{$aptOffer
+            ? " (below)"
+            : ": set up FreeBank's apt repository once"}.
         </p>
         <div class="row-actions">
           {#if c.page}<button on:click={() => openUrl(c?.page ?? "")}>Download</button>{/if}
-          <button class="secondary" on:click={() => openUrl(APT_PAGE)}>The apt repository</button>
+          {#if !$aptOffer}<button class="secondary" on:click={() => openUrl(APT_PAGE)}>The apt repository</button>{/if}
           {#if notice}<button class="ghost" on:click={() => appUpdateLater.set(true)}>Later</button>{/if}
         </div>
       {:else}
@@ -100,6 +103,8 @@
         <button class="secondary" on:click={check} disabled={checking}>{checking ? "Checking…" : "Check for updates"}</button>
       </div>
     {/if}
+
+    {#if !notice}<AptOffer />{/if}
 
     {#if !notice}
       <p class="muted small">

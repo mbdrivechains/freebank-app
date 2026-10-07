@@ -33,6 +33,47 @@ export interface AppUpdateProgress {
 
 export const APT_PAGE = "https://apt.ecxfreebank.com";
 
+/** The .deb without FreeBank's apt repository set up: offer "Get FreeBank updates with Software Updater" (v0.2.9,
+ *  opt in). Asked once on its own; always in Settings > App updates. */
+export const aptOffer = writable(false);
+
+export async function loadAptOffer(): Promise<boolean> {
+  try {
+    const offer = (await tauriInvoke("apt_updates_offer")) as boolean;
+    aptOffer.set(offer);
+    return offer;
+  } catch {
+    aptOffer.set(false);
+    return false;
+  }
+}
+
+/** Writes FreeBank's apt source through the computer's password prompt. */
+export async function enableAptUpdates(): Promise<void> {
+  await tauriInvoke("apt_updates_enable");
+  aptOffer.set(false);
+  await checkAppUpdate(true);
+}
+
+const APT_ASKED = "freebank.aptAsked";
+
+/** Whether the one-time question was answered (or put off for good) on this computer. */
+export function aptAsked(): boolean {
+  try {
+    return localStorage.getItem(APT_ASKED) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setAptAsked(): void {
+  try {
+    localStorage.setItem(APT_ASKED, "1");
+  } catch {
+    // Without storage it asks again next time; harmless.
+  }
+}
+
 export const appUpdate = writable<AppUpdateCheck | null>(null);
 export const appUpdateProgress = writable<AppUpdateProgress | null>(null);
 /** "Later" on the notice: hidden until the app starts again. */

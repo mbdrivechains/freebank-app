@@ -117,6 +117,10 @@ pub struct Settings {
     pub extra_wallets: Vec<crate::wallets::ExtraWallet>,
     pub active_wallet: Option<String>,
     pub main_wallet: Option<String>,
+    /// The money changer (v0.3.0, changer.rs): its address (https://…) and its key, pinned (x-only, hex). None: no
+    /// changer, and its cards don't show.
+    pub changer_url: Option<String>,
+    pub changer_key: Option<String>,
 }
 
 impl Default for Settings {
@@ -141,6 +145,8 @@ impl Default for Settings {
             extra_wallets: Vec::new(),
             active_wallet: None,
             main_wallet: None,
+            changer_url: None,
+            changer_key: None,
         }
     }
 }

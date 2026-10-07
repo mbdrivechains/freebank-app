@@ -18,6 +18,10 @@ pub struct Transaction {
     pub category: String, // "send", "receive", or for a block this wallet won "generate" / "immature" / "orphan"
     /// The block it is in, when confirmed.
     pub blockheight: Option<i64>,
+    /// The address's label (send.rs HistoryItem `label`).
+    pub label: Option<String>,
+    /// A send's fee, sats.
+    pub fee: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -151,6 +155,8 @@ pub async fn get_transactions(
             address: tx["address"].as_str().map(|s| s.to_string()),
             category: tx["category"].as_str().unwrap_or("unknown").to_string(),
             blockheight: tx["blockheight"].as_i64(),
+            label: tx["label"].as_str().map(|s| s.to_string()),
+            fee: tx["fee"].as_f64().map(|f| (f.abs() * 100_000_000.0).round() as i64),
         })
         .collect();
 

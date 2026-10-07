@@ -48,8 +48,14 @@
 <div class="card" data-testid="ecash-login">
   <h3>eCash node for the eCash tab</h3>
   <p class="muted small">
-    Leave these empty for the eCash node Setup found{login ? ` (${login.rpc})` : ""}, logged into as BitWindow does. A node on
-    another computer needs its address, user and password.
+    Leave these empty for the eCash node Setup found{login ? ` (${login.rpc})` : ""}, logged into as BitWindow does.
+  </p>
+  <p class="muted small" data-testid="ecash-login-remote">
+    For a node on another computer: its address, and a user and password it accepts: the <code>rpcuser=</code> and
+    <code>rpcpassword=</code> lines of its config file (its <code>bitcoin.conf</code>, or the file named by its
+    <code>-conf</code>). A node that uses <code>rpcauth=</code> or only a cookie needs a user and password added. That
+    node must also let this computer in (<code>rpcbind=</code> and <code>rpcallowip=</code>). Leave the data folder
+    empty.
   </p>
   <form class="form" on:submit|preventDefault={save}>
     <label>
@@ -58,11 +64,11 @@
     </label>
     <label>
       Its data folder, if it runs on this computer
-      <input type="text" bind:value={datadir} placeholder="~/.ecash" spellcheck="false" autocomplete="off" />
+      <input type="text" bind:value={datadir} placeholder="e.g. ~/.ecash" spellcheck="false" autocomplete="off" />
     </label>
     <label>
       User
-      <input type="text" bind:value={user} spellcheck="false" autocomplete="off" />
+      <input type="text" bind:value={user} placeholder="its rpcuser" spellcheck="false" autocomplete="off" />
     </label>
     <label>
       Password

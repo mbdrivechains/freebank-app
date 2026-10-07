@@ -7,12 +7,19 @@
   /** A faster send replaced it (Speed up). */
   export let replaced = false;
 
-  // A block this wallet won by bidding (its coinbase): not a send. It pays the block's fees, often nothing on beta.
-  $: won = tx.category === "generate" || tx.category === "immature" || tx.category === "orphan";
-  $: isReceive = tx.category === "receive" || (won && tx.amount > 0);
+  // A coinbase output: a block this wallet won by bidding (it pays the block's fees, often nothing on beta), or, since
+  // FreeBank credits them in the coinbase, a deposit from eCash or a cancelled withdrawal's refund (v0.3.0), told
+  // apart by the address's label.
+  $: coinbase = tx.category === "generate" || tx.category === "immature" || tx.category === "orphan";
+  $: deposit = coinbase && tx.amount > 0 && tx.label === "sidechain";
+  $: refund = coinbase && tx.amount > 0 && tx.label === "withdrawal refund";
+  $: won = coinbase && !deposit && !refund;
+  $: isReceive = tx.category === "receive" || (coinbase && tx.amount > 0);
   $: wonLabel =
     tx.category === "orphan" ? "Won block, not kept" : `Won FreeBank block${tx.blockheight ? ` ${tx.blockheight}` : ""}`;
+  $: kind = deposit ? "Deposit from eCash" : refund ? "Withdrawal cancelled: refund" : won ? wonLabel : isReceive ? "Received" : "Sent";
   $: formattedAmount = won && tx.amount === 0 ? "no fees" : (isReceive ? "+" : "") + tx.amount.toFixed(8);
+  $: feeText = tx.category === "send" && tx.fee ? `fee ${(tx.fee / 1e8).toFixed(8)}` : "";
   $: formattedDate = new Date(tx.time * 1000).toLocaleDateString();
 </script>
 
@@ -21,8 +28,9 @@
     {won ? "★" : isReceive ? "↓" : "↑"}
   </div>
   <div class="tx-details">
-    <div class="tx-type">{won ? wonLabel : isReceive ? "Received" : "Sent"}</div>
-    {#if tx.category === "immature" && tx.amount > 0}<div class="tx-date">Spendable after 100 blocks</div>{/if}
+    <div class="tx-type">{kind}</div>
+    {#if tx.category === "immature" && tx.amount > 0}<div class="tx-date">Spendable after the next block</div>{/if}
+    {#if feeText}<div class="tx-date">{feeText}</div>{/if}
     <div class="tx-date">{formattedDate}</div>
     {#if tx.address}
       <div class="tx-address">{tx.address.slice(0, 12)}...</div>

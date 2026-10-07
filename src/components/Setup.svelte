@@ -9,6 +9,7 @@
   import AdvancedSettings from "./AdvancedSettings.svelte";
   import NodeSettings from "./NodeSettings.svelte";
   import PathText from "./PathText.svelte";
+  import { addSample, sayLeft, secondsLeft, type SyncSample } from "../lib/syncEta";
   import {
     friendlyLog,
     megabytes,
@@ -319,6 +320,15 @@
     return n == null ? "…" : n.toLocaleString();
   }
 
+  // Time left while catching up (lib/syncEta.ts).
+  let syncSamples: SyncSample[] = [];
+  $: if (view?.rpc.state === "up" && view.rpc.blocks != null) {
+    syncSamples = addSample(syncSamples, { at: Date.now(), blocks: view.rpc.blocks });
+  } else if (syncSamples.length) {
+    syncSamples = [];
+  }
+  $: syncLeft = view?.rpc.state === "up" ? sayLeft(secondsLeft(syncSamples, view.explorer_tip)) : "";
+
   $: syncPct =
     view && view.rpc.blocks != null && view.explorer_tip
       ? Math.min(100, (view.rpc.blocks / view.explorer_tip) * 100)
@@ -616,6 +626,7 @@
       <span class="bar"><span class="bar-fill" class:indeterminate={view?.rpc.state !== "up"} style="width:{view?.rpc.state === 'up' ? syncPct : 100}%"></span></span>
       <div class="sync-meta">
         <span>{view?.rpc.state === "up" ? `${view.peers ?? 0} peer${view.peers === 1 ? "" : "s"}` : "Warming up"}</span>
+        {#if syncLeft}<span data-testid="sync-left">{syncLeft}</span>{/if}
         {#if view?.rpc.state === "warming" && view.rpc.message}<span>{view.rpc.message}</span>{/if}
       </div>
       {#if view?.reindexing}

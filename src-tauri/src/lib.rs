@@ -1,5 +1,7 @@
 mod activity;
+mod admin;
 mod app_update;
+mod changer;
 mod clipboard;
 mod commands;
 mod ecash;
@@ -13,6 +15,7 @@ mod seed;
 mod send;
 mod wallet;
 mod wallets;
+mod withdraw;
 
 use node::NodeManager;
 use rpc::FreeBankClient;
@@ -216,6 +219,7 @@ pub fn run() {
             node::commands::obliterate_plan,
             node::commands::wallet_backup,
             node::commands::obliterate,
+            node::commands::remove_app_itself,
             node::commands::app_quit,
             node::commands::app_quit_asked,
             // v0.2.0 node
@@ -241,6 +245,19 @@ pub fn run() {
             ecash::commands::ecash_history,
             ecash::commands::ecash_send_prepare,
             ecash::commands::ecash_send_confirm,
+            ecash::commands::deposit_prepare,
+            ecash::commands::deposit_confirm,
+            ecash::commands::deposit_list,
+            withdraw::withdraw_prepare,
+            withdraw::withdraw_confirm,
+            withdraw::withdraw_list,
+            withdraw::withdraw_cancel,
+            changer::changer_info,
+            changer::changer_quote,
+            changer::changer_pay,
+            changer::changer_orders,
+            changer::changer_set,
+            changer::changer_get,
             ecash::commands::ecash_bids_withdraw_prepare,
             ecash::commands::ecash_bids_withdraw_confirm,
             ecash::commands::ecash_login_get,
@@ -270,6 +287,8 @@ pub fn run() {
             app_update::app_update_check,
             app_update::app_update_start,
             app_update::app_update_progress,
+            app_update::apt_updates_offer,
+            app_update::apt_updates_enable,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
