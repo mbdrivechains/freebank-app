@@ -113,6 +113,8 @@ fn allowlist_refuses_the_wallet_sensitive_calls() {
         "sendmany",
         "sendfrom",
         "sendrawtransaction",
+        "approvenotelock",
+        "createnotelock",
         "walletlock",
         "getnewaddress",
         "keypoolrefill",

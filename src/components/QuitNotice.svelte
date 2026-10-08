@@ -97,7 +97,8 @@
         {/if}
       {:else if ask.outlives}
         <h3 id="quit-title">Close FreeBank</h3>
-        <p>The node keeps running. Open FreeBank to stop it.</p>
+        <p>The node is FreeBank's background part: it can keep running when the app closes, so your wallet stays in step
+          with the chain. To stop it later, open FreeBank.</p>
       {:else}
         <h3 id="quit-title">Your node stops this time</h3>
         <p>
@@ -114,7 +115,9 @@
             {busy === "stop" ? "Stopping the node…" : "Stop everything and close"}
           </button>
         {:else}
-          <button on:click={close} disabled={!!busy}>{busy === "close" ? "Closing…" : "Close FreeBank"}</button>
+          <button on:click={close} disabled={!!busy}>
+            {busy === "close" ? "Closing…" : ask.outlives ? "Close the app, leave the node running" : "Close FreeBank"}
+          </button>
           {#if ask.outlives}
             <button class="secondary" on:click={stopAndClose} disabled={!!busy}>
               {busy === "stop" ? "Stopping the node…" : "Stop the node and close"}

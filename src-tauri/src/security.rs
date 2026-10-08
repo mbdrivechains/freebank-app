@@ -57,6 +57,10 @@ pub const RPC_ALLOWED: &[&str] = &[
     "endorsebill",
     "retirebill",
     "claimbillescrow",
+    // Node v0.2.21, Run a house: the house's mint keyset recorded on chain. (A batch lock goes through house.rs's
+    // own commands: approvenotelock's answer is a signed lock, which never comes here.)
+    "registertokenkeyset",
+    "gettokenclaims",
     // The Deposit panel (a new deposit address; it can't move coins) and the balance card's
     // pending line.
     "getdepositaddress",

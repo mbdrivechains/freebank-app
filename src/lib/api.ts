@@ -345,6 +345,17 @@ export const api = {
     return fbCall('gettransaction', [txid]) as Promise<WalletTx>;
   },
 
+  /** A transaction from the chain, for one this wallet isn't part of: found while it waits in the mempool (or on
+   *  a node with -txindex). */
+  async getRawTransaction(txid: string): Promise<{ confirmations?: number; blockhash?: string; vout: unknown[] }> {
+    return fbCall('getrawtransaction', [txid, true]) as Promise<{ confirmations?: number; blockhash?: string; vout: unknown[] }>;
+  },
+
+  /** One of a transaction's outputs while it is unspent (the mempool counts); null once spent or unknown. */
+  async getTxOut(txid: string, n: number): Promise<{ confirmations: number; bestblock: string } | null> {
+    return fbCall('gettxout', [txid, n, true]) as Promise<{ confirmations: number; bestblock: string } | null>;
+  },
+
   async getBlockHeader(hash: string): Promise<{ hash: string; height: number; time: number }> {
     return fbCall('getblockheader', [hash, true]) as Promise<{ hash: string; height: number; time: number }>;
   },
@@ -423,6 +434,35 @@ export const api = {
   async changeHouseMembers(houseId: number, add: boolean, addresses: string[], fee = 0.001): Promise<string> {
     const r = (await fbCall(add ? 'addhousemembers' : 'removehousemembers', [houseId, addresses, fee])) as { txid: string };
     return r.txid;
+  },
+
+  // ---- Run a house (v0.4.0): the house's mint ----
+
+  /** Record the house's mint keyset on chain (keyset.json, checked by lib/tokenhouse.ts) with the key that signs the
+   *  mint's posts. Your node holds the house's keys. Returns the chain's id for it, which must be the mint's. */
+  async registerTokenKeyset(
+    houseId: number,
+    keys: { amount: number; pubkey: string }[],
+    postingPubkey: string,
+    fee = 0.001,
+  ): Promise<{ txid: string; keysetid: string }> {
+    return fbCall('registertokenkeyset', [houseId, keys, postingPubkey, fee]) as Promise<{ txid: string; keysetid: string }>;
+  },
+
+  /** The house's token keysets on chain, with their posting keys, and the notes locked as token backing. */
+  async tokenKeysets(houseId: number): Promise<{ tokenunits: number; keysets: { id: string; height: number; postingpubkey: string }[] }> {
+    return fbCall('gettokenclaims', [houseId, '', 1]) as Promise<{ tokenunits: number; keysets: { id: string; height: number; postingpubkey: string }[] }>;
+  },
+
+  /** Check a batch lock the mint's float wallet made (createnotelock … fromaddress): what the partners' approval would
+   *  lock. The approval is signed with the house's keys in Rust and dropped there; nothing is sent. */
+  async checkNoteLock(hex: string): Promise<{ house: number; units: number; holder: string; txid: string }> {
+    return tauriInvoke('note_lock_check', { hex }) as Promise<{ house: number; units: number; holder: string; txid: string }>;
+  },
+
+  /** Approve the lock again and send it, only if it still locks what was shown, held at the mint's `float`. */
+  async sendNoteLock(hex: string, house: number, units: number, float: string): Promise<string> {
+    return tauriInvoke('note_lock_send', { hex, house, units, float }) as Promise<string>;
   },
 
   /** Attest a house's liquid reserves — the recurring soundness proof that keeps it Open */

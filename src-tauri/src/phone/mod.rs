@@ -2882,6 +2882,8 @@ pub const CREDIT_PAYMENTS: &[&str] = &[
     "endorsebill",
     "retirebill",
     "claimbillescrow",
+    // Node v0.2.21: recording the house's mint keyset pays a fee.
+    "registertokenkeyset",
     // Node v0.2.19, members-only houses: each pays a fee.
     "addhousemembers",
     "removehousemembers",
@@ -2943,6 +2945,7 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
             (pledged, format!("Register a house, pledging {} ECX", e(pledged)))
         }
         "attesthouse" => (Some(0), format!("Attest house #{}'s reserves", id(0))),
+        "registertokenkeyset" => (Some(0), format!("Record house #{}'s token keyset", id(0))),
         "removepoolliquidity" => (Some(0), format!("Take liquidity out of pool #{}", id(0))),
         "claimbillescrow" => (Some(0), format!("Claim bill #{}'s bond", id(0))),
         "addhousemembers" | "removehousemembers" => {

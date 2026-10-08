@@ -20,6 +20,7 @@
   import { walletLocked, withUnlock } from "../lib/wallet";
   import { showReceipt } from "../lib/receipts";
   import Notice from "./Notice.svelte";
+  import { lockHexFrom, parseKeysetFile, saveFloat, savedFloat, type MintKeyset } from "../lib/tokenhouse";
 
   /** The wallet's spendable ECX, sats (for "you need coins first"). */
   export let balance = 0;
@@ -319,6 +320,91 @@
       const txid = await withUnlock(() => api.attestHouse(houseId), { what: `attest House #${houseId}'s reserves` });
       showReceipt({ txid, what: `Attested House #${houseId}'s reserves` });
       await loadHouses();
+    } catch (e) {
+      error = nice(e);
+    }
+    regBusy = false;
+  }
+
+  // Run a house (v0.4.0): the house's mint. Its keyset recorded on chain before it issues, and its batch locks
+  // approved with the partners' keys here (they never go to the mint's server). Both come as text from the server:
+  // keyset.json, and the hex `createnotelock` prints there.
+  let ksText = "";
+  let ks: MintKeyset | null = null;
+  let ksError = "";
+  let ksOnChain: { id: string; postingpubkey: string }[] | null = null;
+  // Recorded here and not yet in a block: re-pasting the file shouldn't offer (and pay for) a second record.
+  let ksPending: Record<string, string> = {};
+  let lockHex = "";
+  let lockShown: { house: number; units: number; holder: string } | null = null;
+  let lockFloat = "";
+  $: floatOk = /^X[1-9A-HJ-NP-Za-km-z]{25,34}$/.test(lockFloat.trim());
+
+  async function checkKeyset() {
+    ks = null;
+    ksOnChain = null;
+    ksError = "";
+    try {
+      ks = parseKeysetFile(ksText.trim());
+      if (ks.float) saveFloat(ks.house, ks.float);
+      ksOnChain = (await api.tokenKeysets(ks.house)).keysets;
+    } catch (e) {
+      ksError = nice(e);
+    }
+  }
+
+  async function recordKeyset() {
+    if (!ks) return;
+    const k = ks;
+    regBusy = true;
+    error = "";
+    try {
+      const r = await withUnlock(() => api.registerTokenKeyset(k.house, k.keys, k.postingpubkey), {
+        what: `record House #${k.house}'s token keyset`,
+      });
+      if (r.keysetid !== k.keysetid) {
+        error = `The chain names this keyset ${r.keysetid}, not ${k.keysetid}: the mint won't see it as its own.`;
+      }
+      ksPending = { ...ksPending, [k.keysetid]: r.txid };
+      showReceipt({ txid: r.txid, what: `Recorded House #${k.house}'s token keyset ${k.keysetid}` });
+      ksText = "";
+      ks = null;
+    } catch (e) {
+      error = nice(e);
+    }
+    regBusy = false;
+  }
+
+  async function checkLock() {
+    lockShown = null;
+    error = "";
+    try {
+      lockShown = await withUnlock(() => api.checkNoteLock(lockHexFrom(lockHex)), { what: "check the lock with the house's keys", upfront: true });
+      if (lockShown && !lockFloat) lockFloat = savedFloat(lockShown.house);
+    } catch (e) {
+      error = nice(e);
+    }
+  }
+
+  async function sendLock() {
+    if (!lockShown) return;
+    const l = lockShown;
+    regBusy = true;
+    error = "";
+    try {
+      const float = lockFloat.trim();
+      saveFloat(l.house, float);
+      const txid = await withUnlock(() => api.sendNoteLock(lockHexFrom(lockHex), l.house, l.units, float), {
+        what: `lock ${fmtEcx(l.units)} ${BASE_TICKER} of House #${l.house}'s notes`,
+        upfront: true,
+      });
+      showReceipt({
+        txid,
+        what: `Locked ${fmtEcx(l.units)} ${BASE_TICKER} of House #${l.house}'s notes as token backing`,
+        rows: [{ label: "Held at", value: l.holder, mono: true }],
+      });
+      lockHex = "";
+      lockShown = null;
     } catch (e) {
       error = nice(e);
     }
@@ -823,7 +909,7 @@
       </div>
 
       <details class="advanced tools">
-        <summary>House tools: charter a house, attest reserves</summary>
+        <summary>House tools: charter a house, attest reserves, your mint's tokens</summary>
       <div class="card">
         <h3>Charter a house</h3>
         <p class="muted">Open your own note-issuing house — the Scottish move: anyone can start a bank, kept honest by convertibility. Your node holds the keys.</p>
@@ -863,6 +949,61 @@
             <input type="number" bind:value={attestId} placeholder="e.g. 1" />
           </label>
           <button on:click={() => doAttest(parseInt(attestId))} disabled={regBusy || !attestId}>Attest reserves</button>
+        </div>
+      </div>
+      <div class="card" data-testid="house-mint">
+        <h3>Tokens: your house's mint</h3>
+        <p class="muted">The mint issues tokens backed by your house's notes, from its own server. The house's keys stay
+          here: the mint issues nothing until you record its keyset, and its batch locks need your approval.</p>
+        <h4>Record the mint's keyset</h4>
+        <div class="form">
+          <label>
+            The mint's keyset.json (in its folder on the server), pasted whole
+            <textarea rows="3" bind:value={ksText} on:input={() => { ks = null; ksError = ""; }} placeholder={'{"house":…,"keysetid":"00…","keys":[…],"postingpubkey":"02…"}'}></textarea>
+          </label>
+          <button on:click={checkKeyset} disabled={!ksText.trim()}>Check it</button>
+          {#if ksError}<p class="blocked-why">{ksError}</p>{/if}
+          {#if ks}
+            <div class="house-stats">
+              <div><span class="stat-label">House</span> #{ks.house}</div>
+              <div><span class="stat-label">Keyset</span> <span><span class="mono">{ks.keysetid}</span> · {ks.keys.length} keys, its id checked</span></div>
+              <div><span class="stat-label">Posts signed by</span> <span class="mono small">{ks.postingpubkey}</span></div>
+            </div>
+            {#if ksPending[ks.keysetid] && !ksOnChain?.some((k) => k.id === ks?.keysetid)}
+              <p class="muted small">Recorded, waiting for a block (transaction <span class="mono">{ksPending[ks.keysetid].slice(0, 16)}…</span>). Check it again after the next block.</p>
+            {:else if ksOnChain?.some((k) => k.id === ks?.keysetid)}
+              <p class="muted small">Already recorded{ksOnChain.find((k) => k.id === ks?.keysetid)?.postingpubkey === ks.postingpubkey ? "." : ", with another posting key: the mint needs a new keyset."}</p>
+            {:else}
+              <button on:click={recordKeyset} disabled={regBusy}>{regBusy ? "…" : `Record it for House #${ks.house}`}</button>
+              <p class="hint">Needs this house's keys on your node, and a small fee.</p>
+            {/if}
+          {/if}
+        </div>
+        <h4>Approve a batch lock</h4>
+        <p class="muted small">On the mint's server, in its folder:
+          <span class="mono">F=$(cat float-address) &amp;&amp; [ -n "$F" ] &amp;&amp; freebank-cli createnotelock &lt;house&gt; &lt;units&gt; 0.001 "$F"</span>.
+          Paste what it prints. The mint's wallet pays the fee.</p>
+        <div class="form">
+          <label>
+            What createnotelock printed (or just its hex)
+            <textarea rows="2" bind:value={lockHex} on:input={() => (lockShown = null)} placeholder={'{"hex": "0d000000…", …}'}></textarea>
+          </label>
+          <button on:click={checkLock} disabled={regBusy || !lockHex.trim()}>Check it</button>
+          {#if lockShown}
+            <div class="house-stats">
+              <div><span class="stat-label">Locks</span> {fmtEcx(lockShown.units)} {BASE_TICKER} of House #{lockShown.house}'s notes as token backing</div>
+              <div><span class="stat-label">Takes notes held at</span> <span class="mono small">{lockShown.holder}</span></div>
+            </div>
+            <label>
+              The mint's float address (float in its keyset.json; remembered here)
+              <input type="text" class="mono" bind:value={lockFloat} placeholder="X…" />
+            </label>
+            {#if floatOk && lockFloat.trim() !== lockShown.holder}
+              <p class="blocked-why">This lock takes notes from {lockShown.holder}, not the mint's float: don't send it. A customer's
+                notes may sit there, waiting for room. Make the lock again with the float's address.</p>
+            {/if}
+            <button on:click={sendLock} disabled={regBusy || !floatOk || lockFloat.trim() !== lockShown.holder}>{regBusy ? "…" : "Approve and send"}</button>
+          {/if}
         </div>
       </div>
       </details>

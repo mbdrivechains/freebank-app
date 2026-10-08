@@ -1,6 +1,6 @@
 [package]
 name = "freebank"
-version = "0.3.0"
+version = "0.4.0"
 description = "FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)"
 authors = ["The FreeBank developers"]
 license = "MIT"

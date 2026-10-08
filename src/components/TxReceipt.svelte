@@ -103,17 +103,43 @@
     }
   }
 
+  // A transaction this wallet isn't part of (a batch lock the house's keys co-signed: the mint's wallet pays it) is
+  // followed on the chain instead: in the mempool through getrawtransaction, then through its unspent outputs.
+  let outs = 4;
+  async function fromChain(id: string): Promise<{ confirmations: number; blockhash?: string } | null> {
+    try {
+      const r = await api.getRawTransaction(id);
+      outs = Math.max(1, Math.min(r.vout?.length ?? outs, 8));
+      return { confirmations: Number(r.confirmations) || 0, blockhash: r.blockhash };
+    } catch {
+      // Not in the mempool, and no -txindex: ask its outputs.
+    }
+    for (let n = 0; n < outs; n++) {
+      try {
+        const o = await api.getTxOut(id, n);
+        if (o) return { confirmations: Number(o.confirmations) || 0 };
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   async function look() {
     const id = txid;
     let t: WalletTx;
     try {
       t = await api.getTransaction(id);
     } catch (e) {
-      if (id === txid && rpcCode(e) === RPC.INVALID_ADDRESS_OR_KEY) {
+      if (id !== txid || rpcCode(e) !== RPC.INVALID_ADDRESS_OR_KEY) return; // a busy or restarting node: try again on the next block
+      const c = await fromChain(id);
+      if (id !== txid || destroyed) return;
+      if (!c) {
         missing = true;
         emit();
+        return;
       }
-      return; // a busy or restarting node: try again on the next block
+      t = { txid: id, confirmations: c.confirmations, blockhash: c.blockhash, time: 0, amount: 0 };
     }
     if (id !== txid || destroyed) return;
     const c = Number(t.confirmations) || 0;

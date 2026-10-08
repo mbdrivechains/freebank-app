@@ -6,6 +6,7 @@ mod clipboard;
 mod commands;
 mod ecash;
 mod feedback;
+mod house;
 mod node;
 mod phone;
 mod recovery;
@@ -161,6 +162,8 @@ pub fn run() {
             send::fee_choices,
             send::send_prepare,
             send::send_confirm,
+            house::note_lock_check,
+            house::note_lock_send,
             send::send_log,
             send::speed_up_quote,
             send::send_speed_up,

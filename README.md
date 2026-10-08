@@ -119,6 +119,8 @@ bidding) and **Node**, with Settings behind the gear.
 - **Notes** — hold / mint / send / redeem / demand, per issuing house
 - **Houses** — directory, registration, reserve attestation; open, members-only or redeem-only houses and their
   members (node v0.2.19)
+- **Tokens: your house's mint** — record its keyset on chain and approve the batch locks it makes, with the house's
+  keys kept here (node v0.2.21; the mint runs on its own server)
 - **Clearing pools** — swap notes ↔ ECX, add/remove liquidity, LP positions
 - **Bills of exchange** — issue / endorse / retire / claim escrow
 - **eCash wallet** — receive, send, history; move coins into the bidding wallet and back, each with its fee shown
