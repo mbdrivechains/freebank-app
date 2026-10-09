@@ -1,5 +1,4 @@
-// "About 12 min left" while the node catches up (v0.2.9; Michael, 2026-10-07: "add an estimat to sync if that is easy
-// and does not mess up your screen"). From the blocks connected over the last few minutes, so a run of empty blocks
+// "About 12 min left" while the node catches up (v0.2.9). From the blocks connected over the last few minutes, so a run of empty blocks
 // early on doesn't set it for good; shown only once it has a minute of data, and always as "about".
 
 export interface SyncSample {

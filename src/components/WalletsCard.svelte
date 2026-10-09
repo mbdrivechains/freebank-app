@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings › Wallet: your wallets (v0.2.6; operator, 2026-10-04: "Both kinds", the phone on the main one). The main
+  // Settings › Wallet: your wallets (v0.2.6; both kinds, the phone on the main one). The main
   // wallet, wallets made from your same recovery words (each brought back by the words and its number), and wallet
   // files you already have (each with its own passphrase and backup). The header's switcher chooses which one Home,
   // Send, Receive and Credit use.

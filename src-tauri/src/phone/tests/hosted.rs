@@ -213,7 +213,7 @@ async fn invite_join_pay_move_and_delete() {
     assert!(h.rpc.params_of("transfernote").is_empty(), "never from the owner's wallet");
     assert_eq!(h.rpc.hosted.lock().unwrap()[&wallet].unlocked_until, 0);
 
-    // Moving home to fresh words (Michael, 2026-10-05): his own computer's address (here TO) joins the house, the notes
+    // Moving home to fresh words : the shopkeeper's own computer's address (here TO) joins the house, the notes
     // go, then the sECX; done when the wallet holds nothing. Its own address, or a non-address, is refused.
     let a = auth(&mut h, &mut shop, 3, 40, &sfid, "change").await;
     let r = ask(&mut h, &mut shop, 3, 41, "move-home", json!({"address": member, "auth": a})).await;

@@ -33,8 +33,7 @@ fn menu_with_report<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) -> tauri::R
     if let Some(MenuItemKind::Submenu(help)) = menu.get(HELP_SUBMENU_ID) {
         help.append(&MenuItem::with_id(handle, "report", "Report a Problem or Suggest Something…", true, None::<&str>)?)?;
     }
-    // ⌘Q asks what to stop, as closing the window does (v0.2.5; operator 2026-10-03: "when i command (or ctrl ) Q from
-    // app .. what gets shutdown"): our own Quit item in place of the standard one, which quits at once. A Mac shutdown
+    // ⌘Q asks what to stop, as closing the window does (v0.2.5): our own Quit item in place of the standard one, which quits at once. A Mac shutdown
     // or logout doesn't go through the menu, so it still quits without asking.
     if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
         let items = app_menu.items()?;

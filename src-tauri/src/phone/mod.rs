@@ -2422,8 +2422,8 @@ impl Phone {
 
 // ----- Approve on my phone (v0.2.5) ----------------------------------------------------------------
 
-/// "Approve sends on my phone" (operator 2026-10-02: "yes..opt in I assume"; reworked after the v0.2.5 security review,
-/// operator 2026-10-03: "yes to that"). Once the desktop's payments in the last 24 hours would come to more than the
+/// "Approve sends on my phone" (opt in; reworked after the v0.2.5 security
+/// review). Once the desktop's payments in the last 24 hours would come to more than the
 /// amount set, a paired phone's Face ID first, over a challenge made for that one approval. Every way the app pays
 /// counts, fees included: Send, the credit tabs, and a phone's held payment confirmed here (unless that phone's own
 /// Face ID signed it). What would weaken it asks a phone too: turning it off, a higher amount, pairing another phone, a

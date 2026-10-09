@@ -47,7 +47,7 @@
     }
   }
 
-  // A members-only house's notes go only to its member addresses (v0.2.8; Michael, 2026-10-05: "yes to both"): a new
+  // A members-only house's notes go only to its member addresses (v0.2.8): a new
   // address wouldn't be one, so the wallet's member addresses show too.
   let members: { house: number; name: string | null; address: string }[] = [];
   let shownMember: string | null = null;

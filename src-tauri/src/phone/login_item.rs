@@ -1,4 +1,4 @@
-//! "Start when I log in" (daemon mode, v0.2.4; operator 2026-10-02: "yes.. 0.2.4. both ."): a login item that starts
+//! "Start when I log in" (daemon mode, v0.2.4): a login item that starts
 //! FreeBank's background part light (`background.rs`, `--light`) when the user logs in, so a phone reaches the desktop
 //! whenever the computer is on, with no window open.
 //! - macOS: a LaunchAgent, `~/Library/LaunchAgents/com.ecxfreebank.freebank.phone.plist` (RunAtLoad, no KeepAlive).

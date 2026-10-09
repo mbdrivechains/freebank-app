@@ -1,6 +1,5 @@
-//! "Report a problem or suggest something" (operator, 2026-09-30: "We should also have an issue/s
-//! suggestion button. Ideally going to github"; then, for people without a GitHub account, a form to
-//! our server). "Send to FreeBank" posts the report to the relay's `POST /feedback` at
+//! "Report a problem or suggest something" (v0.2.1:
+//! to GitHub, or for people without a GitHub account, a form to our server). "Send to FreeBank" posts the report to the relay's `POST /feedback` at
 //! app.ecxfreebank.com (distribution `relay/src/feedback.rs`), which keeps it privately. The page only
 //! ever sees `feedback_details` and a reference back: the request goes from here.
 //!

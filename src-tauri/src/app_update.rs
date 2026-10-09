@@ -1,8 +1,8 @@
-//! The app updates itself (v0.2.4; operator 2026-10-03: "add app updater ot 2.4"). It trusts exactly what the node
+//! The app updates itself (v0.2.4). It trusts exactly what the node
 //! installer trusts: a release's SHA256SUMS signed with FreeBank's release key (SHA256SUMS.sig, `node/release_key.rs`).
 //! So an update is offered only once the release has been signed, and nothing GitHub holds can make one without it.
 //! The AppImage and the Mac app are built on GitHub's machines and don't rebuild byte for byte yet (VERIFY.md), so the
-//! signature vouches for the release Michael checked and signed, not for more than that build.
+//! signature vouches for the release its holder checked and signed, not for more than that build.
 //!
 //! - **Check:** SHA256SUMS and SHA256SUMS.sig from the app's latest GitHub release. The signature is checked first,
 //!   then the version is read from the package names in it (they must all agree). A version newer than this app is

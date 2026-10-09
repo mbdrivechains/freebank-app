@@ -1,5 +1,5 @@
-//! Hosted wallets (v0.2.8; operator, 2026-10-04: "its a temporary hosted wallet at the bank until he gets home.. and
-//! installed on his desktop/macbook"). Design: `gateway/docs/distribution/PAY_IN_NOTES_DESIGN.md`; wire protocol:
+//! Hosted wallets (v0.2.8): a temporary wallet at the house, until its owner has FreeBank on
+//! their own computer. Wire protocol:
 //! `relay/PROTOCOL.md`, "Hosted wallets (app v0.2.8)".
 //!
 //! An owner's phone invites someone (a shopkeeper) to one of the wallet's members-only houses. The invited phone pairs
@@ -73,7 +73,7 @@ pub enum Step {
     /// Its address is being added to the house.
     Joining,
     Ready,
-    /// Its money is going to the shopkeeper's own computer (fresh words; Michael, 2026-10-05).
+    /// Its money is going to the shopkeeper's own computer (fresh words).
     Moving,
     Moved,
     Failed,
@@ -936,7 +936,7 @@ impl Phone {
         }
     }
 
-    /// Moving home (fresh words; Michael, 2026-10-05): add the shopkeeper's own computer's address to the house, then
+    /// Moving home (fresh words): add the shopkeeper's own computer's address to the house, then
     /// send it each house's notes (or redeem those it can't take), one at a time, each confirmed before the next, then
     /// the rest of the sECX. Then `moved`, and this keeps watching the old copy: money that reaches it later (a customer
     /// using the shop's old QR code) is sent on, and the old address is taken off the house (the re-review of v0.2.8,
@@ -1452,7 +1452,7 @@ impl Phone {
     }
 }
 
-/// The wallet's member addresses (Michael, 2026-10-05: "yes to both"): one per members-only or redeem-only house where
+/// The wallet's member addresses (v0.2.8): one per members-only or redeem-only house where
 /// an address of this wallet is an active member, `[{house, name, address}]`. A members-only house's notes go only to
 /// its members, and Receive makes a new address each time, which wouldn't be one. `call` reaches the wallet.
 pub async fn member_addresses<F, Fut>(call: F) -> Vec<Value>

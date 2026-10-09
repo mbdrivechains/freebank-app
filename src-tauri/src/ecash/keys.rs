@@ -1,4 +1,4 @@
-//! The eCash wallets' keys, from the app's one set of 24 words (operator's decision, walkthrough 9: one app-wide seed).
+//! The eCash wallets' keys, from the app's one set of 24 words (one app-wide seed).
 //! Reworked after the v0.2.6 security review (H1, H2, L2): the eCash node gets only public keys and FreeBank signs.
 //!
 //! - **The eCash root** is BIP85's XPRV application at m/83696968'/32'/0' of the words' BIP32 root: a master key of its
@@ -10,7 +10,7 @@
 //! The node gets each account as a public descriptor (`wpkh([root fingerprint/84h/ch/ah]xpub/branch/*)`), with the
 //! BIP380 checksum worked out here, and watches it. Private keys exist only here, for the moment a payment is signed
 //! (`sign.rs`): the main account's from the words, which the wallet passphrase opens; the bidding account's from a key
-//! file only this user can read (bids go out with nobody there, by the operator's choice).
+//! file only this user can read (bids go out with nobody there, by design).
 
 use crate::seed::{bip85_entropy, hardened, wipe, words_root, Chain};
 use bitcoin::bip32::{ChainCode, ChildNumber, DerivationPath, Fingerprint, Xpriv, Xpub};

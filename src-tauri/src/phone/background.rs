@@ -1,6 +1,4 @@
-//! "Keep your phone connected when FreeBank is closed" (operator, 2026-09-29: "can we have an option
-//! that if a phone is conected then a question is asked : woul dyou like to spin off a damon so you
-//! can connect on your phohen when out.."; in v0.2.1 by his choice, 2026-09-30).
+//! "Keep your phone connected when FreeBank is closed" (v0.2.1).
 //!
 //! With the setting on, closing the window starts the app again without one, in its own session:
 //! `freebank --phone-background --app-dir <dir>`. That background part runs the phone link alone,
@@ -11,7 +9,7 @@
 //! - a send the open app would hold (over the limit, or with the wallet locked) is refused at once:
 //!   nobody is there to confirm it (`Phone::set_background`).
 //!
-//! **Daemon mode (v0.2.4, operator 2026-10-02: "yes.. 0.2.4. both ."):** "Start when I log in" adds a login item
+//! **Daemon mode (v0.2.4):** "Start when I log in" adds a login item
 //! (`login_item.rs`) that starts this part with `--light` when the user logs in. Light, it reads no passphrase and
 //! starts no node; the node starts when a paired phone asks for something (after its session and Face ID checked
 //! out), and until the node answers the phone hears `ERR_STARTING`, as does a request that finds the node gone later

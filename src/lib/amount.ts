@@ -1,4 +1,4 @@
-// Amounts in sECX, the app's only unit (operator's decisions D-2026-09-29-5 and -7: no grams until gold is
+// Amounts in sECX, the app's only unit (no grams until gold is
 // switched on). Note units are base-native, 1 unit = 1 sat of sECX, so the same helpers serve notes too.
 
 export const SATS_PER_ECX = 100_000_000;

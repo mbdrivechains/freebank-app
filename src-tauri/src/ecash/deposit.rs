@@ -1,4 +1,4 @@
-//! Deposit at par (v0.3.0 "In and out"; `gateway/docs/distribution/CASH_OUT_DESIGN.md` §3.4): eCash from the app's
+//! Deposit at par (v0.3.0 "In and out"): eCash from the app's
 //! main eCash wallet into FreeBank through the peg, a BIP300 deposit (M5) built and signed here, as bids are (bmm.rs).
 //!
 //! The deposit spends FreeBank's treasury output on eCash (its "CTIP", anyone can spend it: `<OP_DRIVECHAIN> <130>

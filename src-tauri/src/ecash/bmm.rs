@@ -1,6 +1,6 @@
-//! Bidding for FreeBank blocks (BMM) from the bidding wallet (v0.2.6; operator, 2026-10-04: "adn bmm now").
+//! Bidding for FreeBank blocks (BMM) from the bidding wallet (v0.2.6).
 //!
-//! The simple loop of the 2026-09-29 design (`gateway/docs/distribution/APP_SELF_SUFFICIENT_SCOPE.md`, "Bid (M8)"),
+//! The simple loop of the 2026-09-29 design ("Bid (M8)"),
 //! on the FreeBank node's calls for an outside bidder (freebankd v0.2.16 and later, `src/rpc/misc.cpp`):
 //! 1. On each new eCash tip T, the live rounds are settled first: `get_bmm_inclusions h*` names the eCash block that
 //!    committed our FreeBank block, and `connect_block` connects it (won). Nothing named means "not yet": a round is

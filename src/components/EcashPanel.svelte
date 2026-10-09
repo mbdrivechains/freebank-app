@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The eCash tab (v0.2.6; operator, 2026-10-04: "i want them ecash wallet now .. adn bmm now"). Two wallets of the
+  // The eCash tab (v0.2.6). Two wallets of the
   // app's own in the eCash node (BitWindow's, or one run by hand), both from the recovery words:
   // - the main eCash wallet, locked with the wallet passphrase: Receive, Send, and Move into the bidding wallet, each
   //   payment confirmed with the passphrase (and "Approve sends on my phone" when it's on: PhoneAlerts shows the wait);

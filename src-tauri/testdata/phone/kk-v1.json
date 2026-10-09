@@ -1,7 +1,7 @@
 {
   "name": "FreeBank phone relay protocol v1 interop vectors",
-  "spec": "distribution/relay/PROTOCOL.md",
-  "generator": "distribution/phone/scripts/make-vectors.mjs (Node WebCrypto; reproducible)",
+  "spec": "relay/PROTOCOL.md",
+  "generator": "phone/scripts/make-vectors.mjs (Node WebCrypto; reproducible)",
   "notes": [
     "Encoding: b64u = base64url, no padding (RFC 4648 section 5). All byte strings below are b64u unless the field says hex or plaintext.",
     "Keys: P-256. Private keys are JWK {kty:\"EC\",crv:\"P-256\",x,y,d}; d is the 32-byte big-endian scalar = SHA-256(ASCII scalar_label). \"pub\" is uncompressed SEC1: 0x04 || X(32) || Y(32) = 65 bytes.",

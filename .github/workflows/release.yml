@@ -1,7 +1,7 @@
 name: release
 
 # A tag vX.Y.Z builds the app for Linux and macOS and publishes a GitHub Release with the files and their
-# checksums. The apt repository follows only once Michael has signed the checksums: apt.yml, which release-app.sh's
+# checksums. The apt repository follows only once the release key's holder has signed the checksums: apt.yml, which release-app.sh's
 # `after` step runs (app v0.2.6; before, apt published at tag time, ahead of the signature).
 
 on:

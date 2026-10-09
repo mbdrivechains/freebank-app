@@ -105,7 +105,7 @@ export function withdrawalLine(w: Withdrawal): string {
   }
 }
 
-// The money changer (src-tauri/src/changer.rs; the bot is distribution/changer): sell sECX for ECX fast
+// The money changer (src-tauri/src/changer.rs; the changer is a separate program): sell sECX for ECX fast
 // ("out"), or buy it below par with ECX ("in"). Trusted up to one order.
 
 export interface ChangerSide {

@@ -1,4 +1,4 @@
-// "Report a problem or suggest something" (operator, 2026-09-30). One dialog (ReportDialog.svelte),
+// "Report a problem or suggest something". One dialog (ReportDialog.svelte),
 // opened from Settings > Help, "Report this" on an error, and the Mac's Help menu. Two ways out:
 //   - GitHub: a prefilled issue form in the browser (a public issue; needs an account), or, for a
 //     security problem, GitHub's private vulnerability report;

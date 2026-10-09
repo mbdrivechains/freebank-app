@@ -1,6 +1,6 @@
-//! The money changer, from the app (v0.3.0 "In and out"; `gateway/docs/distribution/CASH_OUT_DESIGN.md` §4.8): sell
+//! The money changer, from the app (v0.3.0 "In and out"): sell
 //! FreeBank sECX for ECX ("out", the Withdraw panel's fast card) or buy it with ECX ("in", the Deposit panel's),
-//! below par, from a changer that keeps a float of both (`distribution/changer/`, on beta Michael's).
+//! below par, from a changer that keeps a float of both (a separate program; on beta, the project's own).
 //!
 //! Every quote is signed by the changer's key, which the app pins (Settings: the changer's address and key). The app
 //! checks the signature, that the quote is for what it asked (side, amount, the payout and refund addresses it gave),
@@ -8,7 +8,7 @@
 //! within sense, and that it hasn't expired. The user then pays in; the order is recorded in `wallet/orders.json`
 //! first; the changer pays out on the other chain. The user trusts the changer up to one order (its per-order
 //! maximum), and an order not paid in time shows as overdue, with the signed quote as the proof. Calls go out from
-//! here (the screens' CSP allows no other host). The changer's quote text must match `distribution/changer/src/quote.rs`
+//! here (the screens' CSP allows no other host). The changer's quote text must match the changer's own (`quote.rs`)
 //! byte for byte (the tests pin it on both sides).
 
 use crate::commands::ClientState;
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn the_signed_text_matches_the_changers() {
-        // The same text distribution/changer/src/quote.rs pins.
+        // The same text the changer's quote.rs pins.
         let mut q = signed(&keypair(1));
         q.key = "k".into();
         assert_eq!(

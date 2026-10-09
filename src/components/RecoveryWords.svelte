@@ -1,7 +1,7 @@
 <script lang="ts">
   // The 24 recovery words in a numbered grid. The grid can't be selected, copied, cut or dragged. "Copy
-  // words" puts them on the clipboard after a warning (operator, 2026-09-29: "i know you are not
-  // supposed to but people to.."): the app writes it, as a numbered table and as plain words, and
+  // words" puts them on the clipboard after a warning (people copy them whatever they
+  // are told): the app writes it, as a numbered table and as plain words, and
   // clears it after 60 seconds. The parent holds the words and wipes them.
   import { createEventDispatcher } from "svelte";
   import { nice } from "../lib/errors";

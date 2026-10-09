@@ -241,8 +241,8 @@ impl FreeBankClient {
         }
     }
 
-    /// `call_fresh_typed` on the main wallet, whichever the screens chose: the phone's (the operator chose "Main
-    /// wallet only" for the phone, 2026-10-04).
+    /// `call_fresh_typed` on the main wallet, whichever the screens chose: the phone's ("Main
+    /// wallet only" for the phone).
     pub async fn call_fresh_typed_main(&mut self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
         match self.call_with(true, method, params.clone()).await {
             Err(RpcError::Http(401) | RpcError::NotConfigured) if self.refresh_local_auth() => {

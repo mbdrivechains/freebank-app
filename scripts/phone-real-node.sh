@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The phone remote end to end against a real FreeBank node, everything on 127.0.0.1:
-#   - fb-relay, built from freebank-distribution/relay, serving a fresh build of its phone page;
+#   - fb-relay, built from the relay's source, serving a fresh build of its phone page;
 #   - this app's desktop side (the page_host test) using the node's wallet over RPC;
 #   - the real page in headless WebKit, Chromium and Firefox (scripts/phone-real-node.mjs).
 # The node must be running and synced; this script never starts or stops it. The relay and page must

@@ -1,5 +1,4 @@
-//! "Copy words" (operator, 2026-09-29: "you need to be able to copy them to clipboard.. i know you
-//! are not supposed to but people to.."). The recovery words go on the clipboard in two forms at
+//! "Copy words": people copy their words whatever they are told, so the app makes it safe to. The recovery words go on the clipboard in two forms at
 //! once, so each app takes the one it understands: HTML, a numbered table in the app's own order
 //! (1 2 3 on the first row), for Notes, Pages or mail; and plain text, the words space-separated,
 //! for Electrum's seed box and password managers. Both are marked for clipboard managers to leave

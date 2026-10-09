@@ -296,7 +296,7 @@ const GOLD_STRENGTH = 0.6;
 const GHOST_SHADES = 6;
 
 /**
- * FreeBank's ☉ ghosted into a QR code (operator, 2026-09-30: "i like ghost gold"). The light
+ * FreeBank's ☉ ghosted into a QR code (v0.2.1). The light
  * modules under the sun's ring and dot are tinted gold; the dark ones stay black, the three finder
  * corners (with their separators) are never tinted, and nothing else changes: the code is as dense
  * as a plain one. The sun has the icon's proportions over the symbol without its quiet zone (ring

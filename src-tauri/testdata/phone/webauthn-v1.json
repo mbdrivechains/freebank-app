@@ -1,7 +1,7 @@
 {
   "name": "FreeBank phone relay passkey (WebAuthn) vectors",
-  "spec": "distribution/relay/PROTOCOL.md, \"Face ID: passkeys (app v0.2.1)\"",
-  "generator": "distribution/phone/scripts/make-webauthn-vectors.mjs (Node WebCrypto; signatures differ run to run)",
+  "spec": "relay/PROTOCOL.md, \"Face ID: passkeys (app v0.2.1)\"",
+  "generator": "phone/scripts/make-webauthn-vectors.mjs (Node WebCrypto; signatures differ run to run)",
   "notes": [
     "b64u = base64url without padding. pk is the uncompressed P-256 point. ad = authenticatorData, cdj = clientDataJSON, sig = DER ECDSA over ad || SHA-256(cdj).",
     "Each case is checked with rp_id, origin and challenge below and the stored signature counter stored_count; ok says whether the desktop accepts it, and new_count what it keeps then."

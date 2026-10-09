@@ -1,7 +1,7 @@
 <script lang="ts">
   // First run: find the eCash beta stack, then connect to a running FreeBank node, or install
   // and start one. Dispatches "ready" once the wallet can talk to the node. ("manual", for a node
-  // elsewhere, is not offered for now: operator, 2026-09-26; see distribution/todo/remote-node.md.) Each step after the first can go back one: the
+  // elsewhere, is not offered for now.) Each step after the first can go back one: the
   // install screen to the eCash node, a download can be cancelled, and a node this screen started
   // can be stopped. The header's gear opens Settings here too (`settingsOpen`), so someone stuck in
   // setup can still delete chain data, remove FreeBank or obliterate.

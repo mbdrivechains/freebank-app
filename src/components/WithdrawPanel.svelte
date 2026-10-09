@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Home, Withdraw (v0.3.0 "In and out"; gateway/docs/distribution/CASH_OUT_DESIGN.md §3.3): FreeBank sECX back to eCash
-  // through the peg, at par. Trustless but very slow, so a warning screen comes before it (Michael, 2026-09-29,
-  // walkthrough 8: "if they choose it they wait."), with Cancel first. To a fresh address of the app's own eCash
+  // Home, Withdraw (v0.3.0 "In and out"): FreeBank sECX back to eCash
+  // through the peg, at par. Trustless but very slow, so a warning screen comes before it (if
+  // they choose it, they wait), with Cancel first. To a fresh address of the app's own eCash
   // wallet, or a pasted one with the lookalike warning. A withdrawal can be cancelled while it waits for a bundle.
   // With a money changer set up (Settings), a second card: sell to the changer, fast, below par.
   import { onDestroy, onMount } from "svelte";

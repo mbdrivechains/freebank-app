@@ -1,4 +1,4 @@
-//! Several wallets in one app (v0.2.6; operator, 2026-10-04: "Both kinds", and the phone on the main wallet only),
+//! Several wallets in one app (v0.2.6; both kinds, and the phone on the main wallet only),
 //! with the FreeBank node v0.2.19's `createwallet` and `loadwallet` while it runs.
 //!
 //! Beside the main wallet (`wallet.dat`, made in Setup from the 24 words), two kinds:

@@ -1,7 +1,7 @@
 //! Send, Speed up and History (v0.2.0). The screens call the commands at the bottom of this file;
 //! a send is built, signed and broadcast here, never through `rpc_call`.
 //!
-//! Send is sECX only (operator's decisions D-2026-09-29-5 and -7). It goes in two steps, so the fee
+//! Send is sECX only (no grams until gold is switched on). It goes in two steps, so the fee
 //! the screen shows is the fee paid:
 //! - `send_prepare`: validateaddress, the fee rate of the chosen speed, then createrawtransaction and
 //!   fundrawtransaction {feeRate, replaceable}. The funded transaction waits here under a random id

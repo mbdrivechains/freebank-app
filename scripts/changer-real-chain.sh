@@ -1,6 +1,6 @@
 #!/bin/bash
 # changer-real-chain.sh <work folder>: the money changer end to end on a regtest chain. freebankd's standing stack
-# (inout-real-chain.sh with two FreeBank nodes, kept up), then the changer bot (distribution/changer) with wallets of
+# (inout-real-chain.sh with two FreeBank nodes, kept up), then the changer bot (its own repo) with wallets of
 # its own: an encrypted eCash wallet funded by mining, the second node's FreeBank wallet funded from the first's; then the app's ignored real-chain test
 # changer_real_stack against it; then everything stops.
 # Needs FB_NODE_REPO, FB_ROOT (as inout-real-chain.sh) and FB_DIST (the distribution checkout, for the bot).

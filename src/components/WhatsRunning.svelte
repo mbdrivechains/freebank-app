@@ -1,6 +1,5 @@
 <script lang="ts">
-  // What's running where (v0.2.5 item 14; operator 2026-10-03: "probably need a little network map to show what's
-  // running somewhere"): your phones, the relay, this computer (the app, the phone link, the FreeBank node), the eCash
+  // What's running where (v0.2.5 item 14): your phones, the relay, this computer (the app, the phone link, the FreeBank node), the eCash
   // node and enforcer, and the FreeBank network. Each with a dot, and what happens to it when you quit.
   import { onDestroy, onMount } from "svelte";
   import type { NodeStatus } from "../lib/node";

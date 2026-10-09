@@ -1,8 +1,8 @@
-//! Withdraw at par (v0.3.0 "In and out"; `gateway/docs/distribution/CASH_OUT_DESIGN.md` §3.1, §3.3): FreeBank sECX
+//! Withdraw at par (v0.3.0 "In and out"): FreeBank sECX
 //! back to eCash through the peg, with freebankd's own calls (no node change): `createwithdrawal`, `listmywithdrawals`
 //! and `getwithdrawal`, `createwithdrawalrefundrequest`. It is trustless but slow: a withdrawal waits for a bundle, the
-//! bundle for L1 miners' ACKs (13,150 on mainnet, and beta uses the same), so the screen puts a warning first (Michael,
-//! 2026-09-29, walkthrough 8: "if they choose it they wait."). It can be cancelled only while it waits for a bundle.
+//! bundle for L1 miners' ACKs (13,150 on mainnet, and beta uses the same), so the screen puts a warning first: if
+//! they choose it, they wait. It can be cancelled only while it waits for a bundle.
 //!
 //! The eCash address is a fresh one of the app's own eCash wallet when it has one; a pasted address is checked by the
 //! eCash node when there is one (and always by freebankd) and gets the lookalike warning on screen: beta uses Bitcoin's

@@ -92,7 +92,7 @@
   });
 
   // A phone pairing again (a new browser, the Home Screen app, a reset) usually comes back under the same name: allowing
-  // it can remove the older pairings of that name, so they don't pile up (v0.2.5, operator 2026-10-03).
+  // it can remove the older pairings of that name, so they don't pile up (v0.2.5).
   let paired: PhoneDevice[] = [];
   let replace: Record<string, boolean> = {};
   $: if (asks.length) phone.devices().then((d) => (paired = d), () => (paired = []));

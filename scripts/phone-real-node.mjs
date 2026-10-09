@@ -25,7 +25,7 @@ const need = (k) => {
   if (!v) throw new Error(`${k} is not set (run scripts/phone-real-node.sh)`);
   return v;
 };
-const PHONE = need('FB_PHONE_DIR'); // freebank-distribution/phone: Playwright and jsQR live there
+const PHONE = need('FB_PHONE_DIR'); // the phone page's folder: Playwright and jsQR live there
 const ORIGIN = need('FB_ORIGIN'); // the relay, serving the page
 const CTL = need('FB_CTL_DIR'); // page_host's control folder
 const SHOTS = need('FB_SHOTS');

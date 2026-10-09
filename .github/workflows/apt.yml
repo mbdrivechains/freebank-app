@@ -1,6 +1,6 @@
 name: apt
 
-# The apt repository that GitHub Pages serves at https://apt.ecxfreebank.com (branch gh-pages), after Michael has
+# The apt repository that GitHub Pages serves at https://apt.ecxfreebank.com (branch gh-pages), after the release key's holder has
 # signed a release's checksums (app v0.2.6). release-app.sh's `after` step runs it once SHA256SUMS.sig checks, and it
 # checks again itself before anything is published: the signature against the release key pinned below (the same key
 # as src-tauri/src/node/release_key.rs; a test there keeps them equal), then the .deb against the signed SUMS. So apt

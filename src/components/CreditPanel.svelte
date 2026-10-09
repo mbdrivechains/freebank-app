@@ -97,7 +97,7 @@
     return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;
   }
 
-  // Everything is shown and entered in sECX (D-2026-09-29-5 and -7: no grams until gold is switched
+  // Everything is shown and entered in sECX (no grams until gold is switched
   // on). Note units are base-native, 1 unit = 1 sat of sECX, so a note amount is an sECX amount, and
   // this shows "= 50,000,000 units" under an sECX field once it holds a valid amount.
   function unitsEcho(v: string | number): string {

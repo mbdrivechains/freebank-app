@@ -482,7 +482,7 @@ mod tests {
         d
     }
 
-    /// Operator, 2026-09-29: Setup took back an earlier install's folder, name and all, without asking.
+    /// Found 2026-09-29: Setup took back an earlier install's folder, name and all, without asking.
     #[test]
     fn an_earlier_installs_folder_is_asked_about() {
         let d = dir("earlier");

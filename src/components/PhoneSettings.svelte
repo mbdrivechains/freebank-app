@@ -109,8 +109,8 @@
   // Its explanation: two sentences, the rest behind More (v0.2.6, the walk-through counted 14 lines).
   let approveMore = false;
   let iphoneMore = false;
-  // "Approve sends on my phone" (v0.2.5; operator 2026-10-02: "yes..opt in I assume"; reworked after the security
-  // review, operator 2026-10-03: "yes to that"): once this computer's payments in a day would come to more than the
+  // "Approve sends on my phone" (v0.2.5, opt in; reworked after the security
+  // review): once this computer's payments in a day would come to more than the
   // amount, a phone's Face ID first. Off, or a higher amount, takes the phone too, or the recovery words and a day.
   let approve: ApproveInfo | null = null;
   let approveAmount = "1";
@@ -360,7 +360,7 @@
     }
   }
 
-  // The list (v0.2.5, operator 2026-10-03: "why all these iphone settings? how to manage"): the phone seen last first,
+  // The list (v0.2.5): the phone seen last first,
   // one line each with its limit and Revoke behind Manage; names told apart by when they were paired; and phones not
   // seen for a week removed in one go.
   const WEEK = 7 * 24 * 3600;

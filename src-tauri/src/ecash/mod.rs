@@ -1,10 +1,10 @@
-//! The app's eCash wallet (v0.2.6; operator, 2026-10-04: "i want them ecash wallet now .. adn bmm now").
+//! The app's eCash wallet (v0.2.6).
 //!
 //! Two named wallets of the app's own in the eCash node already running (BitWindow's, or one installed by hand),
-//! never in the enforcer (operator's decision 2026-09-29, `gateway/docs/distribution/APP_SELF_SUFFICIENT_SCOPE.md`):
+//! never in the enforcer (a decision of 2026-09-29):
 //! - the main eCash wallet, whose key comes from the words, which the wallet passphrase opens for each payment;
 //! - the bidding wallet, whose key is kept in an owner-only file so bids can go out with nobody there; it holds only
-//!   what the owner moves into it (operator, 2026-10-04, chose "Small bidding wallet").
+//!   what the owner moves into it ("Small bidding wallet").
 //!
 //! Both are watch-only in the eCash node, and FreeBank checks and signs every payment itself (security review H1, H2):
 //! neither the passphrase nor a private key goes to the node. Both come from the app's 24 words (`keys.rs`), so the
