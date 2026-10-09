@@ -62,7 +62,7 @@ pub struct Bmm {
 
 impl Default for Bmm {
     fn default() -> Self {
-        // 0.0001 eCash a bid, as the ticker's refreshbmm in the docs; 0.005 eCash a day.
+        // 0.0001 ECX a bid, as the ticker's refreshbmm in the docs; 0.005 ECX a day.
         Bmm { on: false, bid: 10_000, daily_cap: 500_000, rounds: Vec::new() }
     }
 }
@@ -360,7 +360,7 @@ pub async fn tick(
         return Ok(Did::Nothing);
     }
     if b.spent_today(now) + b.bid > b.daily_cap {
-        return Ok(Did::Waiting(format!("Today's bids have reached your cap of {} eCash.", to_coins(b.daily_cap))));
+        return Ok(Did::Waiting(format!("Today's bids have reached your cap of {} ECX.", to_coins(b.daily_cap))));
     }
     let t = match fb.call_typed("get_block_template", vec![]).await {
         Ok(t) => t,
@@ -386,7 +386,7 @@ pub async fn tick(
                     return Ok(Did::Waiting(format!("Waiting for the bid on block {} to be decided.", r.height)));
                 }
                 return Ok(Did::Waiting(format!(
-                    "The bidding wallet needs a confirmed coin of at least {} eCash.",
+                    "The bidding wallet needs a confirmed coin of at least {} ECX.",
                     to_coins(b.bid + MIN_CHANGE)
                 )));
             };
@@ -394,7 +394,7 @@ pub async fn tick(
         }
     };
     if b.spent_today(now) + fee > b.daily_cap {
-        return Ok(Did::Waiting(format!("Today's bids have reached your cap of {} eCash.", to_coins(b.daily_cap))));
+        return Ok(Did::Waiting(format!("Today's bids have reached your cap of {} ECX.", to_coins(b.daily_cap))));
     }
     let (_, change_place) = wallet::change_address(conn, bids.name, &bids.key.public).await?;
     let change = bids.key.public.script(change_place.0, change_place.1)?;
@@ -552,7 +552,7 @@ async fn pass(mgr: &crate::node::NodeManager) {
             let fee = r.map_or(work.bid, |r| r.fee);
             let replaces = r.is_some_and(|r| work.rounds.iter().any(|x| x.outcome == "replaced" && x.coin == r.coin));
             let note = if replaces { " (in place of the last bid, on the same coin)" } else { "" };
-            RUNNER.say(format!("Bid {} eCash for FreeBank block {}{}.", to_coins(fee), height, note));
+            RUNNER.say(format!("Bid {} ECX for FreeBank block {}{}.", to_coins(fee), height, note));
             crate::activity::note("bmm: bid sent");
         }
         Ok(Did::Waiting(w)) => RUNNER.say(w),

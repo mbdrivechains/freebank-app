@@ -16,7 +16,7 @@
   export let reportable = true;
 
   const canReport = !api.isPWA();
-  // An ordinary refusal ("not enough ECX", a wrong passphrase, a typo) is nothing to report (v0.2.6, the walk-through).
+  // An ordinary refusal ("not enough sECX", a wrong passphrase, a typo) is nothing to report (v0.2.6, the walk-through).
   const ORDINARY = /not enough|insufficient|passphrase (isn't|is not) right|isn't the wallet's passphrase|isn't an? .*address|^enter |is locked|still starting|try again after/i;
   // Errors shown go into the recent activity a report can include (src-tauri/src/activity.rs).
   $: if (canReport && kind === "error" && message) noteShown(message);

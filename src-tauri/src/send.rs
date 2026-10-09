@@ -1,7 +1,7 @@
 //! Send, Speed up and History (v0.2.0). The screens call the commands at the bottom of this file;
 //! a send is built, signed and broadcast here, never through `rpc_call`.
 //!
-//! Send is ECX only (operator's decisions D-2026-09-29-5 and -7). It goes in two steps, so the fee
+//! Send is sECX only (operator's decisions D-2026-09-29-5 and -7). It goes in two steps, so the fee
 //! the screen shows is the fee paid:
 //! - `send_prepare`: validateaddress, the fee rate of the chosen speed, then createrawtransaction and
 //!   fundrawtransaction {feeRate, replaceable}. The funded transaction waits here under a random id
@@ -48,9 +48,9 @@ use tauri::{AppHandle, Manager, State};
 
 // ---- Amounts ---------------------------------------------------------------------------------
 
-/// Sats in one ECX.
+/// Sats in one sECX.
 pub const COIN: i64 = 100_000_000;
-/// All the ECX there can be, in sats. Amounts past it are refused.
+/// All the sECX there can be, in sats. Amounts past it are refused.
 pub const MAX_SATS: i64 = 21_000_000 * COIN;
 
 /// Sats as the exact 8-place decimal every amount goes to the node in: 150000000 → "1.50000000".
@@ -61,8 +61,8 @@ pub fn ecx(sats: i64) -> String {
     format!("{}{}.{:08}", sign, a / coin, a % coin)
 }
 
-/// An ECX amount from the node (a JSON number, or a string) in sats. The node writes 8 decimals, and
-/// an f64 holds every such amount up to 21 million ECX closely enough for rounding to get it back.
+/// An sECX amount from the node (a JSON number, or a string) in sats. The node writes 8 decimals, and
+/// an f64 holds every such amount up to 21 million sECX closely enough for rounding to get it back.
 pub fn sats(v: &Value) -> Option<i64> {
     let f = match v {
         Value::Number(n) => n.as_f64()?,
@@ -96,7 +96,7 @@ pub const MIN_RATE: Rate = 1_000;
 pub const BLOCK_VBYTES: i64 = (4_000_000 - 4_000) / 4;
 /// Core's incremental relay fee, when the node doesn't say (DEFAULT_INCREMENTAL_RELAY_FEE).
 const INCREMENTAL_RATE: Rate = 1_000;
-/// The most fee Core lets a wallet transaction pay (DEFAULT_TRANSACTION_MAXFEE, 0.1 ECX).
+/// The most fee Core lets a wallet transaction pay (DEFAULT_TRANSACTION_MAXFEE, 0.1 sECX).
 const MAX_TX_FEE: i64 = COIN / 10;
 /// How long the fee choices are kept.
 const FEES_FOR: Duration = Duration::from_secs(60);
@@ -354,11 +354,11 @@ impl Book {
 
 const NO_ADDRESS: &str = "Enter the address to send to.";
 const NOT_AN_ADDRESS: &str = "That isn't a FreeBank address. Check it and try again.";
-const AMOUNT_PROBLEM: &str = "Enter an amount in ECX above zero, with at most 8 decimal places.";
+const AMOUNT_PROBLEM: &str = "Enter an amount in sECX above zero, with at most 8 decimal places.";
 const NOTHING_TO_SEND: &str =
-    "There's nothing to send yet: this wallet has no spendable ECX. Coins still on their way can be sent once they confirm.";
+    "There's nothing to send yet: this wallet has no spendable sECX. Coins still on their way can be sent once they confirm.";
 const NOT_ENOUGH: &str =
-    "You don't have enough spendable ECX for this amount and its fee. Max sends everything, with the fee taken out of it.";
+    "You don't have enough spendable sECX for this amount and its fee. Max sends everything, with the fee taken out of it.";
 const TOO_SMALL: &str = "That amount is too small to send: the network won't pass on a payment that small.";
 const FEE_EATS_IT: &str = "That's too little to cover the fee.";
 const EXPIRED: &str = "This send's quote has expired, so nothing was sent. Review it again to see the fee as it is now.";
@@ -468,7 +468,7 @@ struct Coin {
 type Outpoint = (String, u32);
 
 /// listunspent's spendable coins (watch-only ones can't be signed for). Zero-value ones are listed
-/// too (freebankd's block rewards can be 0 ECX): Max leaves them out, but a funded transaction may
+/// too (freebankd's block rewards can be 0 sECX): Max leaves them out, but a funded transaction may
 /// use one, and the fee check needs to know it.
 fn coins_from(v: &Value) -> Vec<Coin> {
     v.as_array()
@@ -1107,7 +1107,7 @@ impl SendLog {
 pub const PER_PAGE: usize = 25;
 
 /// One line of listtransactions, with what the send log knows about it. Amounts in sats, except
-/// `amount`, the node's ECX number, which TransactionItem.svelte shows.
+/// `amount`, the node's sECX number, which TransactionItem.svelte shows.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryItem {
     pub txid: String,
@@ -1388,7 +1388,7 @@ pub async fn send_speed_up(
         (Some(p), Some(extra)) => {
             locked_first(&client).await?;
             let extra = extra.max(0) as u64;
-            let text = format!("Speed up a payment: {} ECX more in fees", crate::phone::store::to_ecx(extra));
+            let text = format!("Speed up a payment: {} sECX more in fees", crate::phone::store::to_ecx(extra));
             Some(p.clear_desktop(extra, crate::phone::Approve::Action { text, sats: Some(extra) }).await?)
         }
         _ => None,

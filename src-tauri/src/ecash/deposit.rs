@@ -47,7 +47,7 @@ fn opcodes(chain: Chain) -> &'static [u8] {
 /// What FreeBank keeps of each deposit, for the maker of the block that credits it (freebankd's SIDECHAIN_DEPOSIT_FEE,
 /// src/sidechain.h): it credits the rest, in that block's coinbase.
 pub const FREEBANK_DEPOSIT_FEE: u64 = 1_000;
-/// The smallest deposit offered: 0.001 eCash.
+/// The smallest deposit offered: 0.001 ECX.
 pub const MIN_DEPOSIT: u64 = 100_000;
 /// Change below this goes to the fee instead.
 const MIN_CHANGE: u64 = 1_000;
@@ -169,7 +169,7 @@ pub fn signed_vsize(tx: &Transaction, wallet_inputs: usize) -> u64 {
 /// build the deposit.
 pub fn build(ctip: &Ctip, address: &str, amount: u64, coins: &[Coin], rate: u64, change_script: &ScriptBuf) -> Result<Built, String> {
     if amount < MIN_DEPOSIT {
-        return Err(format!("The smallest deposit is {} eCash.", super::to_coins(MIN_DEPOSIT)));
+        return Err(format!("The smallest deposit is {} ECX.", super::to_coins(MIN_DEPOSIT)));
     }
     let mut sorted = coins.to_vec();
     sorted.sort_by(|a, b| b.value.cmp(&a.value));
@@ -193,7 +193,7 @@ pub fn build(ctip: &Ctip, address: &str, amount: u64, coins: &[Coin], rate: u64,
     }
     let have: u64 = coins.iter().map(|c| c.value).sum();
     Err(format!(
-        "The eCash wallet doesn't have enough confirmed eCash for that deposit and its fee: {} confirmed.",
+        "The eCash wallet doesn't have enough confirmed ECX for that deposit and its fee: {} confirmed.",
         super::to_coins(have)
     ))
 }
@@ -207,7 +207,7 @@ pub fn build_max(ctip: &Ctip, address: &str, coins: &[Coin], rate: u64) -> Resul
     let probe = the_tx(ctip, address, 0, coins, None)?;
     let fee = signed_vsize(&probe, coins.len()) * rate;
     let amount = have.checked_sub(fee).filter(|&a| a >= MIN_DEPOSIT).ok_or(format!(
-        "The smallest deposit is {} eCash, and the wallet's confirmed eCash less the fee is less.",
+        "The smallest deposit is {} ECX, and the wallet's confirmed ECX less the fee is less.",
         super::to_coins(MIN_DEPOSIT)
     ))?;
     let tx = the_tx(ctip, address, amount, coins, None)?;

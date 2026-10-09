@@ -289,7 +289,7 @@ pub(crate) fn claim_upload(token: &str) -> Result<PathBuf, String> {
 
 /// Coins the wallet holds on addresses the current HD seed doesn't cover (an older seed's, or keys
 /// imported by hand). Notes, bills, term deposits and pool shares are never among them: freebankd's
-/// listunspent leaves them out (AvailableCoins skips them), so they can't be swept as plain ECX.
+/// listunspent leaves them out (AvailableCoins skips them), so they can't be swept as plain sECX.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MovePlan {
     pub coins: usize,
@@ -363,7 +363,7 @@ pub(crate) async fn move_plan(c: &mut FreeBankClient) -> Result<MovePlan, String
     Ok(MovePlan { coins: old.picked.len(), total_sats: old.total, later: old.later, has_notes })
 }
 
-/// The fee rate for a move, in ECX per kvB as the node takes it: 1 sat/vB (the wallet's minimum),
+/// The fee rate for a move, in sECX per kvB as the node takes it: 1 sat/vB (the wallet's minimum),
 /// unless more than a block's worth is waiting, then the node's estimate for the next blocks.
 async fn move_fee_rate(c: &mut FreeBankClient) -> String {
     const MIN: i64 = 1_000; // sat per kvB
@@ -438,7 +438,7 @@ pub(crate) async fn move_coins(c: &mut FreeBankClient) -> Result<Moved, String> 
     }
     if fee <= 0 || fee * 10 > old.total {
         return Err(format!(
-            "The fee would be {} ECX, more than a tenth of what would move, so nothing was sent.",
+            "The fee would be {} sECX, more than a tenth of what would move, so nothing was sent.",
             ecx(fee)
         ));
     }

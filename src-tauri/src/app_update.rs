@@ -437,8 +437,16 @@ pub fn app_update_start(
         }
         *p = Progress { running: true, stage: "signature".into(), ..Default::default() };
     }
+    // Not while the background part is at an automatic round (the lock is held for the whole update).
+    let Some(lock) = auto_lock(&mgr.app_dir) else {
+        mgr.app_updating.store(false, Ordering::SeqCst);
+        *upd.progress.lock().unwrap() = Progress::default();
+        return Err(AUTO_BUSY.into());
+    };
+    forget_failure(&mgr.app_dir);
     let (upd, mgr) = (upd.inner().clone(), mgr.inner().clone());
     tauri::async_runtime::spawn(async move {
+        let _lock = lock;
         let how = install_kind().await;
         let result = update(&upd.http, &upd.src, &how, &upd.progress, VERSION, &|| mgr.still_here()).await;
         match result {
@@ -815,9 +823,292 @@ fn plist_string<'a>(plist: &'a str, key: &str) -> Option<&'a str> {
     rest.split_once("</string>").map(|(v, _)| v)
 }
 
+// ---- Automatic updates (v0.4.2, opt in; Settings > App updates) ---------------------------------------------------
+//
+// With `auto_update` on, the app and its background part each try a round every few hours; a lock file lets one at a
+// time go ahead. A round is exactly the update above (signed SHA256SUMS, the download checked against its line, the
+// Mac bundle checked again before the swap), without the restart: the new version runs from the next start, and the
+// app says so. `UPDATED_TO` records what was put in place, so a copy still running the old version doesn't fetch it
+// again.
+
+/// How often a round runs, and how long after a start the first one waits.
+pub const AUTO_EVERY: Duration = Duration::from_secs(6 * 3600);
+pub const AUTO_FIRST: Duration = Duration::from_secs(5 * 60);
+const UPDATED_TO: &str = "updated-to";
+/// The last automatic round that failed: that version isn't tried again by itself (a newer one is, or a manual update).
+const AUTO_FAILED: &str = "auto-failed.json";
+const AUTO_LOCK: &str = "update.lock";
+pub(crate) const AUTO_BUSY: &str = "An automatic update is under way; try again in a few minutes.";
+
+fn auto_on(app_dir: &Path) -> bool {
+    std::fs::read(app_dir.join("settings.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<crate::node::Settings>(&b).ok())
+        .is_some_and(|s| s.auto_update)
+}
+
+/// The version at the Mac bundle's place, from its Info.plist; None for anything else (an AppImage carries no
+/// readable version) or an unreadable bundle.
+fn version_in_place(how: &Install) -> Option<String> {
+    let Install::Bundle(b) = how else { return None };
+    let text = std::fs::read_to_string(b.join("Contents/Info.plist")).ok()?;
+    plist_string(&text, "CFBundleShortVersionString").map(str::to_string)
+}
+
+/// The version an automatic round put in place that this copy isn't running yet, checked against the bundle where
+/// it can be. Once a start runs it (or a newer one), or the copy in place isn't it, the record goes.
+pub fn installed_pending(app_dir: &Path, running: &str) -> Option<String> {
+    pending_in(app_dir, running, None)
+}
+
+fn pending_in(app_dir: &Path, running: &str, in_place: Option<&str>) -> Option<String> {
+    let v = std::fs::read_to_string(app_dir.join(UPDATED_TO)).ok()?.trim().to_string();
+    if newer(&v, running) && in_place.is_none_or(|p| p == v) {
+        Some(v)
+    } else {
+        let _ = std::fs::remove_file(app_dir.join(UPDATED_TO));
+        None
+    }
+}
+
+#[derive(Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct AutoFailed {
+    pub version: String,
+    pub reason: String,
+    pub at: u64,
+}
+
+fn auto_failed(app_dir: &Path) -> Option<AutoFailed> {
+    serde_json::from_slice(&std::fs::read(app_dir.join(AUTO_FAILED)).ok()?).ok()
+}
+
+fn forget_failure(app_dir: &Path) {
+    let _ = std::fs::remove_file(app_dir.join(AUTO_FAILED));
+}
+
+/// An exclusive, non-blocking lock on `update.lock`, held while the File lives; None when another FreeBank process
+/// holds it. Taken by automatic rounds and by "Update and restart", so the app and its background part never update
+/// at once.
+#[cfg(unix)]
+pub(crate) fn auto_lock(app_dir: &Path) -> Option<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let _ = std::fs::create_dir_all(app_dir);
+    let f = std::fs::OpenOptions::new().create(true).write(true).open(app_dir.join(AUTO_LOCK)).ok()?;
+    // SAFETY: flock on a descriptor this File owns; released when it closes.
+    (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(f)
+}
+#[cfg(not(unix))]
+pub(crate) fn auto_lock(_app_dir: &Path) -> Option<std::fs::File> {
+    None
+}
+
+/// One automatic round: Some(version) when it put a newer signed release in place. Quiet when off, when another
+/// process is at it, when this copy can't update itself, when there's nothing new, when that version is already in
+/// place, or when it failed before (until a newer release, or a manual update). `p` is the progress the screen reads.
+pub async fn auto_round(
+    app_dir: &Path,
+    http: &reqwest::Client,
+    p: &Mutex<Progress>,
+    go_on: &(dyn Fn() -> Result<(), String> + Sync),
+) -> Option<String> {
+    if !auto_on(app_dir) {
+        return None;
+    }
+    let _lock = auto_lock(app_dir)?;
+    let how = install_kind().await;
+    if !matches!(how, Install::AppImage(_) | Install::Bundle(_)) {
+        return None;
+    }
+    let src = Source::new();
+    let release = latest(http, &src).await.ok().flatten()?;
+    if !newer(&release.version, VERSION) {
+        return None;
+    }
+    let in_place = version_in_place(&how);
+    if in_place.as_deref() == Some(release.version.as_str())
+        || (in_place.is_none() && installed_pending(app_dir, VERSION).as_deref() == Some(release.version.as_str()))
+    {
+        let _ = std::fs::write(app_dir.join(UPDATED_TO), &release.version);
+        return None;
+    }
+    if auto_failed(app_dir).is_some_and(|f| f.version == release.version) {
+        return None;
+    }
+    match update(http, &src, &how, p, VERSION, go_on).await {
+        Ok(v) => {
+            if let Err(e) = std::fs::write(app_dir.join(UPDATED_TO), &v) {
+                crate::activity::note(&format!("FreeBank app {v} is in place, but its record couldn't be written: {e}"));
+            }
+            forget_failure(app_dir);
+            crate::activity::note(&format!("FreeBank app {v} was put in place by itself; it runs from the next start"));
+            Some(v)
+        }
+        Err(e) => {
+            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let f = AutoFailed { version: release.version.clone(), reason: e.clone(), at };
+            let _ = std::fs::write(app_dir.join(AUTO_FAILED), serde_json::to_vec(&f).unwrap_or_default());
+            crate::activity::note(&format!("Automatic app update to {} didn't go ahead: {e}", release.version));
+            None
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct AutoInfo {
+    pub on: bool,
+    /// Put in place by an automatic round, not running yet.
+    pub installed: Option<String>,
+    /// This copy can update itself (an AppImage or the Mac app in Applications); otherwise the switch has no effect.
+    pub can: bool,
+    /// The last automatic round that failed, and why: that version waits for a manual update.
+    pub failed: Option<AutoFailed>,
+}
+
+#[tauri::command]
+pub async fn app_auto_update_get(mgr: State<'_, Arc<NodeManager>>) -> Result<AutoInfo, String> {
+    let on = mgr.settings.lock().await.auto_update;
+    let how = install_kind().await;
+    let can = matches!(how, Install::AppImage(_) | Install::Bundle(_));
+    let installed = pending_in(&mgr.app_dir, VERSION, version_in_place(&how).as_deref());
+    let failed = auto_failed(&mgr.app_dir).filter(|f| newer(&f.version, VERSION));
+    Ok(AutoInfo { on, installed, can, failed })
+}
+
+#[tauri::command]
+pub async fn app_auto_update_set(mgr: State<'_, Arc<NodeManager>>, on: bool) -> Result<(), String> {
+    mgr.still_here()?;
+    let mut s = mgr.settings.lock().await.clone();
+    s.auto_update = on;
+    mgr.save_settings(s).await
+}
+
+/// "Restart now" after an automatic round: the usual restart, once nothing holds the node, with its progress on screen.
+#[tauri::command]
+pub fn app_update_restart(
+    app: AppHandle,
+    upd: State<'_, Arc<AppUpdater>>,
+    mgr: State<'_, Arc<NodeManager>>,
+) -> Result<(), String> {
+    mgr.still_here()?;
+    if installed_pending(&mgr.app_dir, VERSION).is_none() {
+        return Err("There's no new version waiting to start.".into());
+    }
+    {
+        let mut p = upd.progress.lock().unwrap();
+        if p.running {
+            return Ok(());
+        }
+        *p = Progress { running: true, stage: "restart".into(), ..Default::default() };
+    }
+    mgr.app_updating.store(true, Ordering::SeqCst);
+    let (upd, mgr) = (upd.inner().clone(), mgr.inner().clone());
+    tauri::async_runtime::spawn(async move { restart_when_free(&app, &mgr, &upd.progress).await });
+    Ok(())
+}
+
+/// The app's own rounds, for as long as it runs. A round shows on screen as an update under way (so "Update and
+/// restart" can't start a second one), and holds `app_updating` (which keeps Obliterate and node work apart) only
+/// for the step that puts the new version in place.
+pub fn spawn_auto(upd: Arc<AppUpdater>, mgr: Arc<NodeManager>) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(AUTO_FIRST).await;
+        loop {
+            let ours = {
+                let mut p = upd.progress.lock().unwrap();
+                if p.running || mgr.still_here().is_err() {
+                    false
+                } else {
+                    *p = Progress { running: true, stage: "signature".into(), ..Default::default() };
+                    true
+                }
+            };
+            if ours {
+                let set = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (m, s) = (mgr.clone(), set.clone());
+                let go_on = move || -> Result<(), String> {
+                    m.still_here()?;
+                    // As app_update_start: the flag first, then the node; the two never both go ahead.
+                    m.app_updating.store(true, Ordering::SeqCst);
+                    s.store(true, Ordering::SeqCst);
+                    if let Some(what) = busy(&m) {
+                        m.app_updating.store(false, Ordering::SeqCst);
+                        s.store(false, Ordering::SeqCst);
+                        return Err(format!("Please wait: {what}"));
+                    }
+                    Ok(())
+                };
+                auto_round(&mgr.app_dir, &upd.http, &upd.progress, &go_on).await;
+                if set.load(Ordering::SeqCst) {
+                    mgr.app_updating.store(false, Ordering::SeqCst);
+                }
+                *upd.progress.lock().unwrap() = Progress::default();
+            }
+            tokio::time::sleep(AUTO_EVERY).await;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn auto_dir(what: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("fb-auto-{what}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_record_goes_when_the_copy_in_place_isnt_that_version() {
+        let d = auto_dir("inplace");
+        std::fs::write(d.as_path().join(UPDATED_TO), "0.4.3").unwrap();
+        assert_eq!(pending_in(d.as_path(), "0.4.2", Some("0.4.3")).as_deref(), Some("0.4.3"));
+        assert_eq!(pending_in(d.as_path(), "0.4.2", Some("0.4.2")), None, "an older copy was put back by hand");
+        assert!(!d.as_path().join(UPDATED_TO).exists());
+    }
+
+    #[test]
+    fn a_failed_round_is_remembered_until_forgotten() {
+        let d = auto_dir("failed");
+        assert_eq!(auto_failed(d.as_path()), None);
+        let f = AutoFailed { version: "0.4.3".into(), reason: "needs macOS 15".into(), at: 1 };
+        std::fs::write(d.as_path().join(AUTO_FAILED), serde_json::to_vec(&f).unwrap()).unwrap();
+        assert_eq!(auto_failed(d.as_path()), Some(f));
+        forget_failure(d.as_path());
+        assert_eq!(auto_failed(d.as_path()), None);
+    }
+
+    #[test]
+    fn an_automatic_update_waits_for_the_next_start_and_is_then_forgotten() {
+        let d = auto_dir("pending");
+        assert_eq!(installed_pending(d.as_path(), "0.4.2"), None);
+        std::fs::write(d.as_path().join(UPDATED_TO), "0.4.3\n").unwrap();
+        assert_eq!(installed_pending(d.as_path(), "0.4.2").as_deref(), Some("0.4.3"), "put in place, not running yet");
+        assert_eq!(installed_pending(d.as_path(), "0.4.3"), None, "running it now");
+        assert!(!d.as_path().join(UPDATED_TO).exists(), "the record goes once it runs");
+    }
+
+    #[test]
+    fn automatic_updates_are_off_unless_turned_on() {
+        let d = auto_dir("on");
+        assert!(!auto_on(d.as_path()), "no settings");
+        std::fs::write(d.as_path().join("settings.json"), r#"{"keep_running": true}"#).unwrap();
+        assert!(!auto_on(d.as_path()), "older settings without the switch");
+        std::fs::write(d.as_path().join("settings.json"), r#"{"auto_update": true}"#).unwrap();
+        assert!(auto_on(d.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_process_at_a_time() {
+        let d = auto_dir("lock");
+        let first = auto_lock(d.as_path());
+        assert!(first.is_some());
+        assert!(auto_lock(d.as_path()).is_none(), "held");
+        drop(first);
+        assert!(auto_lock(d.as_path()).is_some(), "free again");
+    }
     use ssh_key::{private::Ed25519Keypair, HashAlg, LineEnding, PrivateKey};
 
     /// A throwaway release key (fixed seed) and its public half.

@@ -37,7 +37,7 @@ const SEND_ECX = process.env.FB_SEND_ECX || '0.01';
 const OVER_ECX = process.env.FB_OVER_ECX || '0.5';
 const ENCRYPTED = process.env.FB_ENCRYPTED === '1';
 
-const NOT_ENOUGH = 'Not enough ECX in your desktop wallet for this payment and its fee.';
+const NOT_ENOUGH = 'Not enough sECX in your desktop wallet for this payment and its fee.';
 const FEE_ROOM = 0.001;
 
 process.env.PLAYWRIGHT_BROWSERS_PATH = '0';

@@ -141,7 +141,7 @@ fn signable(d: &Value, house: u32) -> Result<(), String> {
     }
     if d["starter"].as_u64() == Some(house as u64) && d["fee"].as_f64().map_or(true, |f| f > OWN_FEE + 1e-12) {
         return Err(format!(
-            "This round makes House #{house} pay its fee of {} ECX, more than a round this app starts pays: it isn't signed.",
+            "This round makes House #{house} pay its fee of {} sECX, more than a round this app starts pays: it isn't signed.",
             d["fee"]
         ));
     }

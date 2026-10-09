@@ -49,7 +49,7 @@ pub struct WalletView {
     pub label: String,
     /// "main", "words" or "file".
     pub kind: String,
-    /// ECX, as getbalance says; None when the node didn't answer.
+    /// sECX, as getbalance says; None when the node didn't answer.
     pub balance: Option<f64>,
     pub encrypted: Option<bool>,
     pub active: bool,

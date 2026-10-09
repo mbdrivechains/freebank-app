@@ -2,7 +2,7 @@
   // Home, Deposit (v0.3.0 "In and out"): at par from the app's own eCash wallet (built and signed here,
   // src-tauri/src/ecash/deposit.rs), with the deposits in flight; and, below, from any other eCash wallet.
   //
-  // From another wallet (v0.2.0): how to move ECX from the eCash chain into FreeBank with BitWindow.
+  // From another wallet (v0.2.0): how to move ECX from the eCash chain into FreeBank (as sECX) with BitWindow.
   // The address comes from freebankd's getdepositaddress in the wrapped form s130_<address>_<checksum>
   // (lib/deposit.ts checks the slot and checksum), with Copy and a QR code, and the plain address for other
   // tools. It is made when the panel first opens and kept for the session.
@@ -11,6 +11,7 @@
   // so an address shown before would belong to the old seed. App.svelte wires it to the wallet's state.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import Notice from "./Notice.svelte";
+  import { L1_TICKER } from "../lib/brand";
   import QrCode from "./QrCode.svelte";
   import { fmtEcx, parseEcx } from "../lib/amount";
   import { depositAddress, depositOpen, getDepositAddress } from "../lib/deposit";
@@ -39,7 +40,7 @@
   export let canShowAddresses = true;
 
   const dispatch = createEventDispatcher<{ ecash: void }>();
-  const coins = (sats: number) => `${fmtEcx(sats)} eCash`;
+  const coins = (sats: number) => `${fmtEcx(sats)} ${L1_TICKER}`;
 
   // At par from the app's eCash wallet.
   let ec: EcashStatus | null = null;
@@ -51,7 +52,7 @@
   let sentNote = "";
   let deposits: Deposit[] = [];
   let timer: ReturnType<typeof setInterval> | undefined;
-  // The changer (Settings): buy FreeBank ECX below par with eCash, beside the deposit at par.
+  // The changer (Settings): buy FreeBank sECX below par with ECX, beside the deposit at par.
   let changer: ChangerInfo | null = null;
   let cq: ChangerQuote | null = null;
   let cqError = "";
@@ -101,7 +102,7 @@
     parError = "";
     sentNote = "";
     if (!max && parseEcx(amount) === null) {
-      parError = "Enter an amount in eCash above zero, with at most 8 decimal places.";
+      parError = "Enter an amount in ECX above zero, with at most 8 decimal places.";
       return;
     }
     parBusy = true;
@@ -130,7 +131,7 @@
     parError = "";
     try {
       await changerPay(cq.id, pass);
-      sentNote = `${coins(cq.amount)} paid to the changer. It pays ${fmtEcx(cq.payout)} ECX once your payment is in an eCash block.`;
+      sentNote = `${coins(cq.amount)} paid to the changer. It pays ${fmtEcx(cq.payout)} sECX once your payment is in an eCash block.`;
       quote = null;
       cq = null;
       pass = "";
@@ -220,7 +221,7 @@
     {#if sentNote}<p class="hint ok-note">{sentNote}</p>{/if}
     {#if !quote}
       <form class="field" on:submit|preventDefault={() => prepareDeposit()}>
-        <label class="field-label" for="dep-amount">Amount (eCash)</label>
+        <label class="field-label" for="dep-amount">Amount (ECX)</label>
         <input id="dep-amount" type="text" inputmode="decimal" bind:value={amount} placeholder="0.00000000" autocomplete="off" />
         {#if parError}<p class="soft-error">{parError}</p>{/if}
         <div class="row-actions">
@@ -232,16 +233,16 @@
       <h4 class="dep-or">Deposit at par</h4>
       <dl class="facts">
         <div><dt>Into FreeBank</dt><dd>{coins(quote.sats)}</dd></div>
-        <div><dt>FreeBank credits</dt><dd>{fmtEcx(quote.credited)} ECX <span class="muted small">(it keeps {fmtEcx(FREEBANK_DEPOSIT_FEE)} for the block that credits it)</span></dd></div>
+        <div><dt>FreeBank credits</dt><dd>{fmtEcx(quote.credited)} sECX <span class="muted small">(it keeps {fmtEcx(FREEBANK_DEPOSIT_FEE)} for the block that credits it)</span></dd></div>
         <div><dt>eCash fee</dt><dd>{coins(quote.fee)}</dd></div>
         <div><dt>Leaves your eCash wallet</dt><dd>{coins(quote.total)}</dd></div>
         <div><dt>Credited to</dt><dd class="mono">{quote.fb_wallet ? `${quote.fb_wallet}: ` : ""}{quote.address}</dd></div>
       </dl>
       {#if cq}
         <div class="dep-option" data-testid="changer-in">
-          <h4>Or buy from the changer: more ECX</h4>
+          <h4>Or buy from the changer: more sECX</h4>
           <p class="small">
-            You get <strong>{fmtEcx(cq.payout)} ECX</strong> for {coins(cq.amount)}: {pct(cq.discount_bps)} below par, less
+            You get <strong>{fmtEcx(cq.payout)} sECX</strong> for {coins(cq.amount)}: {pct(cq.discount_bps)} below par, less
             its fee of {fmtEcx(cq.fee)}. Once your payment is in an eCash block.
           </p>
           <p class="muted small">You trust the changer with this order. Pay within {cq.blocks_left} eCash blocks, or it refunds you.</p>
@@ -273,7 +274,7 @@
     <ul class="dep-list" data-testid="changer-orders">
       {#each orders as o (o.id)}
         <li>
-          <span class="dep-amt">{coins(o.amount)} for {fmtEcx(o.payout)} ECX</span>
+          <span class="dep-amt">{coins(o.amount)} for {fmtEcx(o.payout)} sECX</span>
           <span class="muted small" class:soft-error={o.state === "overdue" || o.state === "held"}>{changerLine(o)}</span>
         </li>
       {/each}
@@ -299,7 +300,7 @@
       <button class="link-btn" on:click={() => depositOpen.set(false)}>Hide</button>
     {/if}
   </div>
-  <p class="muted small">Move ECX from the eCash chain into FreeBank with BitWindow.</p>
+  <p class="muted small">Move ECX from the eCash chain into FreeBank, where it becomes sECX, with BitWindow.</p>
 
   {#if !$depositOpen}
     <button class="secondary dep-show" on:click={show}>Show how to deposit</button>

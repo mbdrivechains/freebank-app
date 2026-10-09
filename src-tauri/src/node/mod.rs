@@ -121,6 +121,9 @@ pub struct Settings {
     /// changer, and its cards don't show.
     pub changer_url: Option<String>,
     pub changer_key: Option<String>,
+    /// "Update FreeBank by itself" (v0.4.2, Settings > App updates; app_update.rs `auto_round`): off unless the user
+    /// turns it on. On, a signed release is fetched, checked and put in place without asking; it runs from the next start.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -147,6 +150,7 @@ impl Default for Settings {
             main_wallet: None,
             changer_url: None,
             changer_key: None,
+            auto_update: false,
         }
     }
 }

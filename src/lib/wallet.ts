@@ -1,7 +1,7 @@
 // The wallet's lock, for every screen that signs. v0.2.0 makes the wallet passphrase required, so each
 // signing action meets a locked wallet. Wrap it:
 //
-//   const txid = await withUnlock(() => api.sendTransaction(address, amount), { what: "send 1.5 ECX" });
+//   const txid = await withUnlock(() => api.sendTransaction(address, amount), { what: "send 1.5 sECX" });
 //
 // withUnlock runs the action. If the node answers -13 ("Please enter the wallet passphrase with
 // walletpassphrase first"), or -12 (a locked wallet can't refill its keys), it shows the unlock prompt
@@ -97,7 +97,7 @@ function needsUnlock(e: unknown): boolean {
 }
 
 export interface UnlockOptions {
-  /** Completes "Enter your wallet passphrase to …", e.g. "send 1.5 ECX". */
+  /** Completes "Enter your wallet passphrase to …", e.g. "send 1.5 sECX". */
   what?: string;
   /** Ask before running the action instead of after the node refuses it. */
   upfront?: boolean;

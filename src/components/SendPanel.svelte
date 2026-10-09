@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Send tab (v0.2.0): ECX to an address, or Max (everything that can be spent, with the fee
+  // The Send tab (v0.2.0): sECX to an address, or Max (everything that can be spent, with the fee
   // taken out of it), at a speed the user picks, with the fee and the total shown before Confirm.
   // Review builds and funds the send in Rust and holds it five minutes (send_prepare); Confirm signs
   // and sends exactly that inside withUnlock (send_confirm). The receipt then shows under the tabs,
@@ -23,7 +23,7 @@
     type Speed,
   } from "../lib/send";
 
-  /** The wallet's balance in ECX, for "Available". */
+  /** The wallet's balance in sECX, for "Available". */
   export let balance = 0;
 
   const dispatch = createEventDispatcher<{ sent: { txid: string } }>();

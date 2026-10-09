@@ -237,15 +237,15 @@ pub async fn phone_pair_answer(phone: State<'_, PhoneState>, id: String, allow: 
 
 #[derive(Serialize)]
 pub struct ApproveInfo {
-    /// ECX: once the desktop's payments in a day would come to more than this, a phone's Face ID first; None when off.
+    /// sECX: once the desktop's payments in a day would come to more than this, a phone's Face ID first; None when off.
     pub over: Option<f64>,
-    /// ECX the desktop can still pay today without asking.
+    /// sECX the desktop can still pay today without asking.
     pub left: Option<f64>,
     /// The paired phones with Face ID, which can approve.
     pub approvers: usize,
     /// Approvals the desktop is waiting for now: `{id, text, expires}`.
     pub waiting: Vec<Value>,
-    /// A change the recovery words made, waiting its day: `{over (ECX, null: off), due (unix seconds)}`.
+    /// A change the recovery words made, waiting its day: `{over (sECX, null: off), due (unix seconds)}`.
     pub scheduled: Option<Value>,
 }
 
@@ -262,7 +262,7 @@ pub fn phone_approve_info(phone: State<'_, PhoneState>) -> Result<ApproveInfo, S
     })
 }
 
-/// Set it: `over` in ECX, None to turn it off. Off or a higher amount takes a phone's Face ID at once, or the wallet's
+/// Set it: `over` in sECX, None to turn it off. Off or a higher amount takes a phone's Face ID at once, or the wallet's
 /// recovery `words` a day from now (the answer: when, unix seconds). The words must make the key the node's wallet
 /// uses, and match FreeBank's copy of them. Turning it on needs that copy: it is the way back from a lost phone.
 #[tauri::command]
@@ -275,7 +275,7 @@ pub async fn phone_approve_set(
     mgr.still_here()?;
     let p = phone.get()?.clone();
     let over = match over {
-        Some(v) if !(v > 0.0) || !v.is_finite() => return Err("Enter an amount in ECX above zero.".into()),
+        Some(v) if !(v > 0.0) || !v.is_finite() => return Err("Enter an amount in sECX above zero.".into()),
         Some(v) => Some(super::store::json_to_sats(&serde_json::json!(v))?),
         None => None,
     };
@@ -362,9 +362,9 @@ pub struct DeviceView {
     pub name: String,
     pub added: u64,
     pub last_seen: Option<u64>,
-    /// ECX a day it may send without asking
+    /// sECX a day it may send without asking
     pub limit: f64,
-    /// ECX of that sent today
+    /// sECX of that sent today
     pub spent_today: f64,
     pub online: bool,
     /// Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too.

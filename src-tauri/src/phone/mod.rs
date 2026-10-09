@@ -88,7 +88,7 @@ impl RpcFail {
             Some(WAKE_STARTING) => ERR_STARTING.into(),
             Some(WAKE_FAILED) => self.message.clone(),
             Some(RPC_WALLET_INSUFFICIENT_FUNDS) => {
-                "Not enough ECX in your desktop wallet for this payment and its fee.".into()
+                "Not enough sECX in your desktop wallet for this payment and its fee.".into()
             }
             Some(_) => self.message.clone(),
         }
@@ -169,7 +169,7 @@ pub const SEND_UNLOCK_SECS: u64 = 10;
 pub const RELOCK_MARGIN: Duration = crate::wallet::RELOCK_MARGIN;
 
 pub const ERR_DECLINED: &str = "declined on the desktop";
-/// The fee a phone's note action pays, in ECX: what the desktop's Notes tab pays.
+/// The fee a phone's note action pays, in sECX: what the desktop's Notes tab pays.
 pub const NOTE_FEE: f64 = 0.001;
 /// freebankd before v0.2.19 lists a wallet's notes only while it is unlocked, so there the phone's Notes need phone
 /// sends on. v0.2.19 lists them locked (freebankd's note 2026-10-04-from-freebankd-list-locked-done), and this never shows.
@@ -272,9 +272,9 @@ struct Pairing {
     asks: Vec<Ask>,
 }
 
-/// What a phone's payment does: ECX to an address, or (v0.2.5) house notes sent to an address, redeemed for ECX, or
+/// What a phone's payment does: sECX to an address, or (v0.2.5) house notes sent to an address, redeemed for sECX, or
 /// demanded. Each is one wallet call under the same guard: Face ID when the phone chose it, the daily limit (note
-/// units count as ECX: 1 unit is 1 sat), and the desktop's confirmation above it.
+/// units count as sECX: 1 unit is 1 sat), and the desktop's confirmation above it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -452,13 +452,13 @@ impl Approve {
     /// In a few words, for the desktop's waiting screen.
     pub fn text(&self) -> String {
         match self {
-            Approve::Send { sats, address } => format!("Send {} ECX to {}", to_ecx(*sats), address),
+            Approve::Send { sats, address } => format!("Send {} sECX to {}", to_ecx(*sats), address),
             Approve::Action { text, .. } | Approve::Change { text } => text.clone(),
             Approve::Scheduled { over: None, .. } => {
                 "Turn \"Approve sends on my phone\" off (your recovery words were used on the desktop)".into()
             }
             Approve::Scheduled { over: Some(b), .. } => format!(
-                "Ask your phones only when the desktop pays more than {} ECX in a day (your recovery words were used on the desktop)",
+                "Ask your phones only when the desktop pays more than {} sECX in a day (your recovery words were used on the desktop)",
                 to_ecx(*b)
             ),
         }
@@ -597,7 +597,7 @@ impl Pending {
     }
 
     /// What it counts against the desktop's day when the desktop confirms it: a send with an allowance for the fee the
-    /// node will choose (0.001 ECX, more than it takes), so the day's total counts fees here too.
+    /// node will choose (0.001 sECX, more than it takes), so the day's total counts fees here too.
     fn desk_cost(&self) -> u64 {
         match self.kind {
             Kind::Send => self.sats.saturating_add(SEND_FEE_ALLOWANCE),
@@ -612,14 +612,14 @@ impl Pending {
         match self.kind {
             Kind::Send => Approve::Send { sats: self.sats, address: self.address.clone() },
             Kind::NoteSend => Approve::Action {
-                text: format!("Send {ecx} ECX of {house}'s notes to {} (a phone's request)", self.address),
+                text: format!("Send {ecx} sECX of {house}'s notes to {} (a phone's request)", self.address),
                 sats: Some(self.cost()),
             },
             Kind::NoteRedeem => {
-                Approve::Action { text: format!("Redeem {ecx} ECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
+                Approve::Action { text: format!("Redeem {ecx} sECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
             }
             Kind::NoteDemand => {
-                Approve::Action { text: format!("Demand {ecx} ECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
+                Approve::Action { text: format!("Demand {ecx} sECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
             }
         }
     }
@@ -1208,7 +1208,7 @@ impl Phone {
             (d.limit_sats, d.name.clone())
         };
         if sats > now && self.approve_over().is_some() {
-            let text = format!("Let \"{name}\" pay up to {} ECX a day without asking your desktop (now {} ECX)", to_ecx(sats), to_ecx(now));
+            let text = format!("Let \"{name}\" pay up to {} sECX a day without asking your desktop (now {} sECX)", to_ecx(sats), to_ecx(now));
             self.request_approval(Approve::Change { text }).await?;
         }
         let mut devs = self.devices.lock().unwrap();
@@ -1780,8 +1780,8 @@ impl Phone {
         self.act(dev, req, Pending { kind: Kind::Send, house: None, address, sats }, face_id).await
     }
 
-    /// A phone's note action (v0.2.5): send notes of a house to an address, redeem them for ECX, or demand them. The
-    /// amount is in ECX, as the desktop's Notes tab takes it (1 unit is 1 sat), and counts against the daily limit.
+    /// A phone's note action (v0.2.5): send notes of a house to an address, redeem them for sECX, or demand them. The
+    /// amount is in sECX, as the desktop's Notes tab takes it (1 unit is 1 sat), and counts against the daily limit.
     async fn note_action(&self, dev: &str, req: &Value, kind: Kind, face_id: bool) -> Result<Value, String> {
         let a = &req["a"];
         let house = a["house"].as_u64().ok_or("Which house's notes?")?;
@@ -2111,7 +2111,7 @@ impl Phone {
         let need = p.cost();
         if have < need {
             return Err(format!(
-                "Not enough ECX: the wallet has {} and this payment is {}, before its fee. Decline it, or add coins and \
+                "Not enough sECX: the wallet has {} and this payment is {}, before its fee. Decline it, or add coins and \
                  try again; it's still waiting.",
                 to_ecx(have),
                 to_ecx(need)
@@ -2199,7 +2199,7 @@ impl Phone {
             self.events.emit(EV_CHANGED, json!({}));
             return Ok(Confirmed { txid: None, need_passphrase: false });
         }
-        // Not enough ECX for a send: said before a phone is asked or the passphrase is (v0.2.6, the UX walk-through:
+        // Not enough sECX for a send: said before a phone is asked or the passphrase is (v0.2.6, the UX walk-through:
         // the passphrase came first, then the payment failed and its dialog closed without a word). It keeps waiting.
         self.enough_for(confirm).await?;
         self.clear_held(confirm).await?;
@@ -2509,7 +2509,7 @@ impl Phone {
             let text = match over {
                 None => "Turn \"Approve sends on my phone\" off: the desktop stops asking your phones".to_string(),
                 Some(b) => format!(
-                    "Ask your phones only when the desktop pays more than {} ECX in a day (now {} ECX)",
+                    "Ask your phones only when the desktop pays more than {} sECX in a day (now {} sECX)",
                     to_ecx(b),
                     to_ecx(now_over.unwrap_or(0))
                 ),
@@ -2915,34 +2915,34 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
             let to = p.get(3).and_then(Value::as_str).unwrap_or("");
             let out = if to.is_empty() { Some(0) } else { units(1) };
             let to = if to.is_empty() { "this wallet".to_string() } else { to.to_string() };
-            (out.map(|o| o + NOTE_CARRIER_SATS), format!("Send {} ECX of house #{}'s notes to {to}", e(units(1)), id(0)))
+            (out.map(|o| o + NOTE_CARRIER_SATS), format!("Send {} sECX of house #{}'s notes to {to}", e(units(1)), id(0)))
         }
-        "swapnote" => (units(2), format!("Swap {} ECX in pool #{}", e(units(2)), id(0))),
+        "swapnote" => (units(2), format!("Swap {} sECX in pool #{}", e(units(2)), id(0))),
         "createpool" => (
             units(1).zip(units(2)).map(|(a, b)| a.saturating_add(b)),
-            format!("Create pool #{} with {} ECX of notes and {} ECX", id(0), e(units(1)), e(units(2))),
+            format!("Create pool #{} with {} sECX of notes and {} sECX", id(0), e(units(1)), e(units(2))),
         ),
         "addpoolliquidity" => (
             units(1).zip(units(2)).map(|(a, b)| a.saturating_add(b)),
-            format!("Add {} ECX of notes and {} ECX to pool #{}", e(units(1)), e(units(2)), id(0)),
+            format!("Add {} sECX of notes and {} sECX to pool #{}", e(units(1)), e(units(2)), id(0)),
         ),
-        "issuebill" => (ecx(2), format!("Issue a bill for {} ECX, bonded with {} ECX", e(ecx(1)), e(ecx(2)))),
-        "endorsebill" => (bill, format!("Hand bill #{} ({} ECX) to another holder", id(0), e(bill))),
-        "retirebill" => (bill, format!("Retire bill #{}: pay its holder {} ECX", id(0), e(bill))),
+        "issuebill" => (ecx(2), format!("Issue a bill for {} sECX, bonded with {} sECX", e(ecx(1)), e(ecx(2)))),
+        "endorsebill" => (bill, format!("Hand bill #{} ({} sECX) to another holder", id(0), e(bill))),
+        "retirebill" => (bill, format!("Retire bill #{}: pay its holder {} sECX", id(0), e(bill))),
         // Minted to this wallet: only the fee. Minted to an address (node v0.2.19), the notes leave this wallet's house
         // to someone who can redeem them from its reserves: they count (security review of v0.2.6, M1).
         "mintnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
             None => (Some(0), format!("Mint house #{}'s notes", id(0))),
-            Some(to) => (units(1), format!("Mint {} ECX of house #{}'s notes to {to}", e(units(1)), id(0))),
+            Some(to) => (units(1), format!("Mint {} sECX of house #{}'s notes to {to}", e(units(1)), id(0))),
         },
-        "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} ECX of house #{}'s notes", e(units(1)), id(0))),
-        "demandnote" => (Some(NOTE_CARRIER_SATS), format!("Demand {} ECX of house #{}'s notes", e(units(1)), id(0))),
+        "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} sECX of house #{}'s notes", e(units(1)), id(0))),
+        "demandnote" => (Some(NOTE_CARRIER_SATS), format!("Demand {} sECX of house #{}'s notes", e(units(1)), id(0))),
         "registerhouse" => {
-            // Its pledges, an array of ECX amounts (security re-review L1).
+            // Its pledges, an array of sECX amounts (security re-review L1).
             let pledged = p.get(4).and_then(Value::as_array).and_then(|a| {
                 a.iter().try_fold(0u64, |t, v| store::json_to_sats(v).ok().map(|s| t.saturating_add(s)))
             });
-            (pledged, format!("Register a house, pledging {} ECX", e(pledged)))
+            (pledged, format!("Register a house, pledging {} sECX", e(pledged)))
         }
         "attesthouse" => (Some(0), format!("Attest house #{}'s reserves", id(0))),
         "registertokenkeyset" => (Some(0), format!("Record house #{}'s token keyset", id(0))),

@@ -1,4 +1,4 @@
-//! Withdraw at par (v0.3.0 "In and out"; `gateway/docs/distribution/CASH_OUT_DESIGN.md` §3.1, §3.3): FreeBank ECX
+//! Withdraw at par (v0.3.0 "In and out"; `gateway/docs/distribution/CASH_OUT_DESIGN.md` §3.1, §3.3): FreeBank sECX
 //! back to eCash through the peg, with freebankd's own calls (no node change): `createwithdrawal`, `listmywithdrawals`
 //! and `getwithdrawal`, `createwithdrawalrefundrequest`. It is trustless but slow: a withdrawal waits for a bundle, the
 //! bundle for L1 miners' ACKs (13,150 on mainnet, and beta uses the same), so the screen puts a warning first (Michael,
@@ -24,13 +24,13 @@ use std::time::{Duration, Instant};
 use tauri::State;
 
 /// The least FreeBank fee offered for the withdrawal transaction itself: freebankd's wallet wants its minimum fee for
-/// the transaction's size (Core's fallback rate, 0.0002 ECX a kB, on a few hundred bytes), and refuses less.
+/// the transaction's size (Core's fallback rate, 0.0002 sECX a kB, on a few hundred bytes), and refuses less.
 pub const FREEBANK_FEE: u64 = 20_000;
 /// The size the FreeBank fee is reckoned on, kB.
 const WITHDRAWAL_KB: f64 = 0.6;
 /// The eCash fee offered for the payout when freebankd has no recent average to go by.
 pub const DEFAULT_MAINCHAIN_FEE: u64 = 10_000;
-/// The smallest withdrawal offered: 0.001 ECX (eCash dust is far below it).
+/// The smallest withdrawal offered: 0.001 sECX (eCash dust is far below it).
 pub const MIN_WITHDRAWAL: u64 = 100_000;
 const QUOTE_LIFE: Duration = Duration::from_secs(300);
 const EXPIRED: &str = "That withdrawal was prepared too long ago. Prepare it again.";
@@ -128,7 +128,7 @@ async fn mainchain_fee(mgr: &NodeManager) -> u64 {
     }
 }
 
-/// Prepare a withdrawal of `amount` ECX to `address`, or, with none, to a fresh address of the app's own eCash wallet.
+/// Prepare a withdrawal of `amount` sECX to `address`, or, with none, to a fresh address of the app's own eCash wallet.
 #[tauri::command]
 pub async fn withdraw_prepare(
     mgr: State<'_, Arc<NodeManager>>,
@@ -136,9 +136,9 @@ pub async fn withdraw_prepare(
     amount: String,
     address: Option<String>,
 ) -> Result<Quote, String> {
-    let sats = crate::phone::store::decimal_to_sats(&amount).map_err(|_| "Enter the amount as a number of ECX, with at most 8 decimals.")?;
+    let sats = crate::phone::store::decimal_to_sats(&amount).map_err(|_| "Enter the amount as a number of sECX, with at most 8 decimals.")?;
     if sats < MIN_WITHDRAWAL {
-        return Err(format!("The smallest withdrawal is {} ECX.", to_coins(MIN_WITHDRAWAL)));
+        return Err(format!("The smallest withdrawal is {} sECX.", to_coins(MIN_WITHDRAWAL)));
     }
     let pasted = address.as_deref().map(str::trim).filter(|a| !a.is_empty()).map(str::to_string);
     let address = match &pasted {
@@ -169,7 +169,7 @@ pub async fn withdraw_prepare(
     };
     if have < sats + fee + mainchain_fee {
         return Err(format!(
-            "You have {} ECX; this withdrawal needs {} with its fees.",
+            "You have {} sECX; this withdrawal needs {} with its fees.",
             to_coins(have),
             to_coins(sats + fee + mainchain_fee)
         ));
@@ -211,7 +211,7 @@ pub async fn withdraw_confirm(
         Some(ph) => Some(
             ph.clear_desktop(
                 total,
-                Approve::Action { text: format!("Withdraw {} ECX to the eCash address {}", to_coins(p.sats), p.address), sats: Some(total) },
+                Approve::Action { text: format!("Withdraw {} sECX to the eCash address {}", to_coins(p.sats), p.address), sats: Some(total) },
             )
             .await?,
         ),

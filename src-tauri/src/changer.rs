@@ -1,5 +1,5 @@
 //! The money changer, from the app (v0.3.0 "In and out"; `gateway/docs/distribution/CASH_OUT_DESIGN.md` §4.8): sell
-//! FreeBank ECX for eCash ("out", the Withdraw panel's fast card) or buy it with eCash ("in", the Deposit panel's),
+//! FreeBank sECX for ECX ("out", the Withdraw panel's fast card) or buy it with ECX ("in", the Deposit panel's),
 //! below par, from a changer that keeps a float of both (`distribution/changer/`, on beta Michael's).
 //!
 //! Every quote is signed by the changer's key, which the app pins (Settings: the changer's address and key). The app
@@ -37,7 +37,7 @@ const EXPIRED: &str = "That quote is too old. Ask the changer again.";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Quote {
     pub id: String,
-    /// "out" (sell FreeBank ECX for eCash) or "in" (buy it with eCash).
+    /// "out" (sell FreeBank sECX for ECX) or "in" (buy it with ECX).
     pub side: String,
     pub amount: u64,
     pub payout: u64,
@@ -251,8 +251,8 @@ pub struct QuoteView {
 /// The FreeBank fee reckoned for paying in on FreeBank ("out"), for the phone's count: freebankd's wallet sets it.
 const FREEBANK_PAY_FEE: u64 = 20_000;
 
-/// Ask the changer for a quote: "out" (sell `amount` FreeBank ECX; eCash to `address`, or to a fresh address of the
-/// app's eCash wallet) or "in" (buy with `amount` eCash from the app's eCash wallet; FreeBank ECX to a fresh address of
+/// Ask the changer for a quote: "out" (sell `amount` FreeBank sECX; eCash to `address`, or to a fresh address of the
+/// app's eCash wallet) or "in" (buy with `amount` eCash from the app's eCash wallet; FreeBank sECX to a fresh address of
 /// the FreeBank wallet in use).
 #[tauri::command]
 pub async fn changer_quote(
@@ -338,7 +338,7 @@ async fn fb_in(c: &mut crate::rpc::FreeBankClient, wallet: &Option<String>, meth
     }
 }
 
-/// Pay in for a quote: "out" pays FreeBank ECX from the wallet it was quoted from (wrap it in withUnlock); "in" pays
+/// Pay in for a quote: "out" pays FreeBank sECX from the wallet it was quoted from (wrap it in withUnlock); "in" pays
 /// eCash from the app's eCash wallet (its passphrase), signed here. "Approve sends on my phone" counts it with its fee;
 /// after that the quote must still stand; it is recorded in orders.json, then goes out.
 #[tauri::command]
@@ -383,10 +383,10 @@ pub async fn changer_pay(
     }
     BOOK.lock().unwrap().remove(&id).ok_or(EXPIRED)?;
     let (what, counted) = if q.side == "out" {
-        (format!("Sell {} ECX to the changer for {} eCash", to_coins(q.amount), to_coins(q.payout)), q.amount + FREEBANK_PAY_FEE)
+        (format!("Sell {} sECX to the changer for {} ECX", to_coins(q.amount), to_coins(q.payout)), q.amount + FREEBANK_PAY_FEE)
     } else {
         let fee = signed.as_ref().map(|s| s.2).unwrap_or(0);
-        (format!("Buy {} ECX from the changer for {} eCash", to_coins(q.payout), to_coins(q.amount)), q.amount + fee)
+        (format!("Buy {} sECX from the changer for {} ECX", to_coins(q.payout), to_coins(q.amount)), q.amount + fee)
     };
     let guard = phone.guard(&mgr.app_dir)?.filter(|ph| ph.approve_over().is_some());
     let cleared = match guard {
@@ -726,7 +726,7 @@ mod tests {
         short.payout = 90_000_000;
         short.sig = sign(&short, &key);
         assert!(check(&short, &pinned, &asked).unwrap_err().contains("add up"));
-        // In: 0.5 eCash buys 0.5 / 0.995 ECX, less the fee; one that gives less is refused.
+        // In: 0.5 ECX buys 0.5 / 0.995 sECX, less the fee; one that gives less is refused.
         let mut buy = q.clone();
         buy.side = "in".into();
         buy.amount = 50_000_000;

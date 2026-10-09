@@ -140,7 +140,10 @@ pub fn run() {
             }
             // Bidding for FreeBank blocks (v0.2.6): does nothing until it is turned on in the eCash tab.
             ecash::bmm::spawn(mgr.clone());
-            app.manage(Arc::new(app_update::AppUpdater::new(mgr.http.clone())));
+            let updater = Arc::new(app_update::AppUpdater::new(mgr.http.clone()));
+            // Automatic updates (v0.4.2): nothing happens unless Settings > App updates turns them on.
+            app_update::spawn_auto(updater.clone(), mgr.clone());
+            app.manage(updater);
             app.manage(mgr);
             Ok(())
         })
@@ -293,6 +296,10 @@ pub fn run() {
             app_update::app_update_progress,
             app_update::apt_updates_offer,
             app_update::apt_updates_enable,
+            // v0.4.2: automatic updates, opt in
+            app_update::app_auto_update_get,
+            app_update::app_auto_update_set,
+            app_update::app_update_restart,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

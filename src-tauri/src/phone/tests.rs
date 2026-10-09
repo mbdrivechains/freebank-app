@@ -18,11 +18,11 @@ const TO2: &str = "XqTBMbUvWWb6zKj2yuLV1m8nZr3Cu6uE7R";
 const PASS: &str = "correct horse battery staple";
 const LOCKED_MSG: &str = "Error: Please enter the wallet passphrase with walletpassphrase first.";
 const WRONG_MSG: &str = "Error: The wallet passphrase entered was incorrect.";
-const NOT_ENOUGH: &str = "Not enough ECX in your desktop wallet for this payment and its fee.";
+const NOT_ENOUGH: &str = "Not enough sECX in your desktop wallet for this payment and its fee.";
 
 // ----- mocks ---------------------------------------------------------------------------------
 
-/// The node: a wallet with 1.5 ECX, three transactions, and optionally a passphrase. Its unlock
+/// The node: a wallet with 1.5 sECX, three transactions, and optionally a passphrase. Its unlock
 /// runs out by the harness clock, like Core's. Like freebankd (Core 0.16), an unlock that lands
 /// on the moment the previous unlock's relock timer fires deadlocks it; the mock only notes it.
 struct MockRpc {
@@ -39,7 +39,7 @@ struct MockRpc {
     hosting: AtomicBool,
     hosted: Mutex<HashMap<String, MockWallet>>,
     members: Mutex<Vec<(String, bool)>>,
-    /// Each hosted wallet's notes at house 5 (units) and ECX, as payments and moving home spend them.
+    /// Each hosted wallet's notes at house 5 (units) and sECX, as payments and moving home spend them.
     hosted_notes: Mutex<HashMap<String, u64>>,
     hosted_ecx: Mutex<HashMap<String, f64>>,
 }
@@ -1761,7 +1761,7 @@ async fn the_passphrase_stays_in_memory() {
     let mut replies = vec![];
     h.phone.phone_send_on(Zeroizing::new(PASS.into())).await.unwrap();
     replies.push(ask(&mut h, &mut sim, 1, 1, "send", json!({"address": TO, "amount": 0.01})).await);
-    // Over the phone's limit, so held; within the stand-in wallet's 1.5 ECX, so it can be paid.
+    // Over the phone's limit, so held; within the stand-in wallet's 1.5 sECX, so it can be paid.
     replies.push(ask(&mut h, &mut sim, 1, 2, "send", json!({"address": TO, "amount": 1})).await);
     let confirm = replies[1]["ok"]["pending"].as_str().unwrap().to_string();
     h.phone.forget_passphrase();
@@ -2272,7 +2272,7 @@ async fn page_host() {
             for held in phone.held() {
                 if unix_now() >= held.at + 1 {
                     let r = phone.confirm_send(&held.confirm, true, None).await;
-                    eprintln!("confirmed held send {} ECX: {r:?}", held.amount);
+                    eprintln!("confirmed held send {} sECX: {r:?}", held.amount);
                 }
             }
         }
@@ -2736,7 +2736,7 @@ async fn a_send_is_approved_with_face_id_on_the_phone() {
     let ap = &m["approve"];
     assert_eq!((ap["what"].clone(), ap["amount"].clone(), ap["address"].clone()), (json!("send"), json!(2.5), json!(TO)));
     assert_eq!(ap["cred"], "Y3JlZC1pZA");
-    assert_eq!(h.ev.named(EV_APPROVAL)[0]["text"], format!("Send 2.5 ECX to {TO}"));
+    assert_eq!(h.ev.named(EV_APPROVAL)[0]["text"], format!("Send 2.5 sECX to {TO}"));
     // Another key's proof: refused, and it keeps waiting.
     let other = Authenticator::new(9);
     h.feed(1, sim.req(10, "approve", json!({"id": ap["id"], "auth": other.assert(&ap["challenge"])})));
@@ -2860,7 +2860,7 @@ async fn the_desktop_counts_a_days_payments_then_asks() {
     assert_eq!(h.phone.clear_desktop(5, a_send(5)).await, Ok(Cleared::Off));
     assert_eq!(h.phone.desk_left(), None);
     h.phone.set_approve_over(Some(ECX), false).await.unwrap();
-    // 0.6 and then 0.4 ECX: within 1 ECX a day, so they count and go.
+    // 0.6 and then 0.4 sECX: within 1 sECX a day, so they count and go.
     assert!(matches!(h.phone.clear_desktop(60_000_000, a_send(60_000_000)).await, Ok(Cleared::Counted { sats: 60_000_000, .. })));
     h.later(10);
     let b = h.phone.clear_desktop(40_000_000, a_send(40_000_000)).await.unwrap();
@@ -2887,8 +2887,8 @@ async fn the_desktop_counts_a_days_payments_then_asks() {
 
 #[tokio::test]
 async fn a_held_payment_confirmed_here_counts_unless_its_phone_signed_it() {
-    // The phone asked for 0.5 ECX, over its limit of 0.1, without its own Face ID: the desktop's confirm asks a phone,
-    // as 0.5 ECX is more than the day's 0.3 (security review M1).
+    // The phone asked for 0.5 sECX, over its limit of 0.1, without its own Face ID: the desktop's confirm asks a phone,
+    // as 0.5 sECX is more than the day's 0.3 (security review M1).
     let mut h = harness(None);
     let mut sim = Sim::new();
     let fid = Authenticator::new(7);
@@ -2916,7 +2916,7 @@ async fn a_held_payment_confirmed_here_counts_unless_its_phone_signed_it() {
     let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
     let c = h.phone.confirm_send(&confirm, true, None).await.unwrap();
     assert!(c.need_passphrase);
-    // 0.03 ECX, and 0.001 for the fee the node will choose.
+    // 0.03 sECX, and 0.001 for the fee the node will choose.
     assert_eq!(h.phone.desk_left(), Some(26_900_000));
     assert!(h.phone.confirm_send(&confirm, true, None).await.unwrap().need_passphrase);
     assert_eq!(h.phone.desk_left(), Some(26_900_000), "counted once");
@@ -3021,7 +3021,7 @@ async fn a_phones_first_face_id_takes_another_phones_yes() {
 
 #[tokio::test]
 async fn a_note_actions_fee_counts_against_the_phones_limit() {
-    // 0.1 ECX a day: a note send of 0.09 costs 0.09 + 0.001 fee + 0.00002 in carriers (security review M3).
+    // 0.1 sECX a day: a note send of 0.09 costs 0.09 + 0.001 fee + 0.00002 in carriers (security review M3).
     let mut h = harness(None);
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
@@ -3068,7 +3068,7 @@ fn the_credit_tabs_payments_cost_what_leaves_the_wallet() {
     assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), None), Some(u64::MAX));
     assert_eq!(cost("swapnote", json!([1, "btxfornote", "lots", 1, 0.001]), None), Some(u64::MAX));
     let (_, what) = credit_payment("transfernote", json!([3, 5_000_000, 0.001, TO]).as_array().unwrap(), None).unwrap();
-    assert_eq!(what, Approve::Action { text: format!("Send 0.05 ECX of house #3's notes to {TO}"), sats: Some(5_102_000) });
+    assert_eq!(what, Approve::Action { text: format!("Send 0.05 sECX of house #3's notes to {TO}"), sats: Some(5_102_000) });
 }
 
 #[tokio::test]
@@ -3132,7 +3132,7 @@ impl Rpc for RealRpc {
     }
 }
 
-/// The phone's notes, houses and note actions against a real freebankd whose wallet holds 2.0 ECX of house 1's notes
+/// The phone's notes, houses and note actions against a real freebankd whose wallet holds 2.0 sECX of house 1's notes
 /// (a local test chain). FB_CREDIT_RPC=http://127.0.0.1:<port> (user t, password t); blocks are made by the caller
 /// between runs. `cargo test credit_real_node -- --ignored --nocapture`
 #[tokio::test]
@@ -3158,7 +3158,7 @@ async fn credit_real_node() {
     println!("houses: {}", houses["ok"]);
     assert_eq!(houses["ok"][0]["name"], "leith");
 
-    // Within the limit: 0.01 ECX of notes to a fresh address of the same wallet.
+    // Within the limit: 0.01 sECX of notes to a fresh address of the same wallet.
     let to = rpc.call("getnewaddress", vec![json!(""), json!("legacy")]).await.unwrap();
     let r = ask(&mut h, &mut sim, 1, 4, "note-send", json!({"house": 1, "address": to, "amount": 0.01})).await;
     println!("note-send: {r}");
@@ -3198,7 +3198,7 @@ async fn while_on_a_higher_phone_limit_or_removing_face_id_asks_a_phone() {
     let id = ipad.clone();
     let task = tokio::spawn(async move { p.set_limit(&id, 100_000.0).await });
     let ap = opened(&mut h, &mut sim, 1).await.remove(0)["approve"].clone();
-    assert!(ap["text"].as_str().unwrap().contains("pay up to 100000 ECX a day"), "{ap}");
+    assert!(ap["text"].as_str().unwrap().contains("pay up to 100000 sECX a day"), "{ap}");
     h.feed(1, sim.req(110, "approve", json!({"id": ap["id"], "decline": true})));
     opened(&mut h, &mut sim, 2).await;
     assert_eq!(task.await.unwrap(), Err(ERR_APPROVE_DECLINED.to_string()));
@@ -3262,12 +3262,12 @@ async fn a_held_send_the_wallet_cant_pay_says_so_before_the_passphrase() {
     let mut h = harness(None);
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
-    // 2 ECX: over the phone's limit (held), more than the stand-in wallet's 1.5.
+    // 2 sECX: over the phone's limit (held), more than the stand-in wallet's 1.5.
     let r = ask(&mut h, &mut sim, 1, 1, "send", json!({"address": TO, "amount": 2})).await;
     let confirm = r["ok"]["pending"].as_str().unwrap().to_string();
     h.rpc.forget_calls();
     let e = h.phone.confirm_send(&confirm, true, None).await.unwrap_err();
-    assert!(e.starts_with("Not enough ECX: the wallet has 1.5 and this payment is 2"), "{e}");
+    assert!(e.starts_with("Not enough sECX: the wallet has 1.5 and this payment is 2"), "{e}");
     assert_eq!(h.rpc.methods(), ["getbalance"], "no unlock, no send");
     assert_eq!(h.phone.held().len(), 1, "it keeps waiting");
 }

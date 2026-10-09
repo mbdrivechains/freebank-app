@@ -376,8 +376,8 @@ async fn everything_means_the_balance_less_the_fee() {
 #[test]
 fn a_phone_is_told_what_leaves_and_where() {
     use super::commands::approve_text;
-    assert_eq!(approve_text(false, 50_000_000, "bc1qxyz"), "Send 0.50000000 eCash to bc1qxyz");
-    assert_eq!(approve_text(true, 1_000_000, "bc1qbid"), "Move 0.01000000 eCash into the bidding wallet (bc1qbid)");
+    assert_eq!(approve_text(false, 50_000_000, "bc1qxyz"), "Send 0.50000000 ECX to bc1qxyz");
+    assert_eq!(approve_text(true, 1_000_000, "bc1qbid"), "Move 0.01000000 ECX into the bidding wallet (bc1qbid)");
 }
 
 // ---- Bidding ----
@@ -989,7 +989,7 @@ async fn deposit_real_stack() {
         let after = deposit::treasury(&http, &enf, &conn).await.unwrap();
         assert_eq!(after.value, ctip.value + sats, "round {round}: the treasury grew by the deposit");
         assert_eq!(after.outpoint.txid.to_string(), txid);
-        eprintln!("round {round}: {} eCash deposited, fee {} sats, treasury now {}", super::to_coins(sats), built.fee, after.value);
+        eprintln!("round {round}: {} ECX deposited, fee {} sats, treasury now {}", super::to_coins(sats), built.fee, after.value);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1057,7 +1057,7 @@ async fn withdraw_real_stack() {
 }
 
 /// The money changer end to end (scripts/changer-real-chain.sh: the stack, then the changer bot with wallets of its
-/// own; FB_CHANGER_URL, FB_CHANGER_KEY besides deposit_real_stack's): sell 1 ECX for eCash, buy ECX with 0.5 eCash, and
+/// own; FB_CHANGER_URL, FB_CHANGER_KEY besides deposit_real_stack's): sell 1 sECX for ECX, buy sECX with 0.5 ECX, and
 /// a pay-in after the quote expired refunded. Every quote checked as the app checks it.
 #[tokio::test]
 #[ignore]
@@ -1126,7 +1126,7 @@ async fn changer_real_stack() {
     fb_block();
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    // OUT: sell 1 ECX for eCash.
+    // OUT: sell 1 sECX for ECX.
     let payout_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
     let refund_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
     let q = ask("out", 100_000_000, payout_to.clone(), refund_to.clone()).await;
@@ -1151,9 +1151,9 @@ async fn changer_real_stack() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     let got = super::sats_of(&conn.wallet(&mname).call_typed("getreceivedbyaddress", vec![json!(payout_to), json!(1)]).await.unwrap()).unwrap();
     assert_eq!(got, q.payout, "the eCash payout arrived");
-    eprintln!("out: sold 1 ECX, got {} eCash ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
+    eprintln!("out: sold 1 sECX, got {} ECX ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
 
-    // IN: buy ECX with 0.5 eCash.
+    // IN: buy sECX with 0.5 ECX.
     let payout_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
     let refund_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
     let q = ask("in", 50_000_000, payout_to.clone(), refund_to.clone()).await;
@@ -1183,7 +1183,7 @@ async fn changer_real_stack() {
         }
     }
     assert_eq!(got, q.payout, "the FreeBank payout arrived");
-    eprintln!("in: paid 0.5 eCash, got {} ECX ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
+    eprintln!("in: paid 0.5 ECX, got {} sECX ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
 
     // LATE: a pay-in after the quote expired is refunded, less the refund's fee.
     let payout_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();

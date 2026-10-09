@@ -330,7 +330,7 @@ pub async fn fee_rate(conn: &Conn) -> f64 {
     r.clamp(1.0, 500.0)
 }
 
-/// The most any payment's fee may be (0.01 eCash), whatever its size; its rate is bounded too (Expect::max_rate).
+/// The most any payment's fee may be (0.01 ECX), whatever its size; its rate is bounded too (Expect::max_rate).
 pub const MAX_FEE: u64 = 1_000_000;
 
 /// A payment ready to sign: what arrives where, the fee, and the node's unsigned PSBT.
@@ -376,7 +376,7 @@ pub async fn quote(conn: &Conn, name: &str, address: &str, sats: Option<u64>) ->
         .await
         .map_err(|e| match e {
             RpcError::Rpc { code: -4, message } if message.contains("Insufficient funds") => {
-                "There isn't enough eCash for that and its fee.".to_string()
+                "There isn't enough ECX for that and its fee.".to_string()
             }
             e => say(e),
         })?;

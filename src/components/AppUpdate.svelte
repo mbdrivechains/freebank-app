@@ -8,7 +8,10 @@
     appUpdate,
     appUpdateLater,
     appUpdateProgress,
+    autoUpdate,
     checkAppUpdate,
+    restartForUpdate,
+    setAutoUpdate,
     stageText,
     startAppUpdate,
   } from "../lib/appUpdate";
@@ -24,7 +27,27 @@
   $: p = $appUpdateProgress;
   $: updating = !!p?.running;
   $: failed = p && !p.running ? p.error : null;
-  $: show = notice ? !!c?.available && (!$appUpdateLater || updating) : true;
+  $: a = $autoUpdate;
+  // Put in place by an automatic update and waiting for the next start: said instead of "is out".
+  $: waiting = a?.installed ?? null;
+  $: show = notice ? (!!c?.available || !!waiting) && (!$appUpdateLater || updating) : true;
+  let autoError = "";
+  async function toggleAuto(on: boolean) {
+    autoError = "";
+    try {
+      await setAutoUpdate(on);
+    } catch (e) {
+      autoError = String(e);
+    }
+  }
+  async function restartNow() {
+    startError = "";
+    try {
+      await restartForUpdate();
+    } catch (e) {
+      startError = String(e);
+    }
+  }
 
   async function check() {
     checking = true;
@@ -50,7 +73,18 @@
       <p>This is FreeBank {c?.current ?? ""}.</p>
     {/if}
 
-    {#if c?.available}
+    {#if waiting}
+      <p><strong>FreeBank {waiting} is in place.</strong> It runs next time you open FreeBank.</p>
+      {#if updating && p}
+        <p class="hint">{stageText(p)}{p.note ? ` ${p.note}` : ""}</p>
+      {:else}
+        <div class="row-actions">
+          <button on:click={restartNow}>Restart now</button>
+          {#if notice}<button class="ghost" on:click={() => appUpdateLater.set(true)}>Later</button>{/if}
+        </div>
+      {/if}
+      {#if startError}<p class="soft-error">{startError}</p>{/if}
+    {:else if c?.available}
       <p><strong>FreeBank {c.latest} is out.</strong>{notice ? ` You have ${c.current}.` : ""}</p>
       {#if updating && p}
         <p class="hint">
@@ -104,6 +138,28 @@
       </div>
     {/if}
 
+    {#if !notice && a}
+      <label class="check-row">
+        <input type="checkbox" checked={a.on} disabled={!a.can && !a.on} on:change={(e) => toggleAuto(e.currentTarget.checked)} />
+        Update FreeBank by itself
+      </label>
+      <p class="hint">
+        {#if a.can}
+          Off unless you turn it on. When on, FreeBank fetches a new signed version in the background (also while its
+          window is closed, if it keeps your phone connected), checks it, and puts it in place; it runs the next time
+          you open FreeBank.
+        {:else}
+          This copy of FreeBank can't replace itself (only the Mac app in your Applications folder and the AppImage
+          can), so this does nothing here.
+        {/if}
+      </p>
+      {#if a.on && a.failed}
+        <p class="soft-error">The automatic update to {a.failed.version} didn't go ahead: {a.failed.reason} It isn't
+          tried again by itself until a newer version is out; "Update and restart" tries it now.</p>
+      {/if}
+      {#if autoError}<p class="soft-error">{autoError}</p>{/if}
+    {/if}
+
     {#if !notice}<AptOffer />{/if}
 
     {#if !notice}
@@ -122,5 +178,18 @@
   }
   .app-update p {
     margin: 0 0 8px;
+  }
+  /* As KeepRunning's switch row. */
+  .check-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 10px 0 6px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .check-row input {
+    margin-top: 3px;
+    flex: none;
   }
 </style>

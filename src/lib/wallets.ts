@@ -9,7 +9,7 @@ export interface WalletView {
   name: string | null;
   label: string;
   kind: "main" | "words" | "file";
-  /** ECX; null when the node didn't answer. */
+  /** sECX; null when the node didn't answer. */
   balance: number | null;
   encrypted: boolean | null;
   active: boolean;

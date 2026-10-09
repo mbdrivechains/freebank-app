@@ -24,7 +24,7 @@
   import Notice from "./Notice.svelte";
   import { lockHexFrom, parseKeysetFile, saveFloat, savedFloat, type MintKeyset } from "../lib/tokenhouse";
 
-  /** The wallet's spendable ECX, sats (for "you need coins first"). */
+  /** The wallet's spendable sECX, sats (for "you need coins first"). */
   export let balance = 0;
   /** The node's block height (bills' maturity in days). */
   export let height = 0;
@@ -97,9 +97,9 @@
     return a.length > 20 ? `${a.slice(0, 10)}…${a.slice(-6)}` : a;
   }
 
-  // Everything is shown and entered in ECX (D-2026-09-29-5 and -7: no grams until gold is switched
-  // on). Note units are base-native, 1 unit = 1 sat of ECX, so a note amount is an ECX amount, and
-  // this shows "= 50,000,000 units" under an ECX field once it holds a valid amount.
+  // Everything is shown and entered in sECX (D-2026-09-29-5 and -7: no grams until gold is switched
+  // on). Note units are base-native, 1 unit = 1 sat of sECX, so a note amount is an sECX amount, and
+  // this shows "= 50,000,000 units" under an sECX field once it holds a valid amount.
   function unitsEcho(v: string | number): string {
     const u = parseEcx(v);
     return u === null ? "" : `= ${u.toLocaleString()} units`;
@@ -502,7 +502,7 @@
     regBusy = false;
   }
 
-  // Pools (M3): note ⇄ ECX AMM
+  // Pools (M3): note ⇄ sECX AMM
   let pools: Pool[] = [];
   let myLp: LpHolding[] = [];
   let poolsLoading = false;
@@ -522,7 +522,7 @@
 
   function price(p: Pool): string {
     // The node leaves the spot price out while a pool side is empty. Both sides count in sats
-    // (1 note unit = 1 sat), so sats per unit is ECX paid per ECX of notes.
+    // (1 note unit = 1 sat), so sats per unit is sECX paid per sECX of notes.
     if (p.spot_price_sats_x1e8 == null) return "no price yet";
     return `${(p.spot_price_sats_x1e8 / 1e8).toFixed(6)} ${BASE_TICKER} per ${BASE_TICKER} of notes`;
   }
@@ -920,7 +920,7 @@
           <div class="empty">
             <p>{syncing ? "Your node is still catching up; houses show once it has." : "No houses on this network yet."}</p>
             <p class="muted small">
-              {balance > 0 ? "You can charter the first one below." : `Chartering one takes a reserve in ECX. ${NEED_COINS}`}
+              {balance > 0 ? "You can charter the first one below." : `Chartering one takes a reserve in sECX. ${NEED_COINS}`}
             </p>
           </div>
         {:else}
@@ -940,7 +940,7 @@
                 {#if h.mintedunits > 0}
                   <div><span class="stat-label">Reserves against notes</span> {pct(h.attestedratiobps)}</div>
                 {/if}
-                <div><span class="stat-label">Last attested</span> {h.lastattestheight > 0 ? `block ${h.lastattestheight} · ${h.lastattestreserves} ECX` : "never"}</div>
+                <div><span class="stat-label">Last attested</span> {h.lastattestheight > 0 ? `block ${h.lastattestheight} · ${h.lastattestreserves} sECX` : "never"}</div>
               </div>
               {#if h.mintcapunits > 0}
                 <div class="util-bar"><div class="util-fill" style="width:{util(h)}%"></div></div>
@@ -1010,11 +1010,11 @@
             <input type="text" bind:value={regName} placeholder="e.g. clyde — a–z 0–9, ≤16 chars" />
           </label>
           <label>
-            Tier (0–3): a higher tier may issue more notes for each ECX of reserve
+            Tier (0–3): a higher tier may issue more notes for each sECX of reserve
             <input type="number" bind:value={regTier} min="0" max="3" />
           </label>
           <label>
-            Pledged reserve (ECX)
+            Pledged reserve (sECX)
             <input type="number" bind:value={regEscrow} placeholder="e.g. 1.0" step="0.00000001" />
           </label>
           <label>
@@ -1174,7 +1174,7 @@
       </div>
       </details>
     {:else if seg === "pools"}
-      <!-- Pools (M3): notes ⇄ ECX, a constant-product pool -->
+      <!-- Pools (M3): notes ⇄ sECX, a constant-product pool -->
       {#if locked.lp}
         <div class="card locked-read">
           <p>Your wallet is locked: this node lists notes, pool shares and bills only while it's unlocked.</p>
@@ -1445,7 +1445,7 @@
           <button on:click={doIssueBill} disabled={billBusy || !billAmount || !billEscrow || balance === 0}>
             {billBusy ? "…" : "Issue bill"}
           </button>
-          {#if balance === 0}<p class="blocked-why">Issuing a bill takes a bond in ECX. {NEED_COINS}</p>{/if}
+          {#if balance === 0}<p class="blocked-why">Issuing a bill takes a bond in sECX. {NEED_COINS}</p>{/if}
         </div>
       </div>
       </details>

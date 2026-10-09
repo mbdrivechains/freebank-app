@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// The public relay; it also serves the phone page at https://app.ecxfreebank.com/. Settings can
 /// point a desktop at another (ws:// only for local testing).
 pub const DEFAULT_RELAY: &str = "wss://app.ecxfreebank.com/ws";
-/// 0.1 ECX
+/// 0.1 sECX
 pub const DEFAULT_LIMIT_SATS: u64 = 10_000_000;
 pub const SATS: f64 = 100_000_000.0;
 pub const MAX_ECX: f64 = 21_000_000.0;
@@ -33,7 +33,7 @@ pub fn day_text(unix: u64) -> String {
     crate::send::iso_utc(unix as i64).chars().take(10).collect()
 }
 
-/// ECX (a JSON number) to sats, refusing anything that isn't a sane positive amount.
+/// sECX (a JSON number) to sats, refusing anything that isn't a sane positive amount.
 pub fn to_sats(ecx: f64) -> Result<u64, String> {
     if !ecx.is_finite() || ecx < 0.0 || ecx > MAX_ECX {
         return Err("amount out of range".into());
@@ -41,16 +41,16 @@ pub fn to_sats(ecx: f64) -> Result<u64, String> {
     Ok((ecx * SATS).round() as u64)
 }
 
-/// An ECX amount from the phone (a JSON number, up to 8 decimals, `1e-8` included) to sats,
+/// An sECX amount from the phone (a JSON number, up to 8 decimals, `1e-8` included) to sats,
 /// exactly: parsed from the number's decimal text, not by float rounding. More than 8 decimals,
-/// negative or over 21 million ECX is refused.
+/// negative or over 21 million sECX is refused.
 pub fn json_to_sats(v: &serde_json::Value) -> Result<u64, String> {
     let n = v.as_number().ok_or("amount must be a number")?;
     decimal_to_sats(&n.to_string())
 }
 
 pub fn decimal_to_sats(s: &str) -> Result<u64, String> {
-    let bad = || "amount must be a number of ECX with at most 8 decimals".to_string();
+    let bad = || "amount must be a number of sECX with at most 8 decimals".to_string();
     let s = s.trim();
     if s.starts_with('-') {
         return Err("amount out of range".into());
@@ -63,7 +63,7 @@ pub fn decimal_to_sats(s: &str) -> Result<u64, String> {
     if int.is_empty() && frac.is_empty() || !int.chars().chain(frac.chars()).all(|c| c.is_ascii_digit()) {
         return Err(bad());
     }
-    // digits × 10^(exp - frac.len()) ECX = digits × 10^(exp - frac.len() + 8) sats. Checked: the exponent is the
+    // digits × 10^(exp - frac.len()) sECX = digits × 10^(exp - frac.len() + 8) sats. Checked: the exponent is the
     // sender's text.
     let digits = format!("{int}{frac}");
     let digits = digits.trim_start_matches('0');

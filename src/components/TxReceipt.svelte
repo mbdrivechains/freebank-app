@@ -4,7 +4,7 @@
   // Unconfirmed, then 1, 2 and 3 confirmations (Confirmed), each with its block's height and the time
   // since sending. It asks gettransaction on each new block ($tip) and stops once confirmed.
   //
-  //   <TxReceipt {txid} what="Sent 1.5 ECX to X…" rows={[{ label: "Fee", value: "0.00000226 ECX" }]}
+  //   <TxReceipt {txid} what="Sent 1.5 sECX to X…" rows={[{ label: "Fee", value: "0.00000226 sECX" }]}
   //       on:close={…} on:status={(e) => …}>
   //     <svelte:fragment slot="rows">…more <div><dt>…</dt><dd>…</dd></div>…</svelte:fragment>
   //     <svelte:fragment slot="actions" let:confirmed let:replaced>

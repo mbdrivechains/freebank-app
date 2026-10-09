@@ -186,7 +186,7 @@ async fn invite_join_pay_move_and_delete() {
     // Joining: one member change, signed with the phone-send passphrase; ready once the member list says active.
     until(&h, "the member change", |h| !h.rpc.params_of("addhousemembers").is_empty()).await;
     assert_eq!(h.rpc.params_of("addhousemembers")[0], vec![json!(5), json!([member]), json!(real::MEMBER_FEE)]);
-    // And a little ECX for its payments' fees, from the desktop's wallet in the same unlock (found in the real run).
+    // And a little sECX for its payments' fees, from the desktop's wallet in the same unlock (found in the real run).
     assert_eq!(h.rpc.sends(), vec![vec![json!(member), json!(real::FEE_FLOAT)]]);
     until(&h, "the float recorded", |h| h.phone.store.load_hosted().phones[0].float_txid.is_some()).await;
     assert!(!h.rpc.unlocked(), "the desktop's wallet locked again");
@@ -214,7 +214,7 @@ async fn invite_join_pay_move_and_delete() {
     assert_eq!(h.rpc.hosted.lock().unwrap()[&wallet].unlocked_until, 0);
 
     // Moving home to fresh words (Michael, 2026-10-05): his own computer's address (here TO) joins the house, the notes
-    // go, then the ECX; done when the wallet holds nothing. Its own address, or a non-address, is refused.
+    // go, then the sECX; done when the wallet holds nothing. Its own address, or a non-address, is refused.
     let a = auth(&mut h, &mut shop, 3, 40, &sfid, "change").await;
     let r = ask(&mut h, &mut shop, 3, 41, "move-home", json!({"address": member, "auth": a})).await;
     assert!(r["err"].as_str().unwrap().contains("own"), "{r}");
@@ -383,7 +383,7 @@ async fn two_phones_at_most_wait_on_one_invite_and_each_card_says_so() {
 
 #[tokio::test]
 async fn a_move_without_fee_money_stops_after_a_few_top_ups() {
-    // The re-review of v0.2.8, N1: a move can't loop for ever. With no ECX for the notes' fee, the house tops up three
+    // The re-review of v0.2.8, N1: a move can't loop for ever. With no sECX for the notes' fee, the house tops up three
     // times, then the move fails with why, and the desktop can try again.
     let h = harness(None);
     let hid = "stuck000000000000".to_string();
@@ -409,7 +409,7 @@ async fn a_move_without_fee_money_stops_after_a_few_top_ups() {
     until(&h, "failed", |h| step(h) == Step::Failed).await;
     let l = h.phone.store.load_hosted().phones;
     assert_eq!(l[0].move_topups, real::MOVE_TOPUPS);
-    assert!(l[0].why.as_deref().unwrap().contains("no ECX"), "{:?}", l[0].why);
+    assert!(l[0].why.as_deref().unwrap().contains("no sECX"), "{:?}", l[0].why);
     assert_eq!(h.rpc.sends().len(), real::MOVE_TOPUPS as usize, "three top-ups to the member address");
     assert!(h.rpc.params_of(&format!("{wallet}/transfernote")).is_empty());
 }

@@ -269,6 +269,20 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
     let link = tokio::spawn(link::run(phone.clone(), out));
     tokio::spawn(phone.clone().expire_forever());
     tokio::spawn(phone.clone().resume_hosted());
+    // Automatic updates (v0.4.2, opt in): the background part takes rounds too, so a copy whose window stays closed
+    // still gets them. A lock file keeps it and the app from both going ahead.
+    {
+        let m = mgr.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(crate::app_update::AUTO_FIRST).await;
+            loop {
+                let g = m.clone();
+                let progress = std::sync::Mutex::new(crate::app_update::Progress::default());
+                crate::app_update::auto_round(&m.app_dir, &m.http, &progress, &move || g.still_here()).await;
+                tokio::time::sleep(crate::app_update::AUTO_EVERY).await;
+            }
+        });
+    }
     // Until stopped, or until the app takes the relay room back (the link ends then, L1).
     tokio::select! {
         _ = stopped() => {}

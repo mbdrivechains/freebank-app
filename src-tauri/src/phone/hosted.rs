@@ -31,19 +31,19 @@ pub const ASKS_PER_INVITE: usize = 2;
 pub const PREFIX: &str = "h:";
 /// The fee for joining the house (`addhousemembers`).
 pub const MEMBER_FEE: f64 = 0.001;
-/// ECX the house's desktop gives a new hosted wallet for its payments' fees: a note payment needs its fee (0.001) and
+/// sECX the house's desktop gives a new hosted wallet for its payments' fees: a note payment needs its fee (0.001) and
 /// small carrier outputs, which a wallet holding only notes can't fund (found in the end-to-end run on a real node:
 /// "Could not fund the transfer dust + fee!"). About nine note payments.
 pub const FEE_FLOAT: f64 = 0.01;
-/// The node's words when a wallet has no ECX for a note payment's fee and carriers.
+/// The node's words when a wallet has no sECX for a note payment's fee and carriers.
 const NO_FEE_MONEY: &str = "Could not fund";
 pub const ERR_NO_FEE_MONEY: &str =
-    "Your wallet has no ECX left for this payment's fee. Ask your house for a little ECX: it pays the fees of note payments.";
+    "Your wallet has no sECX left for this payment's fee. Ask your house for a little sECX: it pays the fees of note payments.";
 /// How often joining looks again (the member change waits for a block).
 pub const JOIN_RETRY_SECS: u64 = 20;
-/// Moving home: a note payment's fee and carriers need about this much ECX in the hosted wallet.
+/// Moving home: a note payment's fee and carriers need about this much sECX in the hosted wallet.
 pub const MOVE_FEE_NEED: f64 = 0.0015;
-/// ECX left below this after the notes have gone counts as nothing (a send would cost more than it moves).
+/// sECX left below this after the notes have gone counts as nothing (a send would cost more than it moves).
 pub const MOVE_DUST: f64 = 0.0001;
 /// At most this many fee top-ups from the house per move, and this many refusals in a row before it stops.
 pub const MOVE_TOPUPS: u32 = 3;
@@ -938,7 +938,7 @@ impl Phone {
 
     /// Moving home (fresh words; Michael, 2026-10-05): add the shopkeeper's own computer's address to the house, then
     /// send it each house's notes (or redeem those it can't take), one at a time, each confirmed before the next, then
-    /// the rest of the ECX. Then `moved`, and this keeps watching the old copy: money that reaches it later (a customer
+    /// the rest of the sECX. Then `moved`, and this keeps watching the old copy: money that reaches it later (a customer
     /// using the shop's old QR code) is sent on, and the old address is taken off the house (the re-review of v0.2.8,
     /// N2). One loop per hosted wallet.
     pub(super) async fn move_home(self: Arc<Self>, hid: String) {
@@ -1008,7 +1008,7 @@ impl Phone {
         MOVED_WATCH_SECS
     }
 
-    /// Whether the hosted wallet holds anything that could move: ECX over dust (confirmed or not), or notes of a house
+    /// Whether the hosted wallet holds anything that could move: sECX over dust (confirmed or not), or notes of a house
     /// not given up on. None when the node doesn't answer.
     async fn holds_anything(&self, w: &str, skip: &[u64]) -> Option<bool> {
         let balance = self.rpc.call_in(w, "getbalance", vec![]).await.ok()?.as_f64()?;
@@ -1058,7 +1058,7 @@ impl Phone {
             return Ok(false);
         }
         // 3. Each house's notes, one house at a time: sent where his address may hold them (this house, open houses,
-        //    another members-only house he belongs to), redeemed for ECX where it may not (a redeem-only house, or one
+        //    another members-only house he belongs to), redeemed for sECX where it may not (a redeem-only house, or one
         //    he isn't a member of), and left here, said, when neither works (the re-review of v0.2.8, N1).
         let notes = self.rpc.call_in(w, "listmynotes", vec![]).await.map_err(|_| JOIN_RETRY_SECS)?;
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
@@ -1085,7 +1085,7 @@ impl Phone {
                 });
                 return Ok(false);
             }
-            // The fee first: a note payment needs some ECX, which the house tops up a few times at most.
+            // The fee first: a note payment needs some sECX, which the house tops up a few times at most.
             if balance < MOVE_FEE_NEED {
                 return self.top_up(hid, h).await;
             }
@@ -1093,12 +1093,12 @@ impl Phone {
                 why("Sending your notes to your computer.");
                 return self.move_send(hid, h, "transfernote", vec![json!(house), json!(units), json!(NOTE_FEE), json!(to)]).await;
             }
-            why("Redeeming notes your computer can't hold; their ECX follows.");
+            why("Redeeming notes your computer can't hold; their sECX follows.");
             return self.move_send(hid, h, "redeemnote", vec![json!(house), json!(units), json!(NOTE_FEE)]).await;
         }
-        // 4. Then the ECX: dust counts as nothing.
+        // 4. Then the sECX: dust counts as nothing.
         if balance > MOVE_DUST {
-            why("Sending your ECX to your computer.");
+            why("Sending your sECX to your computer.");
             return self.move_send(hid, h, "sendtoaddress", vec![json!(to), json!(balance), json!(""), json!(""), json!(true)]).await;
         }
         Ok(true)
@@ -1107,7 +1107,7 @@ impl Phone {
     /// The house sends the hosted wallet a fee float again, for the move's next note payment; a few times at most.
     async fn top_up(&self, hid: &str, h: &HostedPhone) -> Result<bool, u64> {
         if h.move_topups >= MOVE_TOPUPS {
-            self.set_step(hid, Step::Failed, Some("There's no ECX left for the move's fees.".into()));
+            self.set_step(hid, Step::Failed, Some("There's no sECX left for the move's fees.".into()));
             return Err(JOIN_RETRY_SECS);
         }
         let member = h.member.clone().ok_or(300u64)?;
@@ -1128,7 +1128,7 @@ impl Phone {
                     x.move_topups += 1;
                     x.move_txid = Some(txid);
                     x.move_at = Some(now);
-                    x.why = Some("The house is adding ECX for the move's fees.".into());
+                    x.why = Some("The house is adding sECX for the move's fees.".into());
                 });
                 Ok(false)
             }

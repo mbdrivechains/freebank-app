@@ -21,7 +21,7 @@ export interface NettingPart {
 
 export interface NettingNet {
   house: number;
-  /** In note units (1 ECX = 100000000): above zero, the house is owed; below, it owes. */
+  /** In note units (1 sECX = 100000000): above zero, the house is owed; below, it owes. */
   net: number;
   receives: number;
   pays: number;

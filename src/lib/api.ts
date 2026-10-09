@@ -12,7 +12,7 @@ export interface NettingAnswer {
   txids?: string[];
   /** This house's net, in note units. */
   net?: number;
-  /** What this house's coins pay, in ECX (its net debt, and the fee if it started the round). */
+  /** What this house's coins pay, in sECX (its net debt, and the fee if it started the round). */
   pays?: number;
   fee?: number;
   expiryheight?: number;
@@ -73,10 +73,10 @@ export interface House {
   effective_status: string; // consensus-operative status at the tip: open/stressed/deferred/insolvent/wounddown
   mintedunits: number;      // outstanding note liabilities (units, 1 = 1 sat)
   mintcapunits: number;     // max mintable given reserves
-  activeescrow: number;     // pledged reserve (ECX)
+  activeescrow: number;     // pledged reserve (sECX)
   attestedratiobps: number; // last attested reserve ratio (basis points)
   lastattestheight: number;
-  lastattestreserves: number; // ECX
+  lastattestreserves: number; // sECX
   denominationmggold: number; // unit-of-account label (mg gold); inert in v1
   defer_interest_bps?: number; // node v0.2.18: the yearly rate on demands queued while suspended (1000 = 10%)
   type?: HouseType;            // node v0.2.19 (absent before: open)
@@ -99,13 +99,13 @@ export interface HouseMember {
   active: boolean;
 }
 
-// A constant-product AMM pool: house notes on one side, base ECX on the other.
+// A constant-product AMM pool: house notes on one side, base sECX on the other.
 export interface Pool {
   pool_id: number;              // the house id this pool trades notes for
   house_id: number;
   fee_bps: number;              // swap fee (basis points)
   note_reserve: number;         // note units held by the pool
-  btx_reserve: number;          // base ECX held by the pool (sats)
+  btx_reserve: number;          // base sECX held by the pool (sats)
   lp_supply: number;            // total LP units outstanding
   locked_lp: number;            // permanently-locked LP units (bootstrap dust)
   spot_price_sats_x1e8: number; // marginal price, sats per note unit × 1e8
@@ -119,7 +119,7 @@ export interface LpHolding {
   lp_supply: number;     // total LP units outstanding
   share_bps: number;     // this wallet's pool share (basis points)
   my_note_units: number; // note units redeemable for lp_units at current reserves
-  my_btx_sats: number;   // base ECX (sats) redeemable for lp_units at current reserves
+  my_btx_sats: number;   // base sECX (sats) redeemable for lp_units at current reserves
   note_reserve: number;
   btx_reserve: number;
   fee_bps: number;
@@ -130,8 +130,8 @@ export interface LpHolding {
 export interface Bill {
   id: number;
   bill_id: string;
-  amount: number;        // face amount (ECX)
-  escrow: number;        // acceptor's escrow bond (ECX)
+  amount: number;        // face amount (sECX)
+  escrow: number;        // acceptor's escrow bond (sECX)
   status: string;        // a / r / d / x
   issued_height: number;
   maturity_height: number;
@@ -307,7 +307,7 @@ export const api = {
     }
   },
 
-  /** Send ECX to address: the browser build only. The desktop sends through send_prepare and send_confirm, which
+  /** Send sECX to address: the browser build only. The desktop sends through send_prepare and send_confirm, which
    * "Approve sends on my phone" guards (it has no plain sendtoaddress command since v0.2.5). */
   async sendTransaction(address: string, amount: number): Promise<string> {
     if (isTauri) throw new Error('The desktop sends through Send.');
@@ -405,7 +405,7 @@ export const api = {
     return r.txid;
   },
 
-  /** Redeem notes for base ECX 1:1 from the house reserves */
+  /** Redeem notes for base sECX 1:1 from the house reserves */
   async redeemNote(houseId: number, units: number, fee = 0.001): Promise<string> {
     const r = (await fbCall('redeemnote', [houseId, units, fee])) as { txid: string };
     return r.txid;
@@ -424,7 +424,7 @@ export const api = {
     return fbCall('listhouses') as Promise<House[]>;
   },
 
-  /** Charter a new note-issuing house. escrowEcx = pledged reserve (ECX); solo by default. */
+  /** Charter a new note-issuing house. escrowEcx = pledged reserve (sECX); solo by default. */
   async registerHouse(
     classid: string,
     tier: number,
@@ -517,9 +517,9 @@ export const api = {
     return fbCall('decodenetting', [round]) as Promise<NettingRound>;
   },
 
-  // ---- FreeBank pools (M3): note ⇄ ECX AMM ----
+  // ---- FreeBank pools (M3): note ⇄ sECX AMM ----
 
-  /** The pool directory — every note/ECX constant-product pool, with reserves and spot price */
+  /** The pool directory — every note/sECX constant-product pool, with reserves and spot price */
   async listPools(): Promise<Pool[]> {
     return fbCall('listpools') as Promise<Pool[]>;
   },
@@ -541,13 +541,13 @@ export const api = {
     return r.txid;
   },
 
-  /** Seed a new pool for a house (pool id = house id): initial note units + base ECX sats + fee bps */
+  /** Seed a new pool for a house (pool id = house id): initial note units + base sECX sats + fee bps */
   async createPool(poolId: number, noteUnits: number, btxSats: number, feeBps: number, fee = 0.001): Promise<string> {
     const r = (await fbCall('createpool', [poolId, noteUnits, btxSats, feeBps, fee])) as { txid: string };
     return r.txid;
   },
 
-  /** Add liquidity to an existing pool: note units + base ECX sats (deposited pro-rata) */
+  /** Add liquidity to an existing pool: note units + base sECX sats (deposited pro-rata) */
   async addLiquidity(poolId: number, noteUnits: number, btxSats: number, fee = 0.001): Promise<string> {
     const r = (await fbCall('addpoolliquidity', [poolId, noteUnits, btxSats, fee])) as { txid: string };
     return r.txid;

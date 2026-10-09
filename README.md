@@ -97,7 +97,7 @@ Four tabs: **Home** (balance, Send, Receive, Deposit, Withdraw), **Credit** (not
 bidding) and **Node**, with Settings behind the gear.
 
 - Connect to a `freebankd` node via RPC (local / Tailscale / custom)
-- Balance and every amount in **ECX**, the only unit while gold is switched off; transaction
+- Balance and every amount in **sECX** (ECX on FreeBank; ECX is the eCash chain's coin), the only unit while gold is switched off; transaction
   history
 - **Send** with Max, a speed choice and the fee shown before you confirm; a receipt with the transaction id and its
   confirmations up to 3; **Speed up** while a payment waits; **History** with CSV export
@@ -106,7 +106,7 @@ bidding) and **Node**, with Settings behind the gear.
   each for the block that credits it), with Max and the deposits in flight; or from another eCash wallet (BitWindow)
 - **Withdraw** (v0.3.0): at par through the peg, to the app's eCash wallet or a pasted address, behind a warning
   (months on mainnet; probably never on the beta), cancellable until it joins a bundle
-- **Money changer** (v0.3.0, Settings › Node & connection): sell FreeBank ECX for eCash fast, or buy it below par,
+- **Money changer** (v0.3.0, Settings › Node & connection): sell sECX for ECX fast, or buy it below par,
   from a changer whose signed quotes the app checks against its pinned key; you trust it with one order at a time
 - **Wallet** (Settings): passphrase, recovery words, back up, restore from a file or from the words, change
   passphrase; your wallets (more from the same words, or a wallet file), with a switcher in the header
@@ -121,9 +121,11 @@ bidding) and **Node**, with Settings behind the gear.
   members (node v0.2.19)
 - **Tokens: your house's mint** — record its keyset on chain and approve the batch locks it makes, with the house's
   keys kept here (node v0.2.21; the mint runs on its own server)
+- **Automatic updates, opt in** — Settings › App updates: a signed release fetched, checked and put in place by itself;
+  it runs from the next start
 - **Settle with other houses: netting** — the Edinburgh exchange: start or join a round, see each house's net, fund,
   sign; only the nets are paid, at par (node v0.2.22)
-- **Clearing pools** — swap notes ↔ ECX, add/remove liquidity, LP positions
+- **Clearing pools** — swap notes ↔ sECX, add/remove liquidity, LP positions
 - **Bills of exchange** — issue / endorse / retire / claim escrow
 - **eCash wallet** — receive, send, history; move coins into the bidding wallet and back, each with its fee shown
 - **Bid for FreeBank blocks** — off unless you turn it on: a bid on each eCash block from the bidding wallet, up to a

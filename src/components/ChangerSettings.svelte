@@ -42,7 +42,7 @@
 <div class="card" data-testid="changer-settings">
   <h3>Money changer</h3>
   <p class="muted small">
-    A changer sells you FreeBank ECX for eCash, or buys it, in a few blocks, from a float it keeps. You trust it with one
+    A changer sells you sECX for ECX, or buys it, in a few blocks, from a float it keeps. You trust it with one
     order at a time. FreeBank takes only quotes signed with the key here. Leave both empty for none.
   </p>
   <form class="form" on:submit|preventDefault={save}>

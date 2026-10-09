@@ -4,12 +4,13 @@
 export const APP_NAME = "FreeBank";
 export const APP_TAGLINE = "Free-banking on a Bitcoin drivechain";
 
-// Base reserve coin. FreeBank v1 is base-native 1:1 — canonical model: unit = reserve = ECX
-// ("the hardest money possible"). Notes issued by discount houses are denominated in
-// abstract "units"; the base chain coin is ECX.
-// NOTE: freebankd still reports CURRENCY_UNIT="SC1" (unrebranded sidechain-template debt, fee
-// display only). The display ticker is intentionally ECX; change BASE_TICKER here if that moves.
-export const BASE_TICKER = "ECX";
+// Base reserve coin. FreeBank v1 is base-native 1:1: a note unit is a sat of the base coin, and the base coin is sECX,
+// the eCash chain's ECX brought onto FreeBank through the peg (D-2026-10-09-2: ECX on L1, sECX on FreeBank or any
+// sidechain; gateway docs/TERMINOLOGY.md). Notes issued by discount houses are counted in "units".
+// NOTE: freebankd still reports CURRENCY_UNIT="SC1" (sidechain-template debt, fee display only).
+export const BASE_TICKER = "sECX";
+// The eCash chain's coin (L1).
+export const L1_TICKER = "ECX";
 export const NOTE_UNIT = "units";
 
 // The public explorer (beta). Receipts link a transaction as `${EXPLORER_URL}/tx/<txid>`.

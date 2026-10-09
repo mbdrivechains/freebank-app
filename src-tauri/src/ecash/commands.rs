@@ -247,7 +247,7 @@ fn parse_amount(amount: &Option<String>) -> Result<Option<u64>, String> {
         None | Some("") => Ok(None),
         Some(a) => crate::phone::store::decimal_to_sats(a)
             .map(Some)
-            .map_err(|_| "Enter the amount as a number of eCash, with at most 8 decimals.".into()),
+            .map_err(|_| "Enter the amount as a number of ECX, with at most 8 decimals.".into()),
     }
 }
 
@@ -279,9 +279,9 @@ pub async fn ecash_send_prepare(
 /// What a phone is asked to approve for a payment from the main eCash wallet.
 pub(crate) fn approve_text(to_bids: bool, sats: u64, address: &str) -> String {
     if to_bids {
-        format!("Move {} eCash into the bidding wallet ({})", to_coins(sats), address)
+        format!("Move {} ECX into the bidding wallet ({})", to_coins(sats), address)
     } else {
-        format!("Send {} eCash to {}", to_coins(sats), address)
+        format!("Send {} ECX to {}", to_coins(sats), address)
     }
 }
 
@@ -422,9 +422,9 @@ pub async fn bmm_status(mgr: State<'_, Arc<NodeManager>>) -> Result<BmmView, Str
 /// Bidding on or off, the bid and the daily cap (eCash amounts as typed). Turning it on needs the eCash wallets.
 #[tauri::command]
 pub async fn bmm_set(mgr: State<'_, Arc<NodeManager>>, on: bool, bid: String, daily_cap: String) -> Result<BmmView, String> {
-    let bid = crate::phone::store::decimal_to_sats(bid.trim()).map_err(|_| "Enter the bid in eCash, with at most 8 decimals.")?;
+    let bid = crate::phone::store::decimal_to_sats(bid.trim()).map_err(|_| "Enter the bid in ECX, with at most 8 decimals.")?;
     let cap =
-        crate::phone::store::decimal_to_sats(daily_cap.trim()).map_err(|_| "Enter the daily cap in eCash, with at most 8 decimals.")?;
+        crate::phone::store::decimal_to_sats(daily_cap.trim()).map_err(|_| "Enter the daily cap in ECX, with at most 8 decimals.")?;
     if bid == 0 {
         return Err("The bid must be above zero.".into());
     }
@@ -560,7 +560,7 @@ pub async fn deposit_prepare(
         deposit::build(&ctip, &address, sats, &coins, rate, &change)?
     };
     if built.fee > wallet::MAX_FEE {
-        return Err(format!("The fee would be {} eCash, more than FreeBank allows. Nothing was done.", to_coins(built.fee)));
+        return Err(format!("The fee would be {} ECX, more than FreeBank allows. Nothing was done.", to_coins(built.fee)));
     }
     let sats = built.deposit;
     let fee = built.fee;
@@ -607,7 +607,7 @@ pub async fn deposit_confirm(
     let guard = phone.guard(&mgr.app_dir)?.filter(|ph| ph.approve_over().is_some());
     let cleared = match guard {
         Some(ph) => Some(
-            ph.clear_desktop(total, Approve::Action { text: format!("Deposit {} eCash into FreeBank", to_coins(p.sats)), sats: Some(total) })
+            ph.clear_desktop(total, Approve::Action { text: format!("Deposit {} ECX into FreeBank", to_coins(p.sats)), sats: Some(total) })
                 .await?,
         ),
         None => None,

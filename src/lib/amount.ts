@@ -1,9 +1,9 @@
-// Amounts in ECX, the app's only unit (operator's decisions D-2026-09-29-5 and -7: no grams until gold is
-// switched on). Note units are base-native, 1 unit = 1 sat of ECX, so the same helpers serve notes too.
+// Amounts in sECX, the app's only unit (operator's decisions D-2026-09-29-5 and -7: no grams until gold is
+// switched on). Note units are base-native, 1 unit = 1 sat of sECX, so the same helpers serve notes too.
 
 export const SATS_PER_ECX = 100_000_000;
 
-/** An amount typed in ECX ("1.5", or the number an <input type="number"> binds) as whole sats.
+/** An amount typed in sECX ("1.5", or the number an <input type="number"> binds) as whole sats.
  *  null unless it is a plain decimal above zero with at most 8 decimal places. */
 export function parseEcx(v: string | number | null | undefined): number | null {
   if (v === null || v === undefined) return null;
@@ -20,7 +20,7 @@ export function parseEcx(v: string | number | null | undefined): number | null {
   return Number.isSafeInteger(sats) && sats > 0 ? sats : null;
 }
 
-/** Whole sats as ECX with 8 decimals: 150000000 → "1.50000000". */
+/** Whole sats as sECX with 8 decimals: 150000000 → "1.50000000". */
 export function fmtEcx(sats: number): string {
   const neg = sats < 0;
   const s = Math.round(Math.abs(sats));
@@ -36,4 +36,4 @@ export function ecxInput(sats: number): string {
 }
 
 /** The message for an amount parseEcx refused. */
-export const ECX_PROBLEM = "Enter an amount in ECX above zero, with at most 8 decimal places.";
+export const ECX_PROBLEM = "Enter an amount in sECX above zero, with at most 8 decimal places.";

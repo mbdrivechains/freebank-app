@@ -1,5 +1,5 @@
 // The eCash tab (v0.2.6): the app's own eCash wallets in the eCash node (src-tauri/src/ecash/). Amounts are sats;
-// eCash and ECX are at par, so the ECX helpers in amount.ts format and parse them too.
+// ECX and sECX are at par, so the sECX helpers in amount.ts format and parse them too.
 
 import { tauriInvoke } from "./api";
 
@@ -80,7 +80,7 @@ export interface BmmStatus {
 }
 
 export const bmmStatus = () => tauriInvoke("bmm_status") as Promise<BmmStatus>;
-/** Amounts in eCash as typed. */
+/** Amounts in ECX as typed. */
 export const bmmSet = (on: boolean, bid: string, dailyCap: string) =>
   tauriInvoke("bmm_set", { on, bid, dailyCap }) as Promise<BmmStatus>;
 

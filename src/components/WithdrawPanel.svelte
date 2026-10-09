@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Home, Withdraw (v0.3.0 "In and out"; gateway/docs/distribution/CASH_OUT_DESIGN.md §3.3): FreeBank ECX back to eCash
+  // Home, Withdraw (v0.3.0 "In and out"; gateway/docs/distribution/CASH_OUT_DESIGN.md §3.3): FreeBank sECX back to eCash
   // through the peg, at par. Trustless but very slow, so a warning screen comes before it (Michael, 2026-09-29,
   // walkthrough 8: "if they choose it they wait."), with Cancel first. To a fresh address of the app's own eCash
   // wallet, or a pasted one with the lookalike warning. A withdrawal can be cancelled while it waits for a bundle.
@@ -28,10 +28,10 @@
   } from "../lib/inout";
   import { withUnlock } from "../lib/wallet";
 
-  /** The FreeBank balance, ECX (App.svelte's number in coins). */
+  /** The FreeBank balance, sECX (App.svelte's number in coins). */
   export let balance: number | null = null;
 
-  const ecx = (sats: number) => `${fmtEcx(sats)} ECX`;
+  const ecx = (sats: number) => `${fmtEcx(sats)} sECX`;
 
   let amount = "";
   let toOwn = true;
@@ -89,7 +89,7 @@
     error = "";
     done = "";
     if (parseEcx(amount) === null) {
-      error = "Enter an amount in ECX above zero, with at most 8 decimal places.";
+      error = "Enter an amount in sECX above zero, with at most 8 decimal places.";
       return;
     }
     if (!toOwn && !pasted.trim()) {
@@ -124,7 +124,7 @@
     try {
       const id = cq.id;
       await withUnlock(() => changerPay(id, null), { what: "pay the changer" });
-      done = `${ecx(cq.amount)} paid to the changer. It pays ${fmtEcx(cq.payout)} eCash once your payment is in a FreeBank block.`;
+      done = `${ecx(cq.amount)} paid to the changer. It pays ${fmtEcx(cq.payout)} ECX once your payment is in a FreeBank block.`;
       quote = null;
       cq = null;
       amount = "";
@@ -181,7 +181,7 @@
     </p>
     {#if done}<p class="hint ok-note">{done}</p>{/if}
     <form class="field" on:submit|preventDefault={prepare}>
-      <label class="field-label" for="wd-amount">Amount (ECX)</label>
+      <label class="field-label" for="wd-amount">Amount (sECX)</label>
       <input id="wd-amount" type="text" inputmode="decimal" bind:value={amount} placeholder="0.00000000" autocomplete="off" />
       <fieldset class="wd-to">
         <legend class="field-label">To</legend>
@@ -205,7 +205,7 @@
       <div class="wd-option" data-testid="changer-out">
         <h4>Sell to the changer (fast)</h4>
         <p class="small">
-          You get <strong>{fmtEcx(cq.payout)} eCash</strong>: {pct(cq.discount_bps)} below par, less its fee of {fmtEcx(cq.fee)}.
+          You get <strong>{fmtEcx(cq.payout)} ECX</strong>: {pct(cq.discount_bps)} below par, less its fee of {fmtEcx(cq.fee)}.
           In a few blocks, once your payment is in a FreeBank block. You pay {ecx(cq.amount)}, plus a small FreeBank fee.
         </p>
         <p class="muted small mono wd-dest">To {toOwn ? "your eCash wallet: " : ""}{cq.payout_to}</p>
@@ -223,7 +223,7 @@
       <p class="muted small">The changer: {cqError}</p>
     {/if}
     <dl class="facts">
-      <div><dt>The eCash address gets</dt><dd>{fmtEcx(quote.sats)} eCash</dd></div>
+      <div><dt>The eCash address gets</dt><dd>{fmtEcx(quote.sats)} ECX</dd></div>
       <div><dt>To</dt><dd class="mono">{quote.pasted ? quote.address : `your eCash wallet (a new address: ${quote.address})`}</dd></div>
       <div><dt>eCash fee</dt><dd>{ecx(quote.mainchain_fee)}</dd></div>
       <div><dt>FreeBank fee</dt><dd>{ecx(quote.fee)}</dd></div>
@@ -258,7 +258,7 @@
     <ul class="wd-list" data-testid="changer-orders">
       {#each orders as o (o.id)}
         <li>
-          <span>{ecx(o.amount)} for {fmtEcx(o.payout)} eCash</span>
+          <span>{ecx(o.amount)} for {fmtEcx(o.payout)} ECX</span>
           <span class="muted small" class:soft-error={o.state === "overdue" || o.state === "held"}>{changerLine(o)}</span>
         </li>
       {/each}

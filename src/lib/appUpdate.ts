@@ -126,10 +126,47 @@ export function stageText(p: AppUpdateProgress): string {
   return STAGES[p.stage] ?? "Updating…";
 }
 
-// Checked shortly after the app starts, then twice a day while it runs.
+// Automatic updates (v0.4.2, opt in): app_update.rs `auto_round`. With the switch on, a signed release is fetched,
+// checked and put in place without asking; it runs from the next start (`installed` until then).
+export interface AutoUpdate {
+  on: boolean;
+  /** Put in place by itself, not running yet. */
+  installed: string | null;
+  /** This copy can update itself (an AppImage, or the Mac app in Applications). */
+  can: boolean;
+  /** The last automatic round that failed: that version waits for "Update and restart". */
+  failed: { version: string; reason: string; at: number } | null;
+}
+export const autoUpdate = writable<AutoUpdate | null>(null);
+
+export async function loadAutoUpdate(): Promise<AutoUpdate | null> {
+  try {
+    const a = (await tauriInvoke("app_auto_update_get")) as AutoUpdate;
+    autoUpdate.set(a);
+    return a;
+  } catch {
+    autoUpdate.set(null);
+    return null;
+  }
+}
+
+export async function setAutoUpdate(on: boolean): Promise<void> {
+  await tauriInvoke("app_auto_update_set", { on });
+  await loadAutoUpdate();
+}
+
+/** "Restart now": open the version an automatic update put in place. */
+export async function restartForUpdate(): Promise<void> {
+  await tauriInvoke("app_update_restart");
+  await watch();
+}
+
+// Checked shortly after the app starts, then twice a day while it runs; what automatic updates did, every hour.
 let timer: ReturnType<typeof setInterval> | null = null;
 export function startAppUpdateChecks(): void {
   if (timer) return;
   setTimeout(() => checkAppUpdate(), 15_000);
+  loadAutoUpdate();
   timer = setInterval(() => checkAppUpdate(), 12 * 3600_000);
+  setInterval(() => loadAutoUpdate(), 3600_000);
 }

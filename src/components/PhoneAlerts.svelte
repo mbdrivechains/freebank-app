@@ -1,7 +1,7 @@
 <script lang="ts">
   // What a phone asks of this computer, shown over any screen: "Allow this phone?" while pairing
   // (each request with its comparison code: allow only the one your phone shows), and sends
-  // waiting for an answer ("Phone X wants to send Y ECX to Z"): over the phone's daily
+  // waiting for an answer ("Phone X wants to send Y sECX to Z"): over the phone's daily
   // limit, or made while the wallet is locked and phone sends are off. A locked wallet asks for
   // its passphrase for that one send. A send nobody answers stops waiting after 10 minutes and
   // its alert goes away.
@@ -298,7 +298,7 @@
       <h3 id="moving-title">{moving.name} is moving their wallet home</h3>
       <p class="small">
         Your house adds their computer's address as a member of {moving.house_name || "your house"}, then this computer
-        sends their notes and ECX there:
+        sends their notes and sECX there:
       </p>
       <p><code>{moving.address}</code></p>
       <p class="small">Their old address is taken off the house once the move is done.</p>

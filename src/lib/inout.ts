@@ -48,7 +48,7 @@ export function depositLine(d: Deposit): string {
     case "confirmed":
       return `On eCash (${d.confirmations} confirmation${d.confirmations === 1 ? "" : "s"}): waiting for a FreeBank block`;
     case "credited":
-      return `Credited on FreeBank: ${(Math.max(0, d.sats - FREEBANK_DEPOSIT_FEE) / 1e8).toFixed(8)} ECX`;
+      return `Credited on FreeBank: ${(Math.max(0, d.sats - FREEBANK_DEPOSIT_FEE) / 1e8).toFixed(8)} sECX`;
     case "failed":
       return "Not sent: another deposit used FreeBank's treasury first, or a coin was spent. Your eCash stays in your wallet; if FreeBank credits it after all, it shows here.";
   }
@@ -105,8 +105,8 @@ export function withdrawalLine(w: Withdrawal): string {
   }
 }
 
-// The money changer (src-tauri/src/changer.rs; the bot is distribution/changer): sell FreeBank ECX for eCash fast
-// ("out"), or buy it below par with eCash ("in"). Trusted up to one order.
+// The money changer (src-tauri/src/changer.rs; the bot is distribution/changer): sell sECX for ECX fast
+// ("out"), or buy it below par with ECX ("in"). Trusted up to one order.
 
 export interface ChangerSide {
   most_per_order: number;
@@ -124,7 +124,7 @@ export interface ChangerInfo {
 export interface ChangerQuote {
   id: string;
   side: "out" | "in";
-  /** What the user pays in (FreeBank ECX for out, eCash for in). */
+  /** What the user pays in (sECX for out, ECX for in). */
   amount: number;
   /** What the user gets on the other chain. */
   payout: number;

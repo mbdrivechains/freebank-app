@@ -6,6 +6,7 @@
   // - the bidding wallet, with no passphrase, so bids can go out unattended: only what is moved in, and Move back.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import QrCode from "./QrCode.svelte";
+  import { L1_TICKER } from "../lib/brand";
   import { ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import {
     bmmSet,
@@ -74,7 +75,7 @@
   };
 
   const say = (e: unknown) => String(e).replace(/^Error: /, "");
-  const coins = (sats: number) => `${fmtEcx(sats)} eCash`;
+  const coins = (sats: number) => `${fmtEcx(sats)} ${L1_TICKER}`;
 
   async function load() {
     loading = true;
@@ -157,7 +158,7 @@
   async function prepare() {
     payError = "";
     if (!everything && parseEcx(amount) === null) {
-      payError = "Enter an amount in eCash above zero, with at most 8 decimal places.";
+      payError = "Enter an amount in ECX above zero, with at most 8 decimal places.";
       return;
     }
     if (mode === "send" && !to.trim()) {
@@ -267,7 +268,7 @@
       <button class="link-btn" on:click={load} disabled={loading}>{loading ? "Checking…" : "Refresh"}</button>
     </div>
     <p class="muted small">
-      Your eCash, kept in your eCash node (BitWindow's, or your own) in wallets of FreeBank's own. Your recovery words
+      Your ECX, kept in your eCash node (BitWindow's, or your own) in wallets of FreeBank's own. Your recovery words
       bring them back too.
     </p>
     {#if error}<p class="soft-error" data-testid="ecash-error">{error}</p>{/if}
@@ -339,7 +340,7 @@
       {#if st.main.pending}<p class="muted small">{coins(st.main.pending)} on its way</p>{/if}
       {#if st.main.trusted + st.main.pending === 0 && st.bids.trusted === 0}
         <p class="small" data-testid="ecash-start">
-          Start by receiving eCash: Receive gives your address, and BitWindow or any eCash wallet can send to it.
+          Start by receiving ECX: Receive gives your address, and BitWindow or any eCash wallet can send to it.
         </p>
       {/if}
       {#if sent}
@@ -348,11 +349,11 @@
       <div class="home-actions">
         <button on:click={receive}>Receive</button>
         <button class:active={mode === "send"} on:click={() => open("send")}>Send</button>
-        <button class:active={mode === "bids"} on:click={() => open("bids")} title="Move eCash into the bidding wallet">To bidding</button>
+        <button class:active={mode === "bids"} on:click={() => open("bids")} title="Move ECX into the bidding wallet">To bidding</button>
       </div>
 
       <p class="muted small">
-        eCash and ECX are worth the same: a deposit turns eCash into ECX one for one, from this wallet (Home › Deposit),
+        ECX and sECX are worth the same: a deposit turns ECX into sECX one for one, from this wallet (Home › Deposit),
         and a withdrawal turns it back (Home › Withdraw).
       </p>
       {#if address}
@@ -365,7 +366,7 @@
 
       {#if mode}
         <div class="ec-pay" data-testid="ecash-pay">
-          <h4>{mode === "send" ? "Send eCash" : "Move into the bidding wallet"}</h4>
+          <h4>{mode === "send" ? "Send ECX" : "Move into the bidding wallet"}</h4>
           {#if !quote}
             {#if mode === "send"}
               <div class="field">
@@ -374,7 +375,7 @@
               </div>
             {/if}
             <div class="field">
-              <label class="field-label" for="ec-amount">Amount (eCash)</label>
+              <label class="field-label" for="ec-amount">Amount (ECX)</label>
               <input id="ec-amount" type="text" bind:value={amount} disabled={everything} inputmode="decimal" />
               <label class="small"><input type="checkbox" bind:checked={everything} /> All of it, less the fee</label>
             </div>
@@ -460,20 +461,20 @@
           </p>
           <div class="ec-bmm-fields">
             <div class="field">
-              <label class="field-label" for="ec-bid">Bid per block (eCash)</label>
+              <label class="field-label" for="ec-bid">Bid per block (ECX)</label>
               <input id="ec-bid" type="text" bind:value={bidText} on:input={() => (bmmEdited = true)} inputmode="decimal" />
             </div>
             <div class="field">
-              <label class="field-label" for="ec-cap">At most per day (eCash)</label>
+              <label class="field-label" for="ec-cap">At most per day (ECX)</label>
               <input id="ec-cap" type="text" bind:value={capText} on:input={() => (bmmEdited = true)} inputmode="decimal" />
             </div>
           </div>
           {#if st.bids.trusted === 0 && !bmm.on}
-            <p class="small">First move some eCash into this wallet: Wallet › To bidding.</p>
+            <p class="small">First move some ECX into this wallet: Wallet › To bidding.</p>
           {/if}
           <p class="small" data-testid="ecash-bmm-state">
             {#if bmm.on}
-              On. {fmtEcx(bmm.spent_today)} of {fmtEcx(bmm.daily_cap)} eCash bid today; {bmm.won_today}
+              On. {fmtEcx(bmm.spent_today)} of {fmtEcx(bmm.daily_cap)} ECX bid today; {bmm.won_today}
               {bmm.won_today === 1 ? "block" : "blocks"} won.
             {:else}
               Off.
@@ -495,7 +496,7 @@
                 <li>
                   <span>Block {r.height}</span>
                   <span>{OUTCOME[r.outcome] ?? r.outcome}</span>
-                  <span class="muted small">{fmtEcx(r.fee)} eCash</span>
+                  <span class="muted small">{fmtEcx(r.fee)} ECX</span>
                 </li>
               {/each}
             </ul>

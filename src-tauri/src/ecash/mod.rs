@@ -27,7 +27,7 @@ mod tests;
 /// wallet doesn't stamp it (locktime 0 on regtest, checked), so every transaction the app builds sets it.
 pub const REPLAY_LOCKTIME: u32 = 499_999_999;
 
-/// eCash amounts, sats -> "0.00000000" (the screens show eCash with 8 places, as ECX).
+/// eCash amounts, sats -> "0.00000000" (the screens show ECX with 8 places, as sECX).
 pub fn to_coins(sats: u64) -> String {
     format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000)
 }

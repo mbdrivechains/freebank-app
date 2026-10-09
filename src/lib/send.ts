@@ -198,7 +198,7 @@ export const sends = {
     }
     const address = r.address.trim();
     if (!address) throw new Error("Enter the address to send to.");
-    if (r.max || !r.amount) throw new Error("Enter an amount in ECX above zero, with at most 8 decimal places.");
+    if (r.max || !r.amount) throw new Error("Enter an amount in sECX above zero, with at most 8 decimal places.");
     pwaPrepared = {
       id: "pwa",
       address,

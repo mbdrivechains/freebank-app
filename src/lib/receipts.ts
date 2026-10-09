@@ -18,7 +18,7 @@ export function explorerTxUrl(txid: string): string {
   return `${EXPLORER_URL}/tx/${encodeURIComponent(txid)}`;
 }
 
-/** An extra line on a receipt, e.g. { label: "Fee", value: "0.00000226 ECX" }. */
+/** An extra line on a receipt, e.g. { label: "Fee", value: "0.00000226 sECX" }. */
 export interface ReceiptRow {
   label: string;
   value: string;
@@ -28,7 +28,7 @@ export interface ReceiptRow {
 export interface Receipt {
   id: number;
   txid: string;
-  /** What was done, in words: "Sent 1.50000000 ECX to X…". */
+  /** What was done, in words: "Sent 1.50000000 sECX to X…". */
   what: string;
   /** ms since the epoch */
   sentAt: number;

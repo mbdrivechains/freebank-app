@@ -3,7 +3,7 @@
 import { tauriInvoke } from "./api";
 import { BASE_TICKER } from "./brand";
 
-/** A phone payment (v0.2.5): ECX, or a house's notes sent, redeemed or demanded. */
+/** A phone payment (v0.2.5): sECX, or a house's notes sent, redeemed or demanded. */
 export type PaymentKind = "send" | "note-send" | "note-redeem" | "note-demand";
 
 interface Payment {
@@ -12,7 +12,7 @@ interface Payment {
   amount: number;
 }
 
-/** What a phone's payment does, in a few words: "send 0.5 ECX", "redeem 0.5 ECX of house #3's notes". */
+/** What a phone's payment does, in a few words: "send 0.5 sECX", "redeem 0.5 sECX of house #3's notes". */
 export function paymentWhat(p: Payment): string {
   const amt = `${p.amount} ${BASE_TICKER}`;
   const notes = `${amt} of house #${p.house}'s notes`;
@@ -28,7 +28,7 @@ export function paymentWhat(p: Payment): string {
   }
 }
 
-/** The same, done: "Sent 0.5 ECX", "Redeemed 0.5 ECX of house #3's notes". */
+/** The same, done: "Sent 0.5 sECX", "Redeemed 0.5 sECX of house #3's notes". */
 export function paymentDone(p: Payment): string {
   const w = paymentWhat(p);
   const done: Record<string, string> = { send: "Sent", redeem: "Redeemed", demand: "Demanded" };
@@ -47,7 +47,7 @@ export interface PhoneDevice {
   /** unix seconds */
   added: number;
   last_seen: number | null;
-  /** ECX a day it may send without asking */
+  /** sECX a day it may send without asking */
   limit: number;
   spent_today: number;
   online: boolean;
@@ -59,16 +59,16 @@ export interface PhoneDevice {
 /** An approval the desktop is waiting for on a phone (v0.2.5, "Approve sends on my phone"). */
 export interface Approval {
   id: string;
-  /** "Send 2.5 ECX to X…", or the change it would make */
+  /** "Send 2.5 sECX to X…", or the change it would make */
   text: string;
   /** unix seconds */
   expires: number;
 }
 
 export interface ApproveInfo {
-  /** ECX: once this computer's payments in a day would come to more than this, a phone's Face ID first; null: off. */
+  /** sECX: once this computer's payments in a day would come to more than this, a phone's Face ID first; null: off. */
   over: number | null;
-  /** ECX this computer can still pay today without asking */
+  /** sECX this computer can still pay today without asking */
   left: number | null;
   /** paired phones with Face ID, which can approve */
   approvers: number;
@@ -223,7 +223,7 @@ export const phone = {
   pairStart: () => tauriInvoke("phone_pair_start") as Promise<{ url: string; expires: number }>,
   pairAnswer: (id: string, allow: boolean) => tauriInvoke("phone_pair_answer", { id, allow }) as Promise<void>,
   approveInfo: () => tauriInvoke("phone_approve_info") as Promise<ApproveInfo>,
-  /** `over` in ECX (null: off). Off or a higher amount waits for a phone's Face ID; with `words`, it happens a day
+  /** `over` in sECX (null: off). Off or a higher amount waits for a phone's Face ID; with `words`, it happens a day
    * later instead (the answer: when, unix seconds), unless a phone or this computer cancels it. */
   approveSet: (over: number | null, words?: string) =>
     tauriInvoke("phone_approve_set", { over, words }) as Promise<number | null>,

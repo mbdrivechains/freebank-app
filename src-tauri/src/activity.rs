@@ -272,7 +272,7 @@ fn mask_ipv6(s: &str) -> String {
     out
 }
 
-const UNITS: &[&str] = &["sat", "sats", "satoshi", "satoshis", "unit", "units", "ecx", "btc", "coin", "coins"];
+const UNITS: &[&str] = &["sat", "sats", "satoshi", "satoshis", "unit", "units", "ecx", "secx", "btc", "coin", "coins"];
 
 /// Amounts: a number followed by a unit, "nValue=…" and "Fee:…".
 fn mask_amounts(s: &str) -> String {
@@ -472,8 +472,8 @@ mod tests {
         assert_eq!(mask("to mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn now"), "to <address> now");
         // Amounts with a unit, nValue= and Fee:.
         assert_eq!(
-            mask("CTxOut(nValue=12.50000000, x) Fee:22600 face (100000000 sats) Residual 12345 sats, 0.5 ECX"),
-            "CTxOut(nValue=<amount>, x) Fee:<amount> face (<amount> sats) Residual <amount> sats, <amount> ECX"
+            mask("CTxOut(nValue=12.50000000, x) Fee:22600 face (100000000 sats) Residual 12345 sats, 0.5 sECX"),
+            "CTxOut(nValue=<amount>, x) Fee:<amount> face (<amount> sats) Residual <amount> sats, <amount> sECX"
         );
         assert_eq!(mask_numbers("absurdly-high-fee, 1500000 > 1000000 at height 307"), "absurdly-high-fee, <n> > <n> at height 307");
         // Passwords in URLs.

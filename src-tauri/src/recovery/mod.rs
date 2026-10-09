@@ -69,7 +69,7 @@ pub(crate) fn stamp() -> String {
     secs.to_string()
 }
 
-/// An amount from the node (a JSON number of ECX) in satoshis. Amounts have 8 decimals and stay far
+/// An amount from the node (a JSON number of sECX) in satoshis. Amounts have 8 decimals and stay far
 /// below 2^53 satoshis, so rounding the f64 recovers them exactly.
 pub(crate) fn sats(v: &Value) -> i64 {
     v.as_f64().map(|x| (x * 1e8).round() as i64).unwrap_or(0)
