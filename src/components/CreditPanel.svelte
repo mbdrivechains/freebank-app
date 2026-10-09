@@ -12,8 +12,10 @@
     type HouseType,
     type LpHolding,
     type NoteHolding,
+    type NettingAnswer,
     type Pool,
   } from "../lib/api";
+  import { nettingStep, roundHexFrom, type NettingRound } from "../lib/netting";
   import { BASE_TICKER } from "../lib/brand";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import { nice } from "../lib/errors";
@@ -405,6 +407,95 @@
       });
       lockHex = "";
       lockShown = null;
+    } catch (e) {
+      error = nice(e);
+    }
+    regBusy = false;
+  }
+
+  // Settlement between houses (v0.4.1): netting. A round arrives as text, is shown decoded, and this house does its
+  // next step; the round that step returns is what goes on to the next house.
+  let netOwn: number | null = null;
+  let netOthers = "";
+  let netText = "";
+  let netRound: NettingRound | null = null;
+  let netOut = "";
+  let netWaiting: string[] = [];
+  $: netStep = netRound && netOwn ? nettingStep(netRound, netOwn) : null;
+
+  async function decodeNetting(text: string) {
+    error = "";
+    netRound = null;
+    netWaiting = [];
+    try {
+      const hex = roundHexFrom(text);
+      netRound = await api.decodeNetting(hex);
+      netText = hex;
+    } catch (e) {
+      error = nice(e);
+    }
+  }
+
+  // Notes being moved onto one key first: the step waits until those transfers are in a block. Done again before
+  // that, the node would make a part from the notes already on the key and hand in less.
+  async function consolidated() {
+    error = "";
+    try {
+      const confs = await Promise.all(netWaiting.map(async (t) => (await api.getTransaction(t)).confirmations ?? 0));
+      if (confs.every((c) => c >= 1)) netWaiting = [];
+      else error = "Not all of them are in a block yet: try again after the next block.";
+    } catch (e) {
+      error = nice(e);
+    }
+  }
+
+  // An answer: the round to pass on (shown decoded), or notes first moved onto one key ("consolidating").
+  async function took(r: NettingAnswer) {
+    if (r.status === "consolidating") {
+      netWaiting = r.txids ?? [];
+      return;
+    }
+    netWaiting = [];
+    if (r.round) {
+      netOut = r.round;
+      await decodeNetting(r.round);
+    }
+    if (r.txid) {
+      const net = r.net ?? 0;
+      showReceipt({ txid: r.txid, what: `Netting round sent: House #${netOwn} ${net < 0 ? `pays ${fmtEcx(-net)} ${BASE_TICKER}` : net > 0 ? `receives ${fmtEcx(net)} ${BASE_TICKER}` : "settles even"}` });
+      netOut = "";
+    }
+  }
+
+  async function startNetting() {
+    const own = netOwn;
+    const others = netOthers.split(/[\s,]+/).filter(Boolean).map((x) => parseInt(x.replace(/^#/, ""), 10));
+    if (!own || others.some((x) => !Number.isInteger(x) || x <= 0) || others.includes(own)) {
+      error = "List the other houses' numbers, without your own: e.g. 2, 3.";
+      return;
+    }
+    regBusy = true;
+    error = "";
+    try {
+      await took(await withUnlock(() => api.createNetting(own, others), { what: `start a netting round for House #${own}` }));
+    } catch (e) {
+      error = nice(e);
+    }
+    regBusy = false;
+  }
+
+  async function nettingAct(step: "join" | "fund" | "sign") {
+    const own = netOwn;
+    if (!own || !netRound) return;
+    const round = netText;
+    regBusy = true;
+    error = "";
+    try {
+      const r = await withUnlock(
+        () => (step === "join" ? api.joinNetting(own, round) : step === "fund" ? api.fundNetting(own, round) : api.signNetting(own, round)),
+        { what: `${step} the netting round for House #${own}` },
+      );
+      await took(r);
     } catch (e) {
       error = nice(e);
     }
@@ -909,7 +1000,7 @@
       </div>
 
       <details class="advanced tools">
-        <summary>House tools: charter a house, attest reserves, your mint's tokens</summary>
+        <summary>House tools: charter a house, attest reserves, your mint's tokens, settle with other houses</summary>
       <div class="card">
         <h3>Charter a house</h3>
         <p class="muted">Open your own note-issuing house — the Scottish move: anyone can start a bank, kept honest by convertibility. Your node holds the keys.</p>
@@ -1003,6 +1094,81 @@
                 notes may sit there, waiting for room. Make the lock again with the float's address.</p>
             {/if}
             <button on:click={sendLock} disabled={regBusy || !floatOk || lockFloat.trim() !== lockShown.holder}>{regBusy ? "…" : "Approve and send"}</button>
+          {/if}
+        </div>
+      </div>
+      <div class="card" data-testid="house-netting">
+        <h3>Settle with other houses: netting</h3>
+        <p class="muted">The Edinburgh exchange: each house hands in the other houses' notes it holds, they're all
+          burned, and only each house's net is paid, in {BASE_TICKER} at par. A round passes from house to house as a
+          block of text: everyone joins, then funds, then signs; the last signature sends it. Every house signs, so
+          nothing is settled without you.</p>
+        <div class="form">
+          <label>
+            Your house #
+            <input type="number" bind:value={netOwn} placeholder="e.g. 1" />
+          </label>
+          <h4>Start a round</h4>
+          <label>
+            The other houses, by number
+            <input type="text" bind:value={netOthers} placeholder="e.g. 2, 3, 4" />
+          </label>
+          <button on:click={startNetting} disabled={regBusy || !netOwn || !netOthers.trim()}>{regBusy ? "…" : "Start a round"}</button>
+          <h4>A round you were given</h4>
+          <label>
+            The round, pasted whole
+            <textarea rows="3" bind:value={netText} on:input={() => { netRound = null; netOut = ""; netWaiting = []; }} placeholder="the hex another house passed you"></textarea>
+          </label>
+          <button on:click={() => decodeNetting(netText)} disabled={regBusy || !netText.trim()}>Check it</button>
+          {#if netWaiting.length}
+            <p class="muted small">Your notes are first being moved onto one key ({netWaiting.length} transfer{netWaiting.length > 1 ? "s" : ""}).
+              Once they're in a block, do the same step again.</p>
+            <button on:click={consolidated} disabled={regBusy}>They're in a block?</button>
+          {/if}
+          {#if netRound}
+            <div class="house-stats">
+              <div><span class="stat-label">Stage</span> {netRound.stage}{netRound.stage !== "complete" ? `, expires at block ${netRound.expiryheight}` : ""}</div>
+              <div><span class="stat-label">Started by</span> {nameOf(houses, netRound.starter)}{netRound.starter === netOwn ? " (yours)" : ""}, who pays its fee of {netRound.fee} {BASE_TICKER}</div>
+              {#each netRound.houses as h}
+                {@const part = netRound.parts.find((p) => p.house === h)}
+                {@const n = netRound.nets?.find((x) => x.house === h)}
+                <div>
+                  <span class="stat-label">{nameOf(houses, h)}{h === netOwn ? " (yours)" : ""}</span>
+                  <span>
+                    {#if !part}not joined yet{:else}
+                      hands in {part.bundles.length ? part.bundles.map((b) => `${fmtEcx(b.units)} of ${nameOf(houses, b.issuer)}`).join(", ") : "nothing"}
+                    {/if}
+                    {#if n}{` · ${n.net > 0 ? `receives ${fmtEcx(n.receives)} ${BASE_TICKER}` : n.net < 0 ? `pays ${fmtEcx(n.pays)} ${BASE_TICKER}` : "settles even"}`}{/if}{#if part?.funded}{" · funded"}{/if}{#if netRound.signed.includes(h)}{" · signed"}{/if}
+                  </span>
+                </div>
+              {/each}
+            </div>
+            {#if netStep}
+              {#if netRound.error}<p class="blocked-why">{netRound.error}</p>{/if}
+              {#if netStep.kind === "join"}
+                <button on:click={() => nettingAct("join")} disabled={regBusy || netWaiting.length > 0}>{regBusy ? "…" : `Join for House #${netOwn}`}</button>
+                <p class="hint">Adds every confirmed note of the other houses your house holds.</p>
+              {:else if netStep.kind === "fund"}
+                <button on:click={() => nettingAct("fund")} disabled={regBusy}>{regBusy ? "…" : `Fund House #${netOwn}'s part`}</button>
+                <p class="hint">Sets aside the coins paying your net at par{netRound.starter === netOwn ? `, and the round's fee (${netRound.fee} ${BASE_TICKER})` : ""};
+                  a house owing nothing still marks its part funded. Your node holds those coins for the round until it's
+                  sent, or until the node restarts.</p>
+              {:else if netStep.kind === "sign"}
+                <button on:click={() => nettingAct("sign")} disabled={regBusy}>{regBusy ? "…" : `Sign for House #${netOwn}`}</button>
+                <p class="hint">Signing agrees to every bundle, net and payment above{netRound.starter === netOwn ? `, and to paying the round's fee` : ""}. The last signature sends the round.</p>
+              {:else if netStep.kind === "done"}
+                <p class="muted small">Every house has signed: the last signature sent the round.</p>
+              {:else}
+                <p class="muted small">{netStep.why}</p>
+              {/if}
+            {/if}
+          {/if}
+          {#if netOut}
+            <label>
+              Pass this round on to the next house
+              <textarea rows="3" readonly class="mono small" value={netOut}></textarea>
+            </label>
+            <button on:click={() => navigator.clipboard?.writeText(netOut)}>Copy</button>
           {/if}
         </div>
       </div>

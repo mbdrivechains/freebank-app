@@ -1,6 +1,23 @@
 // API wrapper - supports both Tauri (desktop) and PWA (browser) modes
 
 import { CONFIG_KEY } from "./brand";
+import type { NettingRound } from "./netting";
+
+/** What createnetting, joinnetting, fundnetting and signnetting answer: the round to pass on, or (starting or joining)
+ *  "consolidating" with the transfers that first move the house's notes onto one key. signnetting adds this house's
+ *  net and payment, and the txid once the last signature sends the round. */
+export interface NettingAnswer {
+  status: "created" | "joined" | "funded" | "signed" | "consolidating" | string;
+  round?: string;
+  txids?: string[];
+  /** This house's net, in note units. */
+  net?: number;
+  /** What this house's coins pay, in ECX (its net debt, and the fee if it started the round). */
+  pays?: number;
+  fee?: number;
+  expiryheight?: number;
+  txid?: string;
+}
 
 export interface Transaction {
   txid: string;
@@ -469,6 +486,35 @@ export const api = {
   async attestHouse(houseId: number, fee = 0.001): Promise<string> {
     const r = (await fbCall('attesthouse', [houseId, fee])) as { txid: string };
     return r.txid;
+  },
+
+  // ---- Settlement between houses (v0.4.1): netting (node v0.2.22) ----
+  // A round is a hex blob passed from house to house. Starting or joining may first move the house's notes onto one
+  // key ("consolidating": run it again once those transfers confirm). Your node holds the house's keys.
+
+  /** Start a round with the other houses; this house joins at once and pays the round's fee. */
+  async createNetting(ownId: number, others: number[], expiryBlocks = 72, fee = 0.001): Promise<NettingAnswer> {
+    return fbCall('createnetting', [ownId, others, expiryBlocks, fee]) as Promise<NettingAnswer>;
+  },
+
+  /** Add this house's part: every confirmed note of the round's other houses it holds. */
+  async joinNetting(ownId: number, round: string, fee = 0.001): Promise<NettingAnswer> {
+    return fbCall('joinnetting', [ownId, round, fee]) as Promise<NettingAnswer>;
+  },
+
+  /** Once everyone has joined: the coins paying this house's net debt at par (nothing, if it owes nothing). */
+  async fundNetting(ownId: number, round: string): Promise<NettingAnswer> {
+    return fbCall('fundnetting', [ownId, round]) as Promise<NettingAnswer>;
+  },
+
+  /** Once everyone has funded: sign for this house, agreeing to every bundle, net and payment; the last one sends. */
+  async signNetting(ownId: number, round: string): Promise<NettingAnswer> {
+    return tauriInvoke('netting_sign', { house: ownId, round }) as Promise<NettingAnswer>;
+  },
+
+  /** What a round holds: its houses, their bundles, the nets, the payments, who has funded and signed, its stage. */
+  async decodeNetting(round: string): Promise<NettingRound> {
+    return fbCall('decodenetting', [round]) as Promise<NettingRound>;
   },
 
   // ---- FreeBank pools (M3): note ⇄ ECX AMM ----

@@ -61,6 +61,12 @@ pub const RPC_ALLOWED: &[&str] = &[
     // own commands: approvenotelock's answer is a signed lock, which never comes here.)
     "registertokenkeyset",
     "gettokenclaims",
+    // Node v0.2.22, settlement between houses: netting. A round is a hex blob passed between houses. Signing
+    // (signnetting) goes through house.rs's netting_sign, which checks the round's stage first.
+    "createnetting",
+    "joinnetting",
+    "fundnetting",
+    "decodenetting",
     // The Deposit panel (a new deposit address; it can't move coins) and the balance card's
     // pending line.
     "getdepositaddress",

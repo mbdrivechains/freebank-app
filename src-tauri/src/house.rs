@@ -92,9 +92,80 @@ pub async fn note_lock_send(
     txid.as_str().map(str::to_string).ok_or_else(|| LOCK_MAY_HAVE_GONE.into())
 }
 
+/// Settlement between houses (v0.4.1, node v0.2.22): sign house `house`'s part of a netting round, the last signature
+/// sending it. `signnetting` isn't on rpc_call's list (nothing named "sign" is): this checks first that the round is
+/// at its signing stage, has the house in it and doesn't have its signature yet, so a round is signed only as the
+/// screen showed it (decodenetting of the same hex). The node checks every bundle against the chain and the house's
+/// own part. Wrap it in withUnlock. Returns signnetting's answer: the round to pass on, the house's net and payment,
+/// and the txid once sent.
+#[tauri::command]
+pub async fn netting_sign(client: State<'_, ClientState>, house: u32, round: String) -> Result<Value, String> {
+    let round = round.trim();
+    if round.is_empty() || round.len() > 2 * MAX_ROUND || !round.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("That isn't a netting round: paste the hex you were given.".into());
+    }
+    let mut c = client.lock().await;
+    let d = c.call_fresh_typed("decodenetting", vec![json!(round)]).await.map_err(|e| e.for_ui())?;
+    signable(&d, house)?;
+    match c.call_fresh_typed("signnetting", vec![json!(house), json!(round), json!(true)]).await {
+        Ok(v) => Ok(v),
+        Err(e) if e.did_nothing() => Err(e.for_ui()),
+        // The last signature sends the round; signing the same round again builds the same transaction, which the
+        // mempool refuses, and the node then says only that it failed to send.
+        Err(RpcError::Rpc { message, .. }) if message.contains("send") => Err(NET_MAY_HAVE_GONE.into()),
+        Err(RpcError::Rpc { message, .. }) => Err(message),
+        Err(_) => Err(NET_MAY_HAVE_GONE.into()),
+    }
+}
+
+pub(crate) const NET_MAY_HAVE_GONE: &str = "This round may have gone out already (signed before, or your node didn't answer after it was sent). Check your recent payments and your house's notes before signing it again.";
+
+/// Relay takes a round's transaction up to 100,000 bytes; the round carries that and each house's part beside it.
+const MAX_ROUND: usize = 250_000;
+
+/// The fee a round this app starts pays (createnetting's default). A round naming this house its starter with a higher
+/// fee wasn't started here: another house can write any fee into a round, and the starter's funding pays it.
+const OWN_FEE: f64 = 0.001;
+
+/// Whether house `house` may sign this decoded round now.
+fn signable(d: &Value, house: u32) -> Result<(), String> {
+    let houses: Vec<u64> = d["houses"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    if !houses.contains(&(house as u64)) {
+        return Err(format!("House #{house} isn't in this round."));
+    }
+    if d["stage"].as_str() != Some("signing") {
+        return Err(format!("This round isn't ready to sign: it's at {}.", d["stage"].as_str().unwrap_or("an unknown stage")));
+    }
+    if d["signed"].as_array().map_or(false, |a| a.iter().any(|x| x.as_u64() == Some(house as u64))) {
+        return Err(format!("House #{house} has signed this round already: pass it on."));
+    }
+    if d["starter"].as_u64() == Some(house as u64) && d["fee"].as_f64().map_or(true, |f| f > OWN_FEE + 1e-12) {
+        return Err(format!(
+            "This round makes House #{house} pay its fee of {} ECX, more than a round this app starts pays: it isn't signed.",
+            d["fee"]
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_round_is_signed_only_at_its_signing_stage_by_a_house_in_it() {
+        let r = |stage: &str, signed: Value| json!({ "houses": [1, 5, 6], "stage": stage, "signed": signed });
+        assert!(signable(&r("signing", json!([])), 5).is_ok());
+        assert!(signable(&r("signing", json!([1])), 5).is_ok());
+        assert!(signable(&r("signing", json!([5])), 5).unwrap_err().contains("already"));
+        assert!(signable(&r("funding", json!([])), 5).unwrap_err().contains("isn't ready"));
+        assert!(signable(&r("complete", json!([1, 5, 6])), 5).is_err());
+        assert!(signable(&r("signing", json!([])), 7).unwrap_err().contains("isn't in this round"));
+        let f = |starter: u64, fee: f64| json!({ "houses": [1, 5, 6], "stage": "signing", "signed": [], "starter": starter, "fee": fee });
+        assert!(signable(&f(5, 0.001), 5).is_ok(), "this app's own fee");
+        assert!(signable(&f(5, 0.1), 5).unwrap_err().contains("isn't signed"), "a fee another house wrote in for us");
+        assert!(signable(&f(1, 0.1), 5).is_ok(), "another starter's fee isn't ours to pay");
+    }
 
     #[test]
     fn a_lock_is_sent_only_as_shown_from_the_float() {

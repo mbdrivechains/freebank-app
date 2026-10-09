@@ -164,6 +164,7 @@ pub fn run() {
             send::send_confirm,
             house::note_lock_check,
             house::note_lock_send,
+            house::netting_sign,
             send::send_log,
             send::speed_up_quote,
             send::send_speed_up,

@@ -121,6 +121,8 @@ bidding) and **Node**, with Settings behind the gear.
   members (node v0.2.19)
 - **Tokens: your house's mint** — record its keyset on chain and approve the batch locks it makes, with the house's
   keys kept here (node v0.2.21; the mint runs on its own server)
+- **Settle with other houses: netting** — the Edinburgh exchange: start or join a round, see each house's net, fund,
+  sign; only the nets are paid, at par (node v0.2.22)
 - **Clearing pools** — swap notes ↔ ECX, add/remove liquidity, LP positions
 - **Bills of exchange** — issue / endorse / retire / claim escrow
 - **eCash wallet** — receive, send, history; move coins into the bidding wallet and back, each with its fee shown
