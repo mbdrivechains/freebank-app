@@ -1,6 +1,6 @@
 [package]
 name = "freebank"
-version = "0.4.3"
+version = "0.4.4"
 description = "FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)"
 authors = ["The FreeBank developers"]
 license = "MIT"
@@ -41,6 +41,9 @@ p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
 hkdf = "0.12"
 aes-gcm = "0.10"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+# Demo mode's relay to the enforcer gateway (node/relay.rs): the TLS tokio-tungstenite already brings.
+native-tls = "0.2"
+tokio-native-tls = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 url = "2"
 # The wallet passphrase for phone sends lives only in memory and is wiped when it is let go

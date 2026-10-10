@@ -219,6 +219,12 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
     crate::activity::init(&app_dir);
     let mgr = Arc::new(crate::node::NodeManager::new(app_dir.clone()));
     let s = mgr.settings.lock().await.clone();
+    // Demo mode (v0.4.4): the node the app left running asks for eCash facts through the relay, which runs here now.
+    if s.demo {
+        if let Err(e) = crate::node::relay::ensure(&mgr).await {
+            crate::activity::note(&format!("demo relay: {}", e));
+        }
+    }
     // Other wallets may be open in the node (several wallets, hosted ones): name the main one, as the app does.
     if !s.extra_wallets.is_empty() || s.main_wallet.is_some() {
         crate::rpc::set_main_wallet(Some(s.main_wallet.clone().unwrap_or_else(|| crate::wallets::MAIN.into())));

@@ -19,6 +19,7 @@
     tagProblem,
     versions,
     BITWINDOW_URL,
+    demoMode,
     type DatadirCheck,
     type InstallProgress,
     type NodeProgress,
@@ -47,6 +48,8 @@
   // An earlier install's folder: "use" it (its blocks, wallet and name) or start "fresh" (moved aside).
   let earlier: "use" | "fresh" | null = null;
   $: problem = tagProblem(tag);
+  // Someone who has never installed FreeBank's node: the demo leads, as it takes minutes, not a full node's hours.
+  $: newcomer = !!info?.demo_available && !info?.installed;
   // Said right by the Install button whenever it is disabled.
   $: installBlocked = problem
     ? "Fix the name above to continue."
@@ -96,7 +99,7 @@
     ["download", "Download"],
     ["verify", "Check it against the signed checksums"],
     ["unpack", "Unpack"],
-    ["config", "Save your name"],
+    ["config", "Save your name"], // "Save its settings" in demo mode, which asks for no name
     ["start", "Start FreeBank"],
   ];
   $: stageIndex = install ? STAGES.findIndex(([id]) => id === install!.stage) : -1;
@@ -176,7 +179,8 @@
   }
 
   async function proceed() {
-    if (info?.installed) {
+    // Demo mode with a node too old for it: installing fetches the newest release (data folder and wallet stay).
+    if (info?.installed && (!info.settings.demo || info.demo_ready)) {
       await startNode();
     } else {
       await showInstall();
@@ -189,6 +193,23 @@
     earlier = null;
     cancelledNote = "";
     screen = "install";
+  }
+
+  // Demo mode (v0.4.4): play money without an eCash node, FreeBank's gateway answering for the eCash chain. Turned on,
+  // setup goes straight on once the gateway answers; turned off, it shows the eCash checklist again.
+  async function setDemo(on: boolean) {
+    checking = true;
+    startError = "";
+    try {
+      await node.setDemo(on);
+      demoMode.set(on);
+      stack = null; // the last check was of the other mode's stack: don't show its answer on this screen
+    } catch (e) {
+      startError = String(e);
+      checking = false;
+      return;
+    }
+    await check(on);
   }
 
   // "Continue" on the eCash node screen, and "Back" after a failed install.
@@ -358,7 +379,7 @@
     <div class="hero">
       <div class="spinner big" aria-hidden="true"></div>
       <h2>Looking for eCash beta</h2>
-      <p class="lede">Checking this computer for an eCash node and enforcer.</p>
+      <p class="lede">{info?.settings.demo ? "Checking FreeBank's gateway." : "Checking this computer for an eCash node and enforcer."}</p>
     </div>
 
   {:else if screen === "unsupported"}
@@ -366,6 +387,32 @@
       <h2>Not available on this computer yet</h2>
       <p class="lede">{info?.platform_error}</p>
     </div>
+
+  {:else if screen === "stack" && info?.settings.demo}
+    <div class="hero left">
+      <h2>Demo mode</h2>
+      <p class="lede">
+        FreeBank runs with play money and no eCash node: FreeBank's gateway answers its questions about the eCash
+        chain. There are no deposits or withdrawals; Receive has Get play money.
+      </p>
+    </div>
+    <div class="checklist">
+      <div class="check-item" class:ok={stack?.found}>
+        <span class="dot"></span>
+        FreeBank's gateway
+        <span class="check-state">{stack?.found ? `block ${fmt(stack.l1_blocks)}` : stack || !checking ? "not answering" : "checking…"}</span>
+      </div>
+    </div>
+    {#if stack && !stack.found}<p class="hint">{stack.detail}</p>{/if}
+    <div class="row-actions">
+      {#if stack?.found}
+        <button on:click={() => goOn(proceed)} disabled={checking}>{checking ? "One moment…" : "Continue"}</button>
+      {:else}
+        <button on:click={() => check()} disabled={checking}>{checking ? "Checking…" : "Check again"}</button>
+      {/if}
+      <button class="secondary" on:click={() => setDemo(false)} disabled={checking}>Leave demo mode</button>
+    </div>
+    {#if startError}<p class="soft-error">{startError}</p>{/if}
 
   {:else if screen === "stack"}
     {#if stack?.found}
@@ -379,26 +426,49 @@
     {:else}
       <div class="hero">
         <div class="mark" aria-hidden="true">☉</div>
-        <h2>FreeBank needs eCash beta</h2>
-        <p class="lede">
-          FreeBank runs alongside an <strong>eCash beta full node</strong> and its <strong>enforcer</strong>.
-          This computer doesn't have them running yet.
-        </p>
+        {#if newcomer}
+          <h2>Welcome to FreeBank</h2>
+          <p class="lede">
+            Try it in a few minutes with play money, or run it alongside your own <strong>eCash beta full node</strong>
+            and its <strong>enforcer</strong>.
+          </p>
+        {:else}
+          <h2>FreeBank needs eCash beta</h2>
+          <p class="lede">
+            FreeBank runs alongside an <strong>eCash beta full node</strong> and its <strong>enforcer</strong>.
+            This computer doesn't have them running yet.
+          </p>
+        {/if}
       </div>
 
+      <!-- Newcomers see the demo first; someone who has run FreeBank before, the way back to their own eCash node. -->
+      <div class="setup-cards">
+      {#if info?.demo_available}
+        <div class="card steps" data-testid="try-demo" style:order={newcomer ? 0 : 1}>
+          <h3>Just trying it?</h3>
+          <p>
+            Try FreeBank with play money and no eCash node: FreeBank's gateway answers its questions about the eCash
+            chain. There are no deposits or withdrawals. You can leave demo mode later in Settings.
+          </p>
+          <div class="row-actions">
+            <button class:secondary={!newcomer} on:click={() => setDemo(true)} disabled={checking}>Try the demo</button>
+          </div>
+        </div>
+      {/if}
       <div class="card steps">
-        <h3>The easiest way</h3>
+        <h3>{newcomer ? "With your own eCash node" : "The easiest way"}</h3>
         <ol>
           <li>Install <strong>BitWindow</strong>.</li>
           <li>Choose full-node mode on <strong>eCash beta</strong> and let it sync.</li>
           <li>Come back here and press <em>Check again</em>.</li>
         </ol>
         <div class="row-actions">
-          <button on:click={() => openUrl(BITWINDOW_URL)}>Get BitWindow</button>
+          <button class:secondary={newcomer} on:click={() => openUrl(BITWINDOW_URL)}>Get BitWindow</button>
           <button class="secondary" on:click={() => check()} disabled={checking}>
             {checking ? "Checking…" : "Check again"}
           </button>
         </div>
+      </div>
       </div>
     {/if}
 
@@ -457,23 +527,43 @@
     <button class="link-btn back-link" on:click={() => (screen = "stack")}>← Back</button>
     <div class="hero left">
       <h2>Set up FreeBank</h2>
-      <p class="lede">FreeBank found an eCash beta node and its enforcer. It can now install its own node alongside them.</p>
+      {#if info?.settings.demo}
+        <p class="lede">
+          FreeBank installs its own node: a few minutes to download it, check it and catch up with the FreeBank chain.
+        </p>
+      {:else}
+        <p class="lede">FreeBank found an eCash beta node and its enforcer. It can now install its own node alongside them.</p>
+      {/if}
     </div>
 
     <div class="checklist">
-      <div class="check-item ok">
-        <span class="dot"></span>
-        eCash beta node <code>{info?.settings.rest}</code>
-        <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
-      </div>
-      <div class="check-item ok">
-        <span class="dot"></span>
-        Enforcer <code>{info?.settings.enforcer}</code>
-        <span class="check-state">found</span>
-      </div>
+      {#if info?.settings.demo}
+        <div class="check-item ok">
+          <span class="dot"></span>
+          FreeBank's gateway
+          <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
+        </div>
+      {:else}
+        <div class="check-item ok">
+          <span class="dot"></span>
+          eCash beta node <code>{info?.settings.rest}</code>
+          <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
+        </div>
+        <div class="check-item ok">
+          <span class="dot"></span>
+          Enforcer <code>{info?.settings.enforcer}</code>
+          <span class="check-state">found</span>
+        </div>
+      {/if}
     </div>
 
     <div class="card">
+      {#if info?.settings.demo && info.installed && !info.demo_ready}
+        <p class="hint unchecked-note">
+          Demo mode needs a newer FreeBank node than {info.settings.installed_tag}. Installing downloads the newest release
+          and checks it. Your data folder and wallet stay as they are.
+        </p>
+      {/if}
       {#if info?.unverified}
         <p class="hint unchecked-note">
           FreeBank {info.unverified} is on this computer, but an earlier version of the app installed it without checking its
@@ -500,6 +590,8 @@
           </div>
         </div>
       {/if}
+      <!-- A demo node can't bid for blocks, so its name (still set, for leaving demo later) isn't asked for. -->
+      {#if !info?.settings.demo || problem}
       <label class="field">
         <span class="field-label">Name on your blocks</span>
         <div class="input-with-btn">
@@ -511,6 +603,7 @@
         <p class="field-problem">{problem}</p>
       {:else}
         <p class="hint">When your node wins a block (it can bid for them later, eCash › Bidding), the explorer shows this name on it. Any name you like, up to 64 characters.</p>
+      {/if}
       {/if}
 
       {#if datadir && datadir.kind === "other"}
@@ -544,7 +637,7 @@
   {:else if screen === "installing"}
     <div class="hero left">
       <h2>Installing FreeBank{install?.tag ? ` ${install.tag}` : ""}</h2>
-      <p class="lede">Name on your blocks: <strong>{tag}</strong></p>
+      {#if !info?.settings.demo}<p class="lede">Name on your blocks: <strong>{tag}</strong></p>{/if}
     </div>
     <div class="card">
       <ul class="stages">
@@ -569,7 +662,7 @@
                   {/key}
                 </span>
               {:else}
-                {label}
+                {id === "config" && info?.settings.demo ? "Save its settings" : label}
               {/if}
               {#if (state === "active" || state === "done") && install?.note && i === stageIndex && id !== "download"}
                 <span class="stage-note">{install.note}</span>
@@ -667,5 +760,14 @@
   }
   .unchecked-note {
     margin-bottom: 16px;
+  }
+  /* In demo mode nothing may come before Install in its card. */
+  .card > button.wide:first-child {
+    margin-top: 0;
+  }
+  .setup-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 14px; /* as .setup's own */
   }
 </style>

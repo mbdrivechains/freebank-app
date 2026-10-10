@@ -189,6 +189,20 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
         ));
     }
 
+    // Demo mode: the enforcer is FreeBank's gateway through the app's relay, and there is no eCash node.
+    let (enforcer, rest) = if s.demo {
+        if !super::relay::node_can_demo(&tag) {
+            return Err(format!(
+                "Demo mode needs FreeBank's node v0.2.25 or newer, and this computer has {}. Update it first.",
+                tag
+            ));
+        }
+        super::relay::ensure(mgr).await?;
+        (super::relay::relay_addr(), String::new())
+    } else {
+        (s.enforcer.clone(), s.rest.clone())
+    };
+
     let logs = mgr.app_dir.join("logs");
     std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
     let out = std::fs::OpenOptions::new()
@@ -207,8 +221,8 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     cmd.arg(format!("-datadir={}", s.datadir))
         .arg("-server=1")
         .arg("-mainchaintransport=enforcer")
-        .arg(format!("-enforceraddr={}", s.enforcer))
-        .arg(format!("-mainchainrest={}", s.rest))
+        .arg(format!("-enforceraddr={}", enforcer))
+        .arg(format!("-mainchainrest={}", rest))
         .arg("-mainchainchain=main")
         .arg(format!("-mainchainblockpin={}:{}", PIN_HEIGHT, PIN_HASH))
         // Always explicit, so an rpcport= line in freebank.conf can't hide the node from us.
@@ -220,7 +234,8 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     if reindex {
         cmd.arg("-reindex");
     }
-    let detach = s.keep_running;
+    // A demo node never outlives the app, which runs its relay (demo mode turns Keep running off; this is the backstop).
+    let detach = s.keep_running && !s.demo;
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(move || {
@@ -515,6 +530,8 @@ pub struct NodeStatus {
     pub datadir: String,
     pub rest: String,
     pub enforcer: String,
+    /// Demo mode: no eCash node (`rest` is empty), and `enforcer` names FreeBank's gateway.
+    pub demo: bool,
     pub release: Option<String>,
     pub p2p_port: u16,
     /// False when freebank.conf says listen=0: no incoming peers.
@@ -627,8 +644,9 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         tag: conf_tag(&datadir),
         explorer: EXPLORER.to_string(),
         datadir: s.datadir.clone(),
-        rest: s.rest.clone(),
-        enforcer: s.enforcer.clone(),
+        rest: if s.demo { String::new() } else { s.rest.clone() },
+        enforcer: if s.demo { super::relay::GATEWAY.to_string() } else { s.enforcer.clone() },
+        demo: s.demo,
         release: s.installed_tag.clone(),
         p2p_port: s.p2p_port,
         listens: std::fs::read_to_string(datadir.join("freebank.conf"))
@@ -685,7 +703,13 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         c.call("getnetworkinfo", vec![]),
         c.call("getblockchaininfo", vec![]),
         c.call("getpeerinfo", vec![]),
-        detect::l1_blocks(&mgr.http, &s.rest),
+        async {
+            if s.demo {
+                super::relay::tip(mgr).await
+            } else {
+                detect::l1_blocks(&mgr.http, &s.rest).await
+            }
+        },
     );
     let chain = chain?;
     st.peers = peers?

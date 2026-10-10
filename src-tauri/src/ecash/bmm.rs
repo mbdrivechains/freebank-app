@@ -515,6 +515,10 @@ async fn pass(mgr: &crate::node::NodeManager) {
     if mgr.obliterated.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    // Demo mode (v0.4.4) has no eCash wallet to bid from, and hides the eCash tab that turns bidding off.
+    if mgr.settings.lock().await.demo {
+        return;
+    }
     // Work on a copy, so changing the settings never waits on a slow connect_block.
     let mut work = RUNNER.get(&mgr.app_dir).await;
     let busy = work.rounds.iter().any(|r| r.outcome == "live" || !r.freed);

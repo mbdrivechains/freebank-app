@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "freebank"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "aes-gcm",
  "arboard",
@@ -1183,6 +1183,7 @@ dependencies = [
  "hex",
  "hkdf",
  "libc",
+ "native-tls",
  "p256",
  "rand 0.8.5",
  "reqwest",
@@ -1196,6 +1197,7 @@ dependencies = [
  "tauri-plugin-shell",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-native-tls",
  "tokio-tungstenite",
  "url",
  "zeroize",

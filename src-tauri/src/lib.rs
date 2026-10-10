@@ -123,6 +123,17 @@ pub fn run() {
             let hosting = phone.0.as_ref().ok().cloned();
             app.manage(phone);
             let mgr = Arc::new(NodeManager::new(dir));
+            // Demo mode (v0.4.4): a node left running finds its relay to the gateway again.
+            {
+                let m = mgr.clone();
+                tauri::async_runtime::spawn(async move {
+                    if m.settings.lock().await.demo {
+                        if let Err(e) = node::relay::ensure(&m).await {
+                            activity::note(&format!("demo relay: {}", e));
+                        }
+                    }
+                });
+            }
             // Hosted wallets (v0.2.8): the phone link makes them in this node, and finishes what a restart cut short.
             if let Some(p) = hosting {
                 p.set_maker(Arc::new(wallets::HostedMaker { mgr: mgr.clone() }));
@@ -230,6 +241,7 @@ pub fn run() {
             node::commands::app_quit_asked,
             // v0.2.0 node
             node::commands::node_set_keep_running,
+            node::commands::node_set_demo,
             node::commands::node_restart,
             node::commands::refetch_start,
             phone::commands::phone_pair_start,

@@ -766,7 +766,7 @@ fn opener_scope_matches_the_frontend() {
         .and_then(|rest| rest.split("$/;").next())
         .expect("OPENABLE in lib/node.ts");
     assert_eq!(js.replace("\\/", "/"), scope);
-    // Only https, and only FreeBank's own hosts.
+    // Only https, and only FreeBank's own hosts (and, on the beta, its Telegram bot's start link with an address).
     assert!(scope.starts_with("https://("));
     assert!(!scope.contains("http?") && !scope.contains(".*") && !scope.contains("\\w+"));
     let perms = include_str!("../../capabilities/default.json");

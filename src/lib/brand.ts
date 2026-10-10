@@ -17,6 +17,12 @@ export const NOTE_UNIT = "units";
 // The same address is node::EXPLORER on the Rust side.
 export const EXPLORER_URL = "https://explorer.ecxfreebank.com";
 
+// Beta only: FreeBank's Telegram bot, which hands out play money. Receive's "Get play money" opens
+// t.me/<bot>?start=fund_<address> and the bot pays a little sECX to that address, once per Telegram account
+// (lib/node.ts OPENABLE allows exactly that link). "" hides the button: set it so for mainnet.
+export const BETA_FAUCET_BOT = "freebank_beta_bot";
+export const playMoneyUrl = (address: string) => `https://t.me/${BETA_FAUCET_BOT}?start=fund_${address}`;
+
 // localStorage key for the saved PWA connection.
 export const CONFIG_KEY = "freebank_connection";
 

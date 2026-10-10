@@ -17,6 +17,7 @@
   import { fmtEcx } from "../lib/amount";
   import { BASE_TICKER } from "../lib/brand";
   import { nice } from "../lib/errors";
+  import { demoMode } from "../lib/node";
   import { showReceipt } from "../lib/receipts";
   import { withUnlock } from "../lib/wallet";
   import {
@@ -627,8 +628,8 @@
       {/if}
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <p class="hint">
-        These words also cover the app's eCash wallets. Other wallets can't read FreeBank's addresses from them
-        directly.
+        {#if !$demoMode}These words also cover the app's eCash wallets.{/if} Other wallets can't read FreeBank's
+        addresses from them directly.
       </p>
       <div class="row-actions">
         <button on:click={wroteThemDown} disabled={hidden}>I've written them down</button>
@@ -690,8 +691,9 @@
         <div class="wf-box">
           <strong>Back up your wallet</strong>
           <span>
-            A backup keeps your notes, labels and history too. Your wallet got a new seed just now, so backups made
-            before today don't cover the addresses it gives from now on.
+            A backup keeps your notes, labels and history too.{#if !prot.new_wallet && request.kind !== "restore-file"}{" "}Your
+              wallet got a new seed just now, so backups made before today don't cover the addresses it gives from now
+              on.{/if}
           </span>
           {#each backupSaved as s}<span class="mono small">Saved to <PathText path={s} /></span>{/each}
           {#if backupError}<span class="soft-error">{backupError}</span>{/if}

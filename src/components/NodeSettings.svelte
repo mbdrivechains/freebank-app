@@ -13,6 +13,7 @@
   import PathText from "./PathText.svelte";
   import { BASE_TICKER } from "../lib/brand";
   import {
+    demoMode,
     node,
     type NodeStatus,
     type ObliteratePlan,
@@ -41,6 +42,31 @@
     }
   }
   onMount(load);
+
+  // Demo mode (v0.4.4): leaving it restarts a running node with the eCash node and enforcer under Advanced.
+  let demoBusy = false;
+  let demoError = "";
+  async function leaveDemo() {
+    demoBusy = true;
+    demoError = "";
+    try {
+      // Only towards an eCash node and enforcer that answer: the node would fail to start without them.
+      const got = info ? await node.testConnection(info.settings.rest, info.settings.enforcer) : [];
+      const missing = got.filter((c) => !c.ok);
+      if (!info || missing.length) {
+        demoError = `Demo mode stays on: ${missing.map((c) => `${c.label}: ${c.detail}`).join("; ") || "the addresses below didn't answer"}. Start the eCash node and enforcer (BitWindow runs them), or change the addresses below, then try again.`;
+        return;
+      }
+      await node.setDemo(false);
+      demoMode.set(false);
+      if (st?.managed) await node.restart();
+    } catch (e) {
+      demoError = String(e);
+    } finally {
+      demoBusy = false;
+      await load();
+    }
+  }
 
   let confirm: "wipe" | "remove" | "obliterate" | null = null;
 
@@ -226,6 +252,19 @@
   <div class="card">
     <h3>Connection</h3>
     <p class="muted small">Where your FreeBank node finds eCash beta, and where it keeps its data.</p>
+    {#if info.settings.demo}
+      <div class="demo-mode" data-testid="demo-mode">
+        <p>
+          <strong>Demo mode.</strong> Your node runs without an eCash node: FreeBank's gateway answers its questions
+          about the eCash chain. Play money only, so there are no deposits or withdrawals.
+        </p>
+        <button class="secondary" on:click={leaveDemo} disabled={demoBusy}>
+          {demoBusy ? "One moment…" : "Leave demo mode"}
+        </button>
+        <p class="hint">Your node then uses the eCash node and enforcer below, which must be running, and restarts if it is running now.</p>
+        {#if demoError}<p class="soft-error">{demoError}</p>{/if}
+      </div>
+    {/if}
     <div class="settings-adv">
       <AdvancedSettings
         settings={info.settings}

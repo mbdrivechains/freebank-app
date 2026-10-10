@@ -59,7 +59,11 @@
   const SEGS: [Seg, string][] = [["notes", "Notes"], ["houses", "Houses"], ["pools", "Pools"], ["bills", "Bills"]];
   let seg: Seg = "notes";
   let error = "";
-  const NEED_COINS = "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
+  /** Demo mode (v0.4.4): no Deposit; play money comes from Receive. */
+  export let demo = false;
+  $: NEED_COINS = demo
+    ? "You need FreeBank coins first: Home › Receive › Get play money brings some."
+    : "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
 
   function open(s: Seg) {
     seg = s;

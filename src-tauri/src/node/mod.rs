@@ -9,6 +9,7 @@ pub mod install;
 pub mod lock;
 pub mod obliterate;
 pub mod process;
+pub mod relay;
 pub mod release_key;
 #[cfg(all(test, unix))]
 pub mod testnode;
@@ -124,6 +125,9 @@ pub struct Settings {
     /// "Update FreeBank by itself" (v0.4.2, Settings > App updates; app_update.rs `auto_round`): off unless the user
     /// turns it on. On, a signed release is fetched, checked and put in place without asking; it runs from the next start.
     pub auto_update: bool,
+    /// Demo mode (v0.4.4, relay.rs): no eCash node. The node asks FreeBank's read-only enforcer gateway for eCash facts,
+    /// through the app's relay; `rest` and `enforcer` are kept for leaving it. Play money only: no deposits or withdrawals.
+    pub demo: bool,
 }
 
 impl Default for Settings {
@@ -151,6 +155,7 @@ impl Default for Settings {
             changer_url: None,
             changer_key: None,
             auto_update: false,
+            demo: false,
         }
     }
 }
@@ -222,6 +227,11 @@ pub struct NodeManager {
     pub app_updating: AtomicBool,
     /// When the app last looked for its node from an earlier launch.
     pub adopt_tried: std::sync::Mutex<Option<Instant>>,
+    /// Demo mode's relay (relay.rs) runs in this process; `relay_start` lets one caller start it.
+    pub relay_up: AtomicBool,
+    pub relay_start: tokio::sync::Mutex<()>,
+    /// The gateway's eCash height for the status poll, and when it was asked (relay.rs `tip`).
+    pub relay_tip: std::sync::Mutex<Option<(Instant, Option<u64>)>>,
 }
 
 /// Holds `NodeManager::activity` for one long operation; clears it when dropped.
@@ -267,6 +277,9 @@ impl NodeManager {
             close_asked: std::sync::Mutex::new(None),
             adopt_tried: std::sync::Mutex::new(None),
             app_updating: AtomicBool::new(false),
+            relay_up: AtomicBool::new(false),
+            relay_start: tokio::sync::Mutex::new(()),
+            relay_tip: std::sync::Mutex::new(None),
         }
     }
 

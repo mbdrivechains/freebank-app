@@ -85,7 +85,7 @@
           <span class="dot" class:on={nodeWord === "running"} class:warn={nodeWord === "starting"}></span>
           <div><span>FreeBank node</span> <span class="muted small">{nodeWord} · {nodeAfter}</span></div>
         </li>
-        {#if here(st.rest)}
+        {#if !st.demo && here(st.rest)}
           <li>
             <span class="dot" class:on={l1Up}></span>
             <div>
@@ -96,7 +96,16 @@
         {/if}
       </ul>
     </li>
-    {#if !here(st.rest)}
+    {#if st.demo}
+      <li class="link"></li>
+      <li class="part">
+        <span class="dot" class:on={l1Up}></span>
+        <div>
+          <strong>FreeBank's gateway</strong>
+          <span class="muted small">demo mode: eCash facts from {st.enforcer} · {l1Up ? `block ${st.l1_blocks?.toLocaleString()}` : "not answering"}</span>
+        </div>
+      </li>
+    {:else if !here(st.rest)}
       <li class="link"></li>
       <li class="part">
         <span class="dot" class:on={l1Up}></span>

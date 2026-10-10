@@ -342,7 +342,7 @@ pub struct ConnCheck {
 /// freebankd (v0.2.17 on) asks it by default: a plain HTTP/1.1 POST of proto3 JSON to the enforcer's own port, so no
 /// grpcurl is needed (v0.2.5). Its own client: no redirects (a 307 would send the POST elsewhere), and at most 64 KiB
 /// read (security review L7).
-async fn enforcer_tip(enforcer: &str) -> Result<(u64, String), String> {
+pub(crate) async fn enforcer_tip(enforcer: &str) -> Result<(u64, String), String> {
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()

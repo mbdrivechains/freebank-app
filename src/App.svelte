@@ -27,7 +27,7 @@
   import WalletBanner from "./components/WalletBanner.svelte";
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
-  import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
+  import { checkForUpdate, demoMode, node, update, versions, type Obliterated, type Removed } from "./lib/node";
   import { appUpdate, loadAptOffer, startAppUpdateChecks } from "./lib/appUpdate";
   import AppUpdate from "./components/AppUpdate.svelte";
   import AptOffer from "./components/AptOffer.svelte";
@@ -126,6 +126,8 @@
   $: onSetup = !connected && !isPWA && !manualConnect && !gone && !removed;
 
   async function onSetupReady() {
+    demoMode.set(await node.setupInfo().then((i) => !!i.settings.demo).catch(() => false));
+    homeAction = "";
     localNode = true;
     connected = true;
     currentView = "home";
@@ -179,6 +181,9 @@
   }
 
   const NEED_COINS = "You need FreeBank coins first: Deposit, above, brings them in from eCash.";
+  // Demo mode (v0.4.4): play money and no eCash node, so no eCash tab, Deposit or Withdraw.
+  $: demo = $demoMode;
+  $: needCoins = demo ? "You need FreeBank coins first: Receive, above, has Get play money." : NEED_COINS;
 
   // Connection form (Model A: remote-control your own custodial node)
   let connMode: ConnMode = "local";
@@ -486,9 +491,11 @@
       <button class:active={currentView === "credit"} on:click={() => (currentView = "credit")}>
         Credit
       </button>
-      <button class:active={currentView === "ecash"} on:click={() => (currentView = "ecash")}>
-        eCash
-      </button>
+      {#if !demo}
+        <button class:active={currentView === "ecash"} on:click={() => (currentView = "ecash")}>
+          eCash
+        </button>
+      {/if}
       {#if localNode}
         <button class:active={currentView === "node"} on:click={() => (currentView = "node")}>
           Node
@@ -530,25 +537,27 @@
       <div class="home-actions">
         <button class:active={homeAction === "send"} on:click={() => openHome("send")} data-testid="home-send">Send</button>
         <button class:active={homeAction === "receive"} on:click={() => openHome("receive")} data-testid="home-receive">Receive</button>
-        <button class:active={homeAction === "deposit"} on:click={() => openHome("deposit")} data-testid="home-deposit">Deposit</button>
-        <button class:active={homeAction === "withdraw"} on:click={() => openHome("withdraw")} data-testid="home-withdraw">Withdraw</button>
+        {#if !demo}
+          <button class:active={homeAction === "deposit"} on:click={() => openHome("deposit")} data-testid="home-deposit">Deposit</button>
+          <button class:active={homeAction === "withdraw"} on:click={() => openHome("withdraw")} data-testid="home-withdraw">Withdraw</button>
+        {/if}
       </div>
       {#if homeAction === "send"}
         <!-- Send: Max, a speed, the fee shown before Confirm; the receipt has Speed up -->
         <SendPanel {balance} on:sent={() => { refresh(); homeAction = ""; }} />
       {:else if homeAction === "receive"}
-        <ReceivePanel {canShowAddresses} />
+        <ReceivePanel {canShowAddresses} onBeta={!!blockchainInfo && networkName(blockchainInfo) === "Beta"} />
       {:else if homeAction === "deposit"}
         <DepositPanel {canShowAddresses} on:ecash={() => (currentView = "ecash")} />
       {:else if homeAction === "withdraw"}
         <WithdrawPanel {balance} />
       {/if}
 
-      <HomeTransactions {transactions} {balance} needCoins={NEED_COINS} on:changed={() => refresh()} />
+      <HomeTransactions {transactions} {balance} needCoins={needCoins} on:changed={() => refresh()} />
     {:else if currentView === "ecash"}
       <EcashPanel on:settings={(e) => openFromEcash(e.detail)} />
     {:else if currentView === "credit"}
-      <CreditPanel {balance} height={blockchainInfo?.blocks ?? 0} syncing={!!blockchainInfo && blockchainInfo.headers > blockchainInfo.blocks + 2} />
+      <CreditPanel {balance} {demo} height={blockchainInfo?.blocks ?? 0} syncing={!!blockchainInfo && blockchainInfo.headers > blockchainInfo.blocks + 2} />
     {:else if currentView === "settings"}
       <!-- Settings: an index, one section at a time (v0.2.6); Start over last. -->
       <nav class="segments settings-index" aria-label="Settings">
@@ -564,7 +573,7 @@
       {:else if settingsPart === "node"}
         {#if localNode}
           <NodeSettings part="connection" on:removed={onRemoved} on:obliterated={onObliterated} />
-          <EcashLogin />
+          {#if !demo}<EcashLogin />{/if}
           <ChangerSettings />
         {:else}
           <div class="card">

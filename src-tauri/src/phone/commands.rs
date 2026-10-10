@@ -143,6 +143,9 @@ pub async fn phone_keep_info(
 pub async fn phone_keep_set(mgr: State<'_, Arc<crate::node::NodeManager>>, on: bool) -> Result<(), String> {
     mgr.still_here()?;
     let mut s = mgr.settings.lock().await.clone();
+    if on && s.demo {
+        return Err(crate::node::relay::DEMO_STOPS.into());
+    }
     s.keep_phone = on;
     s.keep_phone_asked = true;
     if on {
@@ -159,6 +162,9 @@ pub async fn phone_keep_set(mgr: State<'_, Arc<crate::node::NodeManager>>, on: b
 #[tauri::command]
 pub async fn phone_login_set(mgr: State<'_, Arc<crate::node::NodeManager>>, on: bool) -> Result<(), String> {
     mgr.still_here()?;
+    if on && mgr.settings.lock().await.demo {
+        return Err(crate::node::relay::DEMO_STOPS.into());
+    }
     super::login_item::set(&mgr.app_dir, on)?;
     crate::activity::note(if on { "daemon: start at login on" } else { "daemon: start at login off" });
     if on {
