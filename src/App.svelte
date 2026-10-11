@@ -24,7 +24,9 @@
   import HomeTransactions from "./components/HomeTransactions.svelte";
   // v0.2.0 wallet: the passphrase-first flow over every screen, the Home banner, Settings > Wallet
   import WalletGate from "./components/WalletGate.svelte";
+  import AskDialog from "./components/AskDialog.svelte";
   import DemoGuide from "./components/DemoGuide.svelte";
+  import HouseDue from "./components/HouseDue.svelte";
   import WalletBanner from "./components/WalletBanner.svelte";
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
@@ -186,6 +188,7 @@
   const NEED_COINS = "You need FreeBank coins first: Deposit, above, brings them in from eCash.";
   // Demo mode (v0.4.4): play money and no eCash node, so no eCash tab, Deposit or Withdraw.
   $: demo = $demoMode;
+  let asking = false; // the header's Ask FreeBank (v0.4.6)
   $: needCoins = demo ? "You need FreeBank coins first: Receive, above, has Get play money." : NEED_COINS;
 
   // Connection form (Model A: remote-control your own custodial node)
@@ -343,6 +346,11 @@
         {/if}
         {#if blockchainInfo}
           <span class="network">{networkName(blockchainInfo)} · block {blockchainInfo.blocks.toLocaleString()}</span>
+        {/if}
+        {#if connected && localNode && !isPWA}
+          <!-- Ask FreeBank (v0.4.6): the AI helper, from any screen, in either mode -->
+          <button class="gear ask-btn" class:active={asking} title="Ask FreeBank" aria-label="Ask FreeBank"
+            data-testid="ask-open" on:click={() => (asking = !asking)}>?</button>
         {/if}
         <button
           class="gear"
@@ -534,6 +542,7 @@
       />
     {:else if currentView === "home"}
       <WalletBanner />
+      {#if localNode && !isPWA}<HouseDue />{/if}
       {#if demo}<DemoGuide />{/if}
       <!-- Home / Dashboard -->
       <SecurityAlerts on:open={() => { currentView = "settings"; settingsPart = "security"; }} />
@@ -603,6 +612,8 @@
   {/if}
 
   {#if $reportDraft}<ReportDialog />{/if}
+
+  {#if asking}<AskDialog on:close={() => (asking = false)} />{/if}
 
   <!-- Demo mode: a light DEMO across every page, so play money is never taken for the real thing. -->
   {#if demo}<div class="demo-mark" aria-hidden="true"><span>DEMO</span></div>{/if}

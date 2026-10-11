@@ -4,6 +4,7 @@
   // "Got it" folds the card to one line, remembered on this computer only (a convenience: it opens again if lost).
   import { BETA_BOT_URL } from "../lib/brand";
   import { openUrl } from "../lib/node";
+  import AskBox from "./AskBox.svelte";
 
   const KEY = "freebank.demoGuide.folded";
   let folded = false;
@@ -38,6 +39,10 @@
     <div class="dg-actions">
       <button on:click={() => openUrl(BETA_BOT_URL)}>Open the bot ↗</button>
       <button class="ghost" on:click={() => fold(true)}>Got it</button>
+    </div>
+    <div class="dg-ask">
+      <b>Stuck? Ask FreeBank:</b>
+      <AskBox placeholder="What do I do after Get play money?" />
     </div>
   </div>
 {/if}
@@ -78,6 +83,14 @@
   .dg-actions button {
     font-size: 13.5px;
     padding: 8px 16px;
+  }
+  .dg-ask {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(217, 164, 65, 0.25);
   }
   .dg-open {
     display: block;

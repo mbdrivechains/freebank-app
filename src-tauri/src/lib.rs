@@ -1,4 +1,5 @@
 mod activity;
+mod ask;
 mod admin;
 mod app_update;
 mod changer;
@@ -7,6 +8,7 @@ mod commands;
 mod ecash;
 mod feedback;
 mod house;
+mod house_watch;
 mod node;
 mod phone;
 mod recovery;
@@ -98,6 +100,8 @@ pub fn run() {
         .manage(Arc::new(Mutex::new(FreeBankClient::default())))
         // One guard for every walletpassphrase the app makes (wallet::RelockGuard).
         .manage(wallet::RelockState::default())
+        // Automatic house attests (v0.4.6): off until turned on; the passphrase only in memory.
+        .manage(house_watch::AutoAttestState::default())
         .setup(|app| {
             // FREEBANK_APP_DIR lets a developer run the app against a scratch folder.
             let dir = match std::env::var_os("FREEBANK_APP_DIR") {
@@ -119,6 +123,12 @@ pub fn run() {
             // A background part kept the phone connected while the app was closed: it stops first,
             // so the app's own link never takes turns with it at the relay.
             app.manage(phone::commands::PhoneBackground(phone::background::take_back(&dir)));
+            house_watch::spawn(
+                app.handle().clone(),
+                client.clone(),
+                relock.clone(),
+                app.state::<house_watch::AutoAttestState>().inner().clone(),
+            );
             let phone = phone::commands::start(app.handle(), &dir, client, relock);
             let hosting = phone.0.as_ref().ok().cloned();
             app.manage(phone);
@@ -270,6 +280,10 @@ pub fn run() {
             withdraw::withdraw_confirm,
             withdraw::withdraw_list,
             withdraw::withdraw_cancel,
+            ask::ask_helper,
+            house_watch::houses_due,
+            house_watch::auto_attest_on,
+            house_watch::auto_attest_off,
             changer::changer_info,
             changer::changer_quote,
             changer::changer_pay,

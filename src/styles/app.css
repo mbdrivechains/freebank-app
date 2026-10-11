@@ -1292,6 +1292,12 @@ button.gear {
   color: var(--text-secondary);
 }
 
+/* Ask FreeBank (v0.4.6): the gear's twin, a question mark. */
+button.gear.ask-btn {
+  font-size: 15px;
+  font-weight: 700;
+}
+
 button.gear:hover,
 button.gear.active {
   color: var(--accent-color);

@@ -175,8 +175,8 @@ impl FreeBankClient {
         self
     }
 
-    /// The address it calls (tests point other clients at the same stand-in).
-    #[cfg(test)]
+    /// The address it calls: automatic house attests check it hasn't changed since their passphrase was given
+    /// (house_watch.rs), and tests point other clients at the same stand-in.
     pub fn url(&self) -> Option<&str> {
         self.url.as_deref()
     }
