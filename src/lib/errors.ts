@@ -46,7 +46,7 @@ export function nice(e: unknown): string {
     return "This house's notes can only go to its members, and that address isn't one.";
   }
   if (/bad-house-redeem-only/.test(m)) {
-    return "This house's notes pass only between the house and their holder: redeem or demand them instead.";
+    return "This house's notes pass only between the house and their holder: demand them instead (or redeem them, if your node holds the house's keys).";
   }
   if (/member op for this house is already in the mempool/i.test(m)) {
     return "A house's members can change once a block. Try again after the next block.";

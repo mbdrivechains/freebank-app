@@ -16,7 +16,8 @@
     type Pool,
   } from "../lib/api";
   import { nettingStep, roundHexFrom, type NettingRound } from "../lib/netting";
-  import { BASE_TICKER } from "../lib/brand";
+  import { BASE_TICKER, BETA_BOT_URL } from "../lib/brand";
+  import { openUrl } from "../lib/node";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import { nice } from "../lib/errors";
   import { walletLocked, withUnlock } from "../lib/wallet";
@@ -203,15 +204,15 @@
         const txid = await withUnlock(() => api.transferNote(houseId, units, to), { what: `send ${amount} of notes` });
         showReceipt(
           to
-            ? { txid, what: `Sent ${amount} of House #${houseId} notes to ${short(to)}`, rows: [{ label: "To", value: to, mono: true }] }
-            : { txid, what: `Moved ${amount} of House #${houseId} notes to one of your own addresses` },
+            ? { txid, what: `Sent ${amount} of ${nameOf(houses, houseId)} notes to ${short(to)}`, rows: [{ label: "To", value: to, mono: true }] }
+            : { txid, what: `Moved ${amount} of ${nameOf(houses, houseId)} notes to one of your own addresses` },
         );
       } else if (type === "redeem") {
         const txid = await withUnlock(() => api.redeemNote(houseId, units), { what: `redeem ${amount} of notes` });
-        showReceipt({ txid, what: `Redeemed ${amount} of House #${houseId} notes` });
+        showReceipt({ txid, what: `Redeemed ${amount} of ${nameOf(houses, houseId)} notes` });
       } else {
         const txid = await withUnlock(() => api.demandNote(houseId, units), { what: `lodge a demand on ${amount} of notes` });
-        showReceipt({ txid, what: `Lodged a demand on ${amount} of House #${houseId} notes` });
+        showReceipt({ txid, what: `Lodged a demand on ${amount} of ${nameOf(houses, houseId)} notes` });
       }
       action = null;
       await loadNotes();
@@ -830,7 +831,12 @@
                 <!-- A redeem-only house's notes pass only back to the house or to the holder's own key: Gather moves them
                      onto one of this wallet's addresses (a redeem takes coins summing exactly to the amount). -->
                 <button on:click={() => startAction("send", n.house_id)}>{typeOf(houses, n.house_id) === "redeem" ? "Gather" : "Send"}</button>
-                <button on:click={() => startAction("redeem", n.house_id)} disabled={!n.redeemable}>Redeem</button>
+                <!-- Redeem pays from the house's reserves, so only a node holding the house's keys can (without them the
+                     node burns the notes and pays nothing). A demo wallet runs no house: its play money is far short of a
+                     house's pledge. Demand is the holder's way. -->
+                {#if !demo}
+                  <button on:click={() => startAction("redeem", n.house_id)} disabled={!n.redeemable}>Redeem</button>
+                {/if}
                 <button on:click={() => startAction("demand", n.house_id)} disabled={!n.demandable}>Demand</button>
               </div>
               {#if action && action.houseId === n.house_id}
@@ -843,7 +849,7 @@
                     <p class="hint">{unitsEcho(actionUnits)}</p>
                   {/if}
                   {#if action.type === "send" && typeOf(houses, n.house_id) === "redeem"}
-                    <p class="hint">This house's notes go only back to the house. Gather moves them onto one of your own addresses, so a redeem can take them together.</p>
+                    <p class="hint">This house's notes go only back to the house. Gather moves them onto one of your own addresses, so a {demo ? "demand" : "redeem or a demand"} can take them together.</p>
                   {:else if action.type === "send"}
                     <label>
                       To address
@@ -857,13 +863,13 @@
                     {#if n.house_status === "d"}
                       <p class="hint">The house is suspended: only notes under demand can be redeemed now, with their interest.</p>
                     {/if}
-                    <p class="hint">Redemption is paid from the house's reserves — this succeeds when your node controls the house.</p>
+                    <p class="hint">Redemption is paid from the house's reserves, so it needs the house's keys on your node. Without them the notes are burned and nothing is paid: use Demand instead.</p>
                   {/if}
                   {#if action.type === "demand"}
                     {#if n.house_status === "d"}
                       <p class="hint">Your notes join the house's payout queue and earn {queueRate(houses, n.house_id)} from today. The house can pay you at any time; until it does, these notes can't be sent.</p>
                     {:else}
-                      <p class="hint">A formal demand: the house must pay you in full within the demand window. Until it pays, these notes can't be sent.</p>
+                      <p class="hint">A formal demand: the house must pay you in full within the demand window. Until it pays, these notes can't be sent.{#if demo}{" "}FreeBank's beta houses usually pay a demand within the hour.{/if}</p>
                     {/if}
                   {/if}
                   <div class="note-form-actions">
@@ -1356,16 +1362,25 @@
           </button>
         </div>
         <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, backed by a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+        {#if demo}
+          <p class="hint demo-lend" data-testid="demo-lend">
+            In the demo, the beta's houses lend through FreeBank's Telegram bot: borrow there, then its Wallet › Send to
+            your app brings the notes to Credit › Notes.
+            <button class="link-btn" on:click={() => openUrl(BETA_BOT_URL)}>Open the bot ↗</button>
+          </p>
+        {/if}
         {#if locked.bills}
           <p class="muted small">—</p>
         {:else if bills.length === 0}
           <div class="empty">
             <p>You have no bills yet.</p>
-            <p class="muted small">
-              {balance > 0
-                ? "Issue one under House tools, or share a bill key so someone can hand a bill to you."
-                : "Someone can hand a bill to you: share a bill key below."}
-            </p>
+            {#if !demo}
+              <p class="muted small">
+                {balance > 0
+                  ? "Issue one under House tools, or share a bill key so someone can hand a bill to you."
+                  : "Someone can hand a bill to you: share a bill key below."}
+              </p>
+            {/if}
           </div>
         {:else}
           {#each bills as b}

@@ -615,9 +615,13 @@ impl Pending {
                 text: format!("Send {ecx} sECX of {house}'s notes to {} (a phone's request)", self.address),
                 sats: Some(self.cost()),
             },
-            Kind::NoteRedeem => {
-                Approve::Action { text: format!("Redeem {ecx} sECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
-            }
+            Kind::NoteRedeem => Approve::Action {
+                text: format!(
+                    "Redeem {ecx} sECX of {house}'s notes (a phone's request). This pays only if this node holds the \
+                     house's keys; without them the notes are burned and nothing is paid."
+                ),
+                sats: Some(self.cost()),
+            },
             Kind::NoteDemand => {
                 Approve::Action { text: format!("Demand {ecx} sECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
             }
@@ -710,7 +714,8 @@ fn history_view(r: &Value) -> Value {
 }
 
 /// A wallet's notes (`listmynotes`) as the phone shows them, with their houses' names, states and types.
-fn notes_view(mine: &Value, houses: &Value) -> Value {
+/// `demo`: demo mode is on (`crate::node::DEMO`), so no Redeem is offered.
+fn notes_view(mine: &Value, houses: &Value, demo: bool) -> Value {
     let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
     let list = mine
         .as_array()
@@ -733,7 +738,9 @@ fn notes_view(mine: &Value, houses: &Value) -> Value {
                 "amount": to_ecx(units),
                 "demanded": to_ecx(n["demanded_units"].as_u64().unwrap_or(0)),
                 "redeemable": to_ecx(redeemable),
-                "can_redeem": n["redeemable"] == true,
+                // Not in demo mode: a demo node never holds a house's keys, and a holder's redeem without them burns the
+                // notes and pays nothing (Demand is the holder's way).
+                "can_redeem": n["redeemable"] == true && !demo,
                 "can_demand": n["demandable"] == true,
                 "rate_bps": house.map(|h| h["defer_interest_bps"].clone()).unwrap_or(Value::Null),
                 "type": house_type(house),
@@ -1466,6 +1473,9 @@ impl Phone {
                 let r = self.rpc.call("listhouses", vec![]).await?;
                 Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(house_view).collect()))
             }
+            "note-redeem" if crate::node::DEMO.load(std::sync::atomic::Ordering::SeqCst) => {
+                Err("Redeem needs the house's keys, which a demo node never has: use Demand, and the house pays you.".into())
+            }
             "send" | "note-send" | "note-redeem" | "note-demand" => {
                 // Signed by this phone's own Face ID: the desktop's approval needn't ask for it again (security review M1).
                 let face_id = self.passkey_of(dev).is_some_and(|k| k.sends);
@@ -1872,7 +1882,7 @@ impl Phone {
             }
         };
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-        Ok(notes_view(&mine, &houses))
+        Ok(notes_view(&mine, &houses, crate::node::DEMO.load(std::sync::atomic::Ordering::SeqCst)))
     }
 
     /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody

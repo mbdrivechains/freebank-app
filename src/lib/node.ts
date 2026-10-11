@@ -294,7 +294,7 @@ export function randomTag(): string {
 // tauri.conf.json's plugins.shell.open holds the same pattern, and the shell plugin enforces it; this
 // copy keeps the browser build's window.open to them too. Keep the two alike (security/tests.rs checks).
 export const OPENABLE =
-  /^https:\/\/((explorer\.ecxfreebank\.com|apt\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases|github\.com\/mbdrivechains\/freebank-app\/(issues\/new|security\/advisories\/new))([\/?][A-Za-z0-9._~%\/?=&#+-]*)?|t\.me\/freebank_beta_bot\?start=fund_[A-Za-z0-9]{25,59})$/;
+  /^https:\/\/((explorer\.ecxfreebank\.com|apt\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases|github\.com\/mbdrivechains\/freebank-app\/(issues\/new|security\/advisories\/new))([\/?][A-Za-z0-9._~%\/?=&#+-]*)?|t\.me\/freebank_beta_bot(\?start=fund_[A-Za-z0-9]{25,59})?)$/;
 
 export async function openUrl(url: string): Promise<void> {
   if (!OPENABLE.test(url)) {

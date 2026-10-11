@@ -2573,6 +2573,12 @@ async fn the_phone_sees_its_notes_and_the_houses() {
         json!({"house": 3, "name": "Bank of Leith", "state": "o", "state_name": "Open", "amount": 0.05, "demanded": 0.0,
                "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000, "type": "open"})
     );
+    // Demo mode (v0.4.5): no Redeem, as a demo node holds no house's keys (Demand stays).
+    let mine = json!([{"house_id": 3, "units": 5000000, "demanded_units": 0, "house_status": "o", "redeemable": true,
+                       "redeemable_units": 5000000, "demandable": true}]);
+    let v = notes_view(&mine, &json!([]), true);
+    assert_eq!((v[0]["can_redeem"].clone(), v[0]["can_demand"].clone()), (json!(false), json!(true)), "{v}");
+    assert_eq!(notes_view(&mine, &json!([]), false)[0]["can_redeem"], true);
     // Suspended: only the demanded notes can be redeemed, with their interest.
     assert_eq!(r["ok"][1]["state_name"], "Suspended");
     assert_eq!(r["ok"][1]["redeemable"], 0.005);

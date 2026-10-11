@@ -24,6 +24,7 @@
   import HomeTransactions from "./components/HomeTransactions.svelte";
   // v0.2.0 wallet: the passphrase-first flow over every screen, the Home banner, Settings > Wallet
   import WalletGate from "./components/WalletGate.svelte";
+  import DemoGuide from "./components/DemoGuide.svelte";
   import WalletBanner from "./components/WalletBanner.svelte";
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
@@ -139,6 +140,7 @@
   let removed: Removed | null = null;
   function onRemoved(e: CustomEvent<Removed>) {
     removed = e.detail;
+    demoMode.set(false); // setup sets it again from the settings, if demo mode is still on
     connected = false;
     localNode = false;
     clearReceipts();
@@ -151,6 +153,7 @@
   let closing = false;
   function onObliterated(e: CustomEvent<Obliterated>) {
     gone = e.detail;
+    demoMode.set(false);
     connected = false;
     localNode = false;
     clearReceipts();
@@ -531,6 +534,7 @@
       />
     {:else if currentView === "home"}
       <WalletBanner />
+      {#if demo}<DemoGuide />{/if}
       <!-- Home / Dashboard -->
       <SecurityAlerts on:open={() => { currentView = "settings"; settingsPart = "security"; }} />
       <BalanceCard {balance} onRefresh={refresh} />
@@ -599,6 +603,9 @@
   {/if}
 
   {#if $reportDraft}<ReportDialog />{/if}
+
+  <!-- Demo mode: a light DEMO across every page, so play money is never taken for the real thing. -->
+  {#if demo}<div class="demo-mark" aria-hidden="true"><span>DEMO</span></div>{/if}
 
   {#if $versions}
     <footer class="app-foot">

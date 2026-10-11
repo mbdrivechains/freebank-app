@@ -147,6 +147,7 @@
     backError = "";
     try {
       info = await node.setupInfo();
+      demoMode.set(!!info.settings.demo); // the watermark from the first setup screen, after a restart too
       versions.update((v) => v ?? { app: info!.app_version, node: null, commit: null });
       if (!tag) tag = info.current_tag || info.suggested_tag;
       if (info.platform_error) {
@@ -448,7 +449,8 @@
           <h3>Just trying it?</h3>
           <p>
             Try FreeBank with play money and no eCash node: FreeBank's gateway answers its questions about the eCash
-            chain. There are no deposits or withdrawals. You can leave demo mode later in Settings.
+            chain. The play money and loans come from FreeBank's Telegram bot, so you'll need Telegram. There are no
+            deposits or withdrawals. You can leave demo mode later in Settings.
           </p>
           <div class="row-actions">
             <button class:secondary={!newcomer} on:click={() => setDemo(true)} disabled={checking}>Try the demo</button>

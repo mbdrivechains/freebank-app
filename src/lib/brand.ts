@@ -22,6 +22,8 @@ export const EXPLORER_URL = "https://explorer.ecxfreebank.com";
 // (lib/node.ts OPENABLE allows exactly that link). "" hides the button: set it so for mainnet.
 export const BETA_FAUCET_BOT = "freebank_beta_bot";
 export const playMoneyUrl = (address: string) => `https://t.me/${BETA_FAUCET_BOT}?start=fund_${address}`;
+/** The beta bot itself (demo mode's "Open the bot", v0.4.5): where the beta's houses lend. */
+export const BETA_BOT_URL = `https://t.me/${BETA_FAUCET_BOT}`;
 
 // localStorage key for the saved PWA connection.
 export const CONFIG_KEY = "freebank_connection";

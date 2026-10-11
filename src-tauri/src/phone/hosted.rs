@@ -1305,7 +1305,7 @@ impl Phone {
                     Err(e) => return Err(e.plain()),
                 };
                 let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-                Ok(notes_view(&mine, &houses))
+                Ok(notes_view(&mine, &houses, crate::node::DEMO.load(std::sync::atomic::Ordering::SeqCst)))
             }
             "houses" => {
                 let r = self.rpc.call("listhouses", vec![]).await?;

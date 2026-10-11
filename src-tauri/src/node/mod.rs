@@ -14,6 +14,11 @@ pub mod release_key;
 #[cfg(all(test, unix))]
 pub mod testnode;
 
+/// Demo mode is on (v0.4.5), for code that holds no `Mgr`: the phone's notes offer no Redeem then (a demo node never
+/// holds a house's keys, and a holder's redeem without them burns the notes). Kept with the settings: set as they load
+/// and each time they are saved.
+pub static DEMO: AtomicBool = AtomicBool::new(false);
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -245,10 +250,11 @@ impl Drop for Busy<'_> {
 
 impl NodeManager {
     pub fn new(app_dir: PathBuf) -> Self {
-        let settings = std::fs::read(app_dir.join("settings.json"))
+        let settings: Settings = std::fs::read(app_dir.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        DEMO.store(settings.demo, Ordering::SeqCst);
         let http = reqwest::Client::builder()
             .user_agent(concat!("FreeBank-app/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(8))
@@ -342,6 +348,7 @@ impl NodeManager {
         std::fs::create_dir_all(&self.app_dir).map_err(|e| e.to_string())?;
         let json = serde_json::to_vec_pretty(&s).map_err(|e| e.to_string())?;
         std::fs::write(self.app_dir.join("settings.json"), json).map_err(|e| e.to_string())?;
+        DEMO.store(s.demo, Ordering::SeqCst);
         *self.settings.lock().await = s;
         Ok(())
     }
