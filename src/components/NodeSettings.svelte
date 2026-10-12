@@ -12,6 +12,7 @@
   import KeepRunning from "./KeepRunning.svelte";
   import PathText from "./PathText.svelte";
   import { BASE_TICKER } from "../lib/brand";
+  import { bmmStatus } from "../lib/ecash";
   import {
     demoMode,
     node,
@@ -32,10 +33,16 @@
   let info: SetupInfo | null = null;
   let st: NodeStatus | null = null;
   let loadError = "";
+  /** Block bidding is switched on (the eCash tab), which demo mode can't carry on or turn off. */
+  let bidding = false;
 
   async function load() {
     try {
-      [info, st] = await Promise.all([node.setupInfo(), node.status()]);
+      [info, st, bidding] = await Promise.all([
+        node.setupInfo(),
+        node.status(),
+        bmmStatus().then((b) => b.on).catch(() => false),
+      ]);
       loadError = "";
     } catch (e) {
       loadError = String(e);
@@ -59,6 +66,33 @@
       }
       await node.setDemo(false);
       demoMode.set(false);
+      if (st?.managed) await node.restart();
+    } catch (e) {
+      demoError = String(e);
+    } finally {
+      demoBusy = false;
+      await load();
+    }
+  }
+
+  // Try the demo from Settings (v0.4.7), for someone who set up with their own eCash node: the same wallet and data
+  // folder, the node restarted through FreeBank's gateway. Setup has its own "Try the demo", so only the main app's
+  // Settings offer it.
+  $: demoBlocked = !info
+    ? ""
+    : info.demo_ready === false
+      ? `Demo mode needs FreeBank's node v0.2.25 or newer, and this computer has ${info.settings.installed_tag}. Update it on the Node tab first.`
+      : external
+        ? "A FreeBank node started by another program is running. Demo mode needs the node this app runs: stop that one first."
+        : bidding
+          ? "Block bidding is on. Turn it off on the eCash tab first: demo mode has no eCash tab."
+          : "";
+  async function tryDemo() {
+    demoBusy = true;
+    demoError = "";
+    try {
+      await node.setDemo(true);
+      demoMode.set(true);
       if (st?.managed) await node.restart();
     } catch (e) {
       demoError = String(e);
@@ -262,6 +296,22 @@
           {demoBusy ? "One moment…" : "Leave demo mode"}
         </button>
         <p class="hint">Your node then uses the eCash node and enforcer below, which must be running, and restarts if it is running now.</p>
+        {#if demoError}<p class="soft-error">{demoError}</p>{/if}
+      </div>
+    {:else if part === "connection" && info.demo_available}
+      <div class="demo-mode" data-testid="try-demo-settings">
+        <p>
+          <strong>Try the demo.</strong> Your node runs without your eCash node: FreeBank's gateway answers its
+          questions about the eCash chain. Your wallet and data folder stay as they are. Play money comes from Receive,
+          and there are no deposits or withdrawals until you leave demo mode, here.
+        </p>
+        <button class="secondary" on:click={tryDemo} disabled={demoBusy || !!demoBlocked}>
+          {demoBusy ? "One moment…" : "Try the demo"}
+        </button>
+        <p class="hint">
+          {demoBlocked ||
+            "Your node restarts if it is running now. In demo mode it stops when the app closes, so Keep running and Keep my phone connected turn off."}
+        </p>
         {#if demoError}<p class="soft-error">{demoError}</p>{/if}
       </div>
     {/if}

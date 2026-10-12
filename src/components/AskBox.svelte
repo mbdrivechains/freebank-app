@@ -18,6 +18,14 @@
   let error = "";
   let busy = false;
 
+  // v0.4.7: the grey example becomes the question with the right arrow, as a terminal takes a suggestion; Enter asks it.
+  function takeExample(e: KeyboardEvent) {
+    if (e.key === "ArrowRight" && !q && placeholder) {
+      e.preventDefault();
+      q = placeholder;
+    }
+  }
+
   async function ask() {
     const question = q.trim();
     if (!question || busy) return;
@@ -38,7 +46,8 @@
 
 <div class="ask" data-testid="ask-box">
   <form class="ask-form" on:submit|preventDefault={ask}>
-    <input bind:this={input} bind:value={q} maxlength="500" {placeholder} aria-label="Your question" autocomplete="off" spellcheck="true" />
+    <input bind:this={input} bind:value={q} on:keydown={takeExample} maxlength="500" placeholder={placeholder ? `${placeholder}  →` : ""}
+      title={placeholder ? "→ takes the example question" : undefined} aria-label="Your question" autocomplete="off" spellcheck="true" />
     <button type="submit" disabled={busy || !q.trim()}>{busy ? "…" : "Ask"}</button>
   </form>
   {#if asked && (answer || error || busy)}
@@ -81,6 +90,7 @@
   }
   .ask-a {
     white-space: pre-wrap;
+    overflow-wrap: anywhere; /* a long link breaks instead of running past the card */
     color: var(--text-color);
     line-height: 1.5;
     margin: 0;
