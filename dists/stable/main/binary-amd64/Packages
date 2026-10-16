@@ -398,3 +398,23 @@ Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivecha
  Finds the eCash beta node and enforcer on this computer or your network, installs
  and runs a FreeBank node beside them, and shows its peers and blocks.
 
+Package: freebank
+Architecture: amd64
+Version: 0.4.8
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13809
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.8_amd64.deb
+Size: 4943664
+MD5sum: 2c6f9694f147093ed006aeb441e02cf4
+SHA1: 20bcaa5b0f7aea9566d78af9e0ca39c7c273612e
+SHA256: 94c511043850972673111871bd8f17446c1abd4338630a56f27b640504058ab9
+SHA512: 49d31cc6386a0ac8265d2067ff0532c278959c7037d8b67d7c76b593e13a3cc612d1b4c2e1bdebf1c35511df8965bb1e0f5573204e7fe760d2d130ec63760b19
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+

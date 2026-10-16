@@ -22,29 +22,36 @@
 <div class="wrap">
   <h1>☉ FreeBank</h1>
   <p class="dim">The apt repository for the FreeBank desktop app (Ubuntu 22.04 or newer, and Debian 12 or newer, on x86-64).</p>
-  <p><strong>Most people don't need this page:</strong> download the <code>.deb</code> (Ubuntu, Debian) or the
-    <code>.dmg</code> (Mac) from the <a href="https://github.com/mbdrivechains/freebank-app/releases/latest">releases
-    page</a> and double-click it. FreeBank then tells you when a new version is out. The steps below make updates arrive
-    with your system's own updates instead.</p>
-
   <h2>Install</h2>
+  <ol>
+    <li>Download <code>freebank_&lt;version&gt;_amd64.deb</code> from the
+      <a href="https://github.com/mbdrivechains/freebank-app/releases/latest">releases page</a>.</li>
+    <li>Open it to install it. If your system doesn't offer to, this one line does:
+      <pre>sudo apt install ~/Downloads/freebank_*_amd64.deb</pre></li>
+    <li>Open <b>FreeBank</b> from your applications. It tells you when a new version is out, and offers once to set
+      up this repository for you (later: Settings › About, under App updates), so updates arrive with your system's
+      own.</li>
+  </ol>
+
+  <h2>What it needs</h2>
+  <p>Nothing else to try it: its demo mode runs FreeBank on the beta without an eCash node. For deposits and
+  withdrawals, FreeBank runs beside an eCash beta full node and its enforcer, on this computer (the easiest way is
+  <a href="https://releases.drivechain.info">BitWindow</a> in full-node mode on eCash beta) or on another machine on
+  your private network. Either way the app installs and runs its own FreeBank node.</p>
+
+  <h2>Setting up the repository by hand</h2>
+  <p class="dim">Only if you'd rather not let the app do it:</p>
 <pre>sudo wget -qO /usr/share/keyrings/freebank-archive-keyring.gpg https://apt.ecxfreebank.com/freebank-archive-keyring.gpg \
 &amp;&amp; echo "deb [signed-by=/usr/share/keyrings/freebank-archive-keyring.gpg] https://apt.ecxfreebank.com stable main" \
   | sudo tee /etc/apt/sources.list.d/freebank.list \
 &amp;&amp; sudo apt update &amp;&amp; sudo apt install freebank</pre>
-  <p>Then open <b>FreeBank</b> from your applications. Updates arrive with your normal system updates.</p>
-
-  <h2>What it needs</h2>
-  <p>FreeBank runs beside an eCash beta full node and its enforcer: on this computer (the easiest way is
-  <a href="https://releases.drivechain.info">BitWindow</a> in full-node mode on eCash beta), or on another machine
-  on your private network. The app finds them, then installs and runs its own FreeBank node.</p>
 
   <h2>Signing key</h2>
   <p class="dim">Packages are signed with this key. Its fingerprint is</p>
   <pre>22B4AF58556509FC55ED06DA7A80C7CC37C9603B</pre>
 
   <h2>Other downloads</h2>
-  <p>A standalone <code>.deb</code>, an AppImage and the macOS app are on the
+  <p>An AppImage for other Linux and the macOS app (<code>.dmg</code>) are on the
   <a href="https://github.com/mbdrivechains/freebank-app/releases">releases page</a>.
   The source is at <a href="https://github.com/mbdrivechains/freebank-app">github.com/mbdrivechains/freebank-app</a>.</p>
 </div>
