@@ -10,6 +10,10 @@
 //! maximum), and an order not paid in time shows as overdue, with the signed quote as the proof. Calls go out from
 //! here (the screens' CSP allows no other host). The changer's quote text must match the changer's own (`quote.rs`)
 //! byte for byte (the tests pin it on both sides).
+//!
+//! v0.4.8: a house's notes too (CASH_OUT_DESIGN.md §4.13): sell them to the changer for ECX ("out", paid in with
+//! `transfernote`) or buy them with ECX ("in", paid out to a plain address of the FreeBank wallet). A note quote names
+//! the house (`asset`), and its signed text is v2. One note unit is one sat of sECX at par.
 
 use crate::commands::ClientState;
 use crate::ecash::keys::Account;
@@ -34,11 +38,21 @@ pub const MAX_DISCOUNT_BPS: u64 = 1_500;
 const QUOTE_LIFE: Duration = Duration::from_secs(300);
 const EXPIRED: &str = "That quote is too old. Ask the changer again.";
 
+/// A note quote's house (the changer's quote.rs `NoteAsset`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteAsset {
+    pub house: u32,
+    pub classid: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Quote {
     pub id: String,
     /// "out" (sell FreeBank sECX for ECX) or "in" (buy it with ECX).
     pub side: String,
+    /// A house's notes instead of sECX (v0.4.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<NoteAsset>,
     pub amount: u64,
     pub payout: u64,
     pub discount_bps: u64,
@@ -52,8 +66,14 @@ pub struct Quote {
     pub sig: String,
 }
 
-/// The signed text (the changer's quote.rs `message`).
+/// The signed text (the changer's quote.rs `message`): v1 for sECX, v2 with the asset for a house's notes.
 pub fn message(q: &Quote) -> String {
+    if let Some(a) = &q.asset {
+        return format!(
+            "fb-changer quote v2\nid={}\nside={}\nasset=note:{}:{}\namount={}\npayout={}\ndiscount_bps={}\nfee={}\npay_in={}\npayout_to={}\nrefund_to={}\nexpires={}\ngenesis={}\nkey={}\n",
+            q.id, q.side, a.house, a.classid, q.amount, q.payout, q.discount_bps, q.fee, q.pay_in, q.payout_to, q.refund_to, q.expires, q.genesis, q.key
+        );
+    }
     format!(
         "fb-changer quote v1\nid={}\nside={}\namount={}\npayout={}\ndiscount_bps={}\nfee={}\npay_in={}\npayout_to={}\nrefund_to={}\nexpires={}\ngenesis={}\nkey={}\n",
         q.id, q.side, q.amount, q.payout, q.discount_bps, q.fee, q.pay_in, q.payout_to, q.refund_to, q.expires, q.genesis, q.key
@@ -71,6 +91,8 @@ pub fn verify(q: &Quote, pinned: &str) -> bool {
 /// What the app asked for, to check the quote against.
 pub struct Asked<'a> {
     pub side: &'a str,
+    /// The house whose notes were asked for; None for sECX.
+    pub house: Option<u32>,
     pub amount: u64,
     pub payout_to: &'a str,
     pub refund_to: &'a str,
@@ -84,7 +106,12 @@ pub fn check(q: &Quote, pinned: &str, a: &Asked) -> Result<(), String> {
     if !verify(q, pinned) {
         return Err("The changer's quote isn't signed with its key. Nothing was done.".into());
     }
-    if q.side != a.side || q.amount != a.amount || q.payout_to != a.payout_to || q.refund_to != a.refund_to {
+    if q.side != a.side
+        || q.asset.as_ref().map(|x| x.house) != a.house
+        || q.amount != a.amount
+        || q.payout_to != a.payout_to
+        || q.refund_to != a.refund_to
+    {
         return Err("The changer's quote isn't for what FreeBank asked. Nothing was done.".into());
     }
     if q.genesis != a.genesis {
@@ -221,16 +248,40 @@ async fn post(mgr: &NodeManager, url: &str, body: Value) -> Result<Value, String
 
 /// What the changer can take now, for the cards: None when no changer is set up (the cards don't show).
 #[tauri::command]
-pub async fn changer_info(mgr: State<'_, Arc<NodeManager>>) -> Result<Option<Value>, String> {
+pub async fn changer_info(mgr: State<'_, Arc<NodeManager>>, client: State<'_, ClientState>) -> Result<Option<Value>, String> {
     let Ok((url, key)) = conf(&mgr).await else { return Ok(None) };
     let v = get(&mgr, &format!("{url}/v1/info")).await?;
     if v["key"].as_str() != Some(key.as_str()) {
         return Err("The changer answers with another key than the one set up. Nothing is offered.".into());
     }
+    // The houses whose notes it deals in (v0.4.8), their words shortened. Each house's name is the chain's, read from
+    // this node: one the changer names otherwise isn't offered (review: a changer could put a known name on another
+    // house's notes).
+    let mut notes: Vec<Value> = Vec::new();
+    for n in v["notes"].as_array().into_iter().flatten() {
+        let (Some(house), Some(named)) = (n["house"].as_u64(), n["classid"].as_str()) else { continue };
+        let Ok(house) = u32::try_from(house) else { continue };
+        if chain_classid(&client, house).await.as_deref() != Some(named) {
+            continue;
+        }
+        notes.push(json!({
+            "house": house,
+            "classid": short(named),
+            "paused": n["paused"].as_str().map(short),
+            "sell_bps": n["sell_bps"], "buy_bps": n["buy_bps"], "sides": n["sides"],
+            "note_fee": n["note_fee"].as_u64(),
+        }));
+    }
     Ok(Some(json!({
         "out_bps": v["out_bps"], "in_bps": v["in_bps"], "min_order": v["min_order"],
-        "sides": v["sides"], "paused": v["paused"].as_str().map(short),
+        "sides": v["sides"], "paused": v["paused"].as_str().map(short), "notes": notes,
     })))
+}
+
+/// A house's class id as this node has it (None: no such house, or the node didn't answer).
+async fn chain_classid(client: &ClientState, house: u32) -> Option<String> {
+    let c = client.lock().await;
+    c.call_typed("gethouse", vec![json!(house)]).await.ok()?["classid"].as_str().map(str::to_string)
 }
 
 /// A quote as the screens show it.
@@ -238,6 +289,9 @@ pub async fn changer_info(mgr: State<'_, Arc<NodeManager>>) -> Result<Option<Val
 pub struct QuoteView {
     pub id: String,
     pub side: String,
+    /// A note quote's house and its class id.
+    pub house: Option<u32>,
+    pub classid: Option<String>,
     pub amount: u64,
     pub payout: u64,
     pub discount_bps: u64,
@@ -250,10 +304,13 @@ pub struct QuoteView {
 
 /// The FreeBank fee reckoned for paying in on FreeBank ("out"), for the phone's count: freebankd's wallet sets it.
 const FREEBANK_PAY_FEE: u64 = 20_000;
+/// A note transfer's fee, as the app's other note transfers pay it (0.001 sECX).
+const NOTE_FEE: u64 = 100_000;
 
 /// Ask the changer for a quote: "out" (sell `amount` FreeBank sECX; eCash to `address`, or to a fresh address of the
 /// app's eCash wallet) or "in" (buy with `amount` eCash from the app's eCash wallet; FreeBank sECX to a fresh address of
-/// the FreeBank wallet in use).
+/// the FreeBank wallet in use). With `house`, that house's notes instead of sECX (the FreeBank address is a plain one,
+/// which notes need).
 #[tauri::command]
 pub async fn changer_quote(
     mgr: State<'_, Arc<NodeManager>>,
@@ -261,6 +318,7 @@ pub async fn changer_quote(
     side: String,
     amount: String,
     address: Option<String>,
+    house: Option<u32>,
 ) -> Result<QuoteView, String> {
     let (url, key) = conf(&mgr).await?;
     let amount = crate::phone::store::decimal_to_sats(&amount).map_err(|_| "Enter the amount as a number, with at most 8 decimals.")?;
@@ -290,7 +348,11 @@ pub async fn changer_quote(
         let h = c.call_typed("getblockcount", vec![]).await.map_err(|e| e.for_ui())?;
         (g.as_str().unwrap_or_default().to_string(), h.as_u64().unwrap_or(0))
     };
-    let v = post(&mgr, &format!("{url}/v1/quote"), json!({"side": side, "amount": amount, "payout_to": payout_to, "refund_to": refund_to})).await?;
+    let mut ask = json!({"side": side, "amount": amount, "payout_to": payout_to, "refund_to": refund_to});
+    if let Some(h) = house {
+        ask["house"] = json!(h);
+    }
+    let v = post(&mgr, &format!("{url}/v1/quote"), ask).await?;
     let q: Quote = serde_json::from_value(v).map_err(|_| "The changer's quote can't be read.".to_string())?;
     // A quote id we can file under: 16 hex, not one we have already (review L9).
     if q.id.len() != 16 || !q.id.chars().all(|c| c.is_ascii_hexdigit()) || load(&mgr.app_dir)?.iter().any(|o| o.quote.id == q.id) {
@@ -312,10 +374,18 @@ pub async fn changer_quote(
         }
         ec.node().call_typed("getblockcount", vec![]).await.map_err(|e| e.for_ui())?.as_u64().unwrap_or(0)
     };
-    check(&q, &key, &Asked { side: &side, amount, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })?;
+    check(&q, &key, &Asked { side: &side, house, amount, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })?;
+    // The house's name in the signed quote is the chain's (the number is checked above).
+    if let Some(a) = &q.asset {
+        if chain_classid(&client, a.house).await.as_deref() != Some(a.classid.as_str()) {
+            return Err("The changer's quote names the house otherwise than the chain does. Nothing was done.".into());
+        }
+    }
     let view = QuoteView {
         id: q.id.clone(),
         side: q.side.clone(),
+        house: q.asset.as_ref().map(|a| a.house),
+        classid: q.asset.as_ref().map(|a| a.classid.clone()),
         amount: q.amount,
         payout: q.payout,
         discount_bps: q.discount_bps,
@@ -382,7 +452,13 @@ pub async fn changer_pay(
         crate::send::locked_first(&client).await?;
     }
     BOOK.lock().unwrap().remove(&id).ok_or(EXPIRED)?;
-    let (what, counted) = if q.side == "out" {
+    let notes = q.asset.as_ref().map(|a| format!("{} notes", a.classid));
+    let (what, counted) = if let (Some(n), "out") = (&notes, q.side.as_str()) {
+        (format!("Sell {} sECX of {n} to the changer for {} ECX", to_coins(q.amount), to_coins(q.payout)), q.amount + NOTE_FEE)
+    } else if let Some(n) = &notes {
+        let fee = signed.as_ref().map(|s| s.2).unwrap_or(0);
+        (format!("Buy {} sECX of {n} from the changer for {} ECX", to_coins(q.payout), to_coins(q.amount)), q.amount + fee)
+    } else if q.side == "out" {
         (format!("Sell {} sECX to the changer for {} ECX", to_coins(q.amount), to_coins(q.payout)), q.amount + FREEBANK_PAY_FEE)
     } else {
         let fee = signed.as_ref().map(|s| s.2).unwrap_or(0);
@@ -431,6 +507,15 @@ pub async fn changer_pay(
         }
     }
     let paid: Result<String, (bool, String)> = match &signed {
+        // A house's notes: a note transfer to the pay-in address (one key's notes; the screen says to gather first).
+        None if q.asset.is_some() => {
+            let house = q.asset.as_ref().map(|a| a.house).unwrap_or_default();
+            let mut c = client.lock().await;
+            fb_in(&mut c, &fb_wallet, "transfernote", vec![json!(house), json!(q.amount), json!(to_coins(NOTE_FEE)), json!(q.pay_in)])
+                .await
+                .map(|v| v["txid"].as_str().unwrap_or_default().to_string())
+                .map_err(|e| (!e.did_nothing(), e.for_ui()))
+        }
         None => {
             let mut c = client.lock().await;
             fb_in(&mut c, &fb_wallet, "sendtoaddress", vec![json!(q.pay_in), json!(to_coins(q.amount)), json!(format!("fb-changer {}", q.id))])
@@ -491,6 +576,8 @@ pub async fn changer_pay(
 pub struct OrderView {
     pub id: String,
     pub side: String,
+    /// A note order's house class id.
+    pub classid: Option<String>,
     pub amount: u64,
     pub payout: u64,
     pub time: u64,
@@ -501,8 +588,29 @@ pub struct OrderView {
 }
 
 /// Whether the payout (or refund) is seen where it should be: at least `sats` received at `address`, confirmed, in
-/// the app's own wallet on that chain (review M5). None: it can't be seen from here (a pasted address).
-async fn seen_paid(mgr: &NodeManager, client: &ClientState, fb_wallet: &Option<String>, on_freebank: bool, address: &str, sats: u64) -> Option<bool> {
+/// the app's own wallet on that chain (review M5); for a house's notes on FreeBank, at least that many units of them at
+/// the address. None: it can't be seen from here (a pasted address).
+async fn seen_paid(
+    mgr: &NodeManager,
+    client: &ClientState,
+    fb_wallet: &Option<String>,
+    on_freebank: bool,
+    address: &str,
+    sats: u64,
+    house: Option<u32>,
+) -> Option<bool> {
+    if let (true, Some(h)) = (on_freebank, house) {
+        let mut c = client.lock().await;
+        let coins = fb_in(&mut c, fb_wallet, "listnotecoins", vec![json!(h)]).await.ok()?;
+        let units = coins
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|n| n["address"].as_str() == Some(address) && n["confirmations"].as_u64().unwrap_or(0) >= 1)
+            .filter_map(|n| n["units"].as_u64())
+            .fold(0u64, |a, u| a.saturating_add(u));
+        return Some(units >= sats);
+    }
     let got = if on_freebank {
         let mut c = client.lock().await;
         fb_in(&mut c, fb_wallet, "getreceivedbyaddress", vec![json!(address), json!(1)]).await.ok()
@@ -535,7 +643,12 @@ pub async fn changer_orders(mgr: State<'_, Arc<NodeManager>>, client: State<'_, 
                 let list = fb_in(&mut c, &o.fb_wallet, "listtransactions", vec![json!("*"), json!(1000)]).await.unwrap_or(Value::Null);
                 drop(c);
                 let comment = format!("fb-changer {id}");
-                if let Some(t) = list.as_array().into_iter().flatten().find(|t| t["comment"].as_str() == Some(comment.as_str())) {
+                // sECX by its comment; notes (a transfer has none) by the quote's own pay-in address.
+                let notes = o.quote.asset.is_some();
+                if let Some(t) = list.as_array().into_iter().flatten().find(|t| {
+                    t["comment"].as_str() == Some(comment.as_str())
+                        || (notes && t["category"].as_str() == Some("send") && t["address"].as_str() == Some(o.quote.pay_in.as_str()))
+                }) {
                     let txid = t["txid"].as_str().unwrap_or_default().to_string();
                     update(&mgr.app_dir, &id, |x| {
                         x.state = "paid_in".into();
@@ -578,9 +691,10 @@ pub async fn changer_orders(mgr: State<'_, Arc<NodeManager>>, client: State<'_, 
             };
             let said = ask.as_ref().and_then(|v| v["state"].as_str()).unwrap_or("");
             let payout_on_freebank = o.quote.side == "in";
+            let house = o.quote.asset.as_ref().map(|a| a.house);
             match said {
                 "paid" => {
-                    let seen = seen_paid(&mgr, &client, &o.fb_wallet, payout_on_freebank, &o.quote.payout_to, o.quote.payout).await;
+                    let seen = seen_paid(&mgr, &client, &o.fb_wallet, payout_on_freebank, &o.quote.payout_to, o.quote.payout, house).await;
                     if seen == Some(true) {
                         let txid = ask.as_ref().and_then(|v| v["payout_txid"].as_str().map(str::to_string));
                         update(&mgr.app_dir, &id, |x| {
@@ -594,7 +708,7 @@ pub async fn changer_orders(mgr: State<'_, Arc<NodeManager>>, client: State<'_, 
                     }
                 }
                 "refunded" => {
-                    let seen = seen_paid(&mgr, &client, &o.fb_wallet, !payout_on_freebank, &o.quote.refund_to, 1).await;
+                    let seen = seen_paid(&mgr, &client, &o.fb_wallet, !payout_on_freebank, &o.quote.refund_to, 1, house).await;
                     if seen == Some(true) {
                         update(&mgr.app_dir, &id, |x| x.state = "refunded".into()).await?;
                         state = "refunded".into();
@@ -615,7 +729,16 @@ pub async fn changer_orders(mgr: State<'_, Arc<NodeManager>>, client: State<'_, 
                 }
             }
         }
-        out.push(OrderView { id, side: o.quote.side.clone(), amount: o.quote.amount, payout: o.quote.payout, time: o.time, state, note });
+        out.push(OrderView {
+            id,
+            side: o.quote.side.clone(),
+            classid: o.quote.asset.as_ref().map(|a| a.classid.clone()),
+            amount: o.quote.amount,
+            payout: o.quote.payout,
+            time: o.time,
+            state,
+            note,
+        });
     }
     Ok(out)
 }
@@ -654,6 +777,7 @@ mod tests {
         let mut q = Quote {
             id: "00112233aabbccdd".into(),
             side: "out".into(),
+            asset: None,
             amount: 100_000_000,
             payout: 98_985_000,
             discount_bps: 100,
@@ -692,6 +816,36 @@ mod tests {
     }
 
     #[test]
+    fn a_note_quote_matches_the_changers_and_is_taken_only_for_its_house() {
+        // The same v2 text the changer's quote.rs pins.
+        let key = keypair(4);
+        let mut q = signed(&key);
+        q.asset = Some(NoteAsset { house: 2, classid: "teviot".into() });
+        let mut shown = q.clone();
+        shown.key = "k".into();
+        assert_eq!(
+            message(&shown),
+            "fb-changer quote v2\nid=00112233aabbccdd\nside=out\nasset=note:2:teviot\namount=100000000\npayout=98985000\n\
+             discount_bps=100\nfee=15000\npay_in=XpayIn\npayout_to=bcrt1qpayout\nrefund_to=Xrefund\nexpires=812\n\
+             genesis=abababababababababababababababababababababababababababababababab\nkey=k\n"
+        );
+        q.sig = sign(&q, &key);
+        let pinned = key.x_only_public_key().0.to_string();
+        let genesis = "ab".repeat(32);
+        let asked = Asked { side: "out", house: Some(2), amount: 100_000_000, payout_to: "bcrt1qpayout", refund_to: "Xrefund", genesis: &genesis, height: 800 };
+        assert!(check(&q, &pinned, &asked).is_ok());
+        assert!(check(&q, &pinned, &Asked { house: Some(3), ..asked }).unwrap_err().contains("asked"), "another house's notes");
+        assert!(check(&q, &pinned, &Asked { house: None, ..asked }).unwrap_err().contains("asked"), "notes when sECX was asked");
+        // An sECX quote where notes were asked for.
+        let plain = signed(&key);
+        assert!(check(&plain, &pinned, &asked).unwrap_err().contains("asked"));
+        // Re-labelled as another house after signing: the signature no longer checks.
+        let mut moved = q.clone();
+        moved.asset = Some(NoteAsset { house: 3, classid: "teviot".into() });
+        assert!(check(&moved, &pinned, &Asked { house: Some(3), ..asked }).unwrap_err().contains("signed"));
+    }
+
+    #[test]
     fn the_changers_address() {
         assert!(changer_url_ok("https://changer.ecxfreebank.com"));
         assert!(changer_url_ok("http://127.0.0.1:8490"));
@@ -708,7 +862,7 @@ mod tests {
         let pinned = key.x_only_public_key().0.to_string();
         let q = signed(&key);
         let genesis = "ab".repeat(32);
-        let asked = Asked { side: "out", amount: 100_000_000, payout_to: "bcrt1qpayout", refund_to: "Xrefund", genesis: &genesis, height: 800 };
+        let asked = Asked { side: "out", house: None, amount: 100_000_000, payout_to: "bcrt1qpayout", refund_to: "Xrefund", genesis: &genesis, height: 800 };
         assert!(check(&q, &pinned, &asked).is_ok());
         let other = keypair(3).x_only_public_key().0.to_string();
         assert!(check(&q, &other, &asked).unwrap_err().contains("signed"));

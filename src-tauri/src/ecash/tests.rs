@@ -1131,7 +1131,7 @@ async fn changer_real_stack() {
     let refund_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
     let q = ask("out", 100_000_000, payout_to.clone(), refund_to.clone()).await;
     let height = fb_call("getblockcount", vec![]).await.as_u64().unwrap();
-    check(&q, &key, &Asked { side: "out", amount: 100_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
+    check(&q, &key, &Asked { side: "out", house: None, amount: 100_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
         .unwrap();
     assert_eq!(q.discount_bps, 100, "the beta default: 1% out");
     let v = fb_call("validateaddress", vec![json!(q.pay_in)]).await;
@@ -1158,7 +1158,7 @@ async fn changer_real_stack() {
     let refund_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
     let q = ask("in", 50_000_000, payout_to.clone(), refund_to.clone()).await;
     let height = conn.node().call_typed("getblockcount", vec![]).await.unwrap().as_u64().unwrap();
-    check(&q, &key, &Asked { side: "in", amount: 50_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
+    check(&q, &key, &Asked { side: "in", house: None, amount: 50_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
         .unwrap();
     let ec_quote = wallet::quote(&conn, &mname, &q.pay_in, Some(q.amount)).await.unwrap();
     wallet::sign_and_send(&conn, &ec_quote, &main, None).await.unwrap();
@@ -1215,5 +1215,185 @@ async fn changer_real_stack() {
     }
     assert_eq!(back, q.amount - 20_000, "all of it back, less the refund's fee");
     eprintln!("late: refunded {}", super::to_coins(back));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The changer's notes end to end (v0.4.8; scripts/changer-notes-real-chain.sh: the stack, a house "nbank" on the first
+/// node whose notes are minted to that node's wallet, and the changer on the second dealing in house 1 with a stock
+/// target of 10,000,000 units): sell notes for ECX, buy notes with ECX, and the reflux, the stock above its target
+/// demanded at the house, which pays par. Every quote checked as the app checks it.
+#[tokio::test]
+#[ignore]
+async fn changer_notes_real_stack() {
+    use crate::changer::{check, Asked, Quote};
+    let get = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("set {k}"));
+    let (l1, fb_at, enf, grpcurl, bmm) = (get("FB_IO_L1"), get("FB_IO_FB"), get("FB_IO_ENFORCER"), get("FB_GRPCURL"), get("FB_IO_BMM"));
+    let (url, key) = (get("FB_CHANGER_URL"), get("FB_CHANGER_KEY"));
+    let dir = std::env::temp_dir().join(format!("fb-changer-notes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("bitcoin.conf"), "rpcuser=t\nrpcpassword=t\n").unwrap();
+    let s = crate::node::Settings { rest: l1, l1_datadir: Some(dir.to_string_lossy().into_owned()), ..Default::default() };
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let conn = super::conn::connect(&http, &s, None).await.unwrap();
+    let r = Root::from_words(&[7u8; 32], Chain::Regtest).unwrap();
+    let main = r.account(Chain::Regtest, Account::Main).unwrap();
+    let (mname, _) = wallet::names(&r.fingerprint().to_string());
+    wallet::create(&conn, &mname, &main.public).await.unwrap();
+    let mut fb = crate::rpc::FreeBankClient::with_http(http.clone()).with_timeout(std::time::Duration::from_secs(200));
+    fb.configure(&format!("http://{}", fb_at), "t", "t");
+    let l1_mine = |n: u64, to: String| {
+        let (enf, grpcurl) = (enf.clone(), grpcurl.clone());
+        async move {
+            let out = std::process::Command::new(&grpcurl)
+                .args(["-plaintext", "-d", &format!("{{\"blocks\":{},\"address\":\"{}\"}}", n, to), &enf])
+                .arg("cusf.mainchain.v1.MiningService/GenerateToAddress")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        }
+    };
+    let fb_block = || {
+        let out = std::process::Command::new(&bmm).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    };
+    let fb_call = |m: &'static str, p: Vec<Value>| {
+        let fb = &fb;
+        async move { fb.call_typed(m, p).await.unwrap_or_else(|e| panic!("{m}: {e:?}")) }
+    };
+    let ask = |side: &'static str, amount: u64, payout_to: String, refund_to: String| {
+        let (http, url) = (http.clone(), url.clone());
+        async move {
+            let v: Value = http
+                .post(format!("{url}/v1/quote"))
+                .json(&json!({"side": side, "house": 1, "amount": amount, "payout_to": payout_to, "refund_to": refund_to}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            serde_json::from_value::<Quote>(v.clone()).unwrap_or_else(|_| panic!("a quote: {v}"))
+        }
+    };
+    let info = || {
+        let (http, url) = (http.clone(), url.clone());
+        async move { http.get(format!("{url}/v1/info")).send().await.unwrap().json::<Value>().await.unwrap() }
+    };
+    let order_state = |id: String| {
+        let (http, url) = (http.clone(), url.clone());
+        async move { http.get(format!("{url}/v1/order/{id}")).send().await.unwrap().json::<Value>().await.unwrap() }
+    };
+    let units_at = |address: String| {
+        let fb = &fb;
+        async move {
+            let coins = fb.call_typed("listnotecoins", vec![json!(1)]).await.unwrap();
+            coins
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|c| c["address"].as_str() == Some(address.as_str()) && c["confirmations"].as_u64().unwrap_or(0) >= 1)
+                .filter_map(|c| c["units"].as_u64())
+                .sum::<u64>()
+        }
+    };
+    let genesis = fb_call("getblockhash", vec![json!(0)]).await.as_str().unwrap().to_string();
+
+    let to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    l1_mine(101, to).await;
+    fb_block();
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    // The changer deals in house 1, and it is fit.
+    let i = info().await;
+    assert_eq!(i["notes"][0]["house"], 1, "{i}");
+    assert_eq!(i["notes"][0]["classid"], "nbank", "{i}");
+    assert!(i["notes"][0]["paused"].is_null(), "the house is fit: {i}");
+
+    // SELL 0.2 sECX of notes (20,000,000 units) for ECX: paid in with a note transfer.
+    let payout_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    let refund_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
+    let q = ask("out", 20_000_000, payout_to.clone(), refund_to.clone()).await;
+    let height = fb_call("getblockcount", vec![]).await.as_u64().unwrap();
+    check(&q, &key, &Asked { side: "out", house: Some(1), amount: 20_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
+        .unwrap();
+    assert_eq!(q.asset.as_ref().map(|a| a.classid.as_str()), Some("nbank"));
+    assert_eq!(q.discount_bps, 200, "the beta default for selling notes: 2%");
+    fb_call("transfernote", vec![json!(1), json!(q.amount), json!("0.001"), json!(q.pay_in)]).await;
+    let mut paid = Value::Null;
+    for _ in 0..15 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        paid = order_state(q.id.clone()).await;
+        if paid["state"] == "paid" {
+            break;
+        }
+    }
+    assert_eq!(paid["state"], "paid", "the changer paid ECX for the notes: {paid}");
+    l1_mine(1, payout_to.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let got = super::sats_of(&conn.wallet(&mname).call_typed("getreceivedbyaddress", vec![json!(payout_to), json!(1)]).await.unwrap()).unwrap();
+    assert_eq!(got, q.payout, "the eCash payout arrived");
+    eprintln!("sell: 0.2 sECX of nbank notes for {} ECX ({} bps, fee {})", super::to_coins(got), q.discount_bps, q.fee);
+
+    // The notes join the changer's stock (swept to its stock address): it now sells them.
+    let mut stock = 0;
+    for _ in 0..12 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        stock = info().await["notes"][0]["sides"]["in"]["most_per_order"].as_u64().unwrap_or(0);
+        if stock > 0 {
+            break;
+        }
+    }
+    assert!(stock > 0, "the changer sells the notes it bought");
+
+    // BUY notes with 0.01 ECX: paid out with a note transfer from the stock.
+    let payout_to = fb_call("getnewaddress", vec![json!(""), json!("legacy")]).await.as_str().unwrap().to_string();
+    let refund_to = wallet::new_address(&conn, &mname, &main.public).await.unwrap();
+    let q = ask("in", 1_000_000, payout_to.clone(), refund_to.clone()).await;
+    let height = conn.node().call_typed("getblockcount", vec![]).await.unwrap().as_u64().unwrap();
+    check(&q, &key, &Asked { side: "in", house: Some(1), amount: 1_000_000, payout_to: &payout_to, refund_to: &refund_to, genesis: &genesis, height })
+        .unwrap();
+    assert_eq!(q.payout, 1_000_000 * 10_000 / 9_900 - 100_000, "1% below par, less the transfer's fee in units");
+    let ec_quote = wallet::quote(&conn, &mname, &q.pay_in, Some(q.amount)).await.unwrap();
+    wallet::sign_and_send(&conn, &ec_quote, &main, None).await.unwrap();
+    let mut paid = Value::Null;
+    for _ in 0..15 {
+        l1_mine(1, refund_to.clone()).await;
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        paid = order_state(q.id.clone()).await;
+        if paid["state"] == "paid" {
+            break;
+        }
+    }
+    assert_eq!(paid["state"], "paid", "the changer paid the notes: {paid}");
+    let mut got = 0;
+    for _ in 0..6 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        got = units_at(payout_to.clone()).await;
+        if got >= q.payout {
+            break;
+        }
+    }
+    assert_eq!(got, q.payout, "the notes arrived");
+    eprintln!("buy: 0.01 ECX for {} units of nbank notes", got);
+
+    // REFLUX: the stock above its target goes back to the house, demanded; the house pays par.
+    let minted = |v: Value| v["mintedunits"].as_u64().unwrap();
+    let before = minted(fb_call("gethouse", vec![json!(1)]).await);
+    let mut after = before;
+    for _ in 0..25 {
+        fb_block();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // The house pays its oldest demand (nothing to pay is refused: fine).
+        let _ = fb.call_typed("dischargedemands", vec![json!(1), json!("0.001")]).await;
+        after = minted(fb_call("gethouse", vec![json!(1)]).await);
+        if after < before {
+            break;
+        }
+    }
+    assert!(after < before, "the house paid the changer's demand at par: minted {before} -> {after}");
+    eprintln!("reflux: {} units back to the house at par", before - after);
     let _ = std::fs::remove_dir_all(&dir);
 }

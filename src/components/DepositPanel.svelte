@@ -67,7 +67,7 @@
     await loadDeposits();
     if (changer) {
       try {
-        orders = (await changerOrders()).filter((o) => o.side === "in");
+        orders = (await changerOrders()).filter((o) => o.side === "in" && !o.classid);
       } catch {
         // as above
       }

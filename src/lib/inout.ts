@@ -113,17 +113,34 @@ export interface ChangerSide {
   left_today: number;
 }
 
+/** A house whose notes the changer deals in (v0.4.8): sell them for ECX ("out") or buy them with ECX ("in"). */
+export interface ChangerNoteDesk {
+  house: number;
+  classid: string;
+  /** Why its notes can't be dealt in now (the house isn't fit), or null. */
+  paused: string | null;
+  sell_bps: number;
+  buy_bps: number;
+  sides: { out: ChangerSide; in: ChangerSide };
+  /** FreeBank's transfer fee, in units, a buy pays out of its notes (null: a changer that doesn't say). */
+  note_fee: number | null;
+}
+
 export interface ChangerInfo {
   out_bps: number;
   in_bps: number;
   min_order: number;
   sides: { out: ChangerSide; in: ChangerSide };
   paused: string | null;
+  notes?: ChangerNoteDesk[];
 }
 
 export interface ChangerQuote {
   id: string;
   side: "out" | "in";
+  /** A note quote's house (v0.4.8); null for sECX. */
+  house: number | null;
+  classid: string | null;
   /** What the user pays in (sECX for out, ECX for in). */
   amount: number;
   /** What the user gets on the other chain. */
@@ -138,6 +155,8 @@ export interface ChangerQuote {
 export interface ChangerOrder {
   id: string;
   side: "out" | "in";
+  /** A note order's house class id (v0.4.8); null for sECX. */
+  classid: string | null;
   amount: number;
   payout: number;
   time: number;
@@ -146,8 +165,8 @@ export interface ChangerOrder {
 }
 
 export const changerInfo = () => tauriInvoke("changer_info") as Promise<ChangerInfo | null>;
-export const changerQuote = (side: "out" | "in", amount: string, address: string | null) =>
-  tauriInvoke("changer_quote", { side, amount, address }) as Promise<ChangerQuote>;
+export const changerQuote = (side: "out" | "in", amount: string, address: string | null, house: number | null = null) =>
+  tauriInvoke("changer_quote", { side, amount, address, house }) as Promise<ChangerQuote>;
 export const changerPay = (id: string, passphrase: string | null) =>
   tauriInvoke("changer_pay", { id, passphrase }) as Promise<ChangerOrder>;
 export const changerOrders = () => tauriInvoke("changer_orders") as Promise<ChangerOrder[]>;

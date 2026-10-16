@@ -23,6 +23,7 @@
   import { walletLocked, withUnlock } from "../lib/wallet";
   import { showReceipt } from "../lib/receipts";
   import Notice from "./Notice.svelte";
+  import NoteChanger from "./NoteChanger.svelte";
   import { lockHexFrom, parseKeysetFile, saveFloat, savedFloat, type MintKeyset } from "../lib/tokenhouse";
 
   /** The wallet's spendable sECX, sats (for "you need coins first"). */
@@ -884,6 +885,10 @@
           {/each}
         {/if}
       </div>
+      <!-- v0.4.8: sell or buy a house's notes through the money changer (none in demo mode: no eCash wallet). -->
+      {#if !demo && !locked.notes}
+        <NoteChanger {notes} on:changed={loadNotes} />
+      {/if}
 
       {#if houses.length > 0}
       <details class="advanced tools">

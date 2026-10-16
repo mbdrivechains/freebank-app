@@ -61,7 +61,7 @@
     }
     if (changer) {
       try {
-        orders = (await changerOrders()).filter((o) => o.side === "out");
+        orders = (await changerOrders()).filter((o) => o.side === "out" && !o.classid);
       } catch {
         // as above
       }
