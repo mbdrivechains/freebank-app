@@ -139,6 +139,7 @@ export interface Bill {
   drawer_pubkey?: string;
   acceptor_pubkey?: string;
   holder_pubkey?: string;
+  owner_house_id?: number; // the house whose loan book holds it (0: none); node v0.2.27 lets the drawee repay in its notes
   roles?: string[];      // this wallet's role(s): holder / drawer / acceptor
   [k: string]: unknown;
 }
@@ -563,7 +564,22 @@ export const api = {
 
   /** Bills this wallet participates in, with our role(s) */
   async listMyBills(): Promise<Bill[]> {
-    return fbCall('listmybills') as Promise<Bill[]>;
+    const bills = (await fbCall('listmybills')) as Bill[];
+    // The house holding a bill this wallet must repay (getbill's owner_house_id; listmybills doesn't carry it), for
+    // repaying in that house's notes (node v0.2.27). An older node, or a failed look-up, leaves it unknown: Retire as before.
+    await Promise.all(
+      bills
+        .filter((b) => b.status === 'a' && (b.roles ?? []).includes('acceptor'))
+        .map(async (b) => {
+          try {
+            const full = (await fbCall('getbill', [b.id])) as { owner_house_id?: number };
+            b.owner_house_id = Number(full.owner_house_id ?? 0);
+          } catch {
+            /* unknown */
+          }
+        }),
+    );
+    return bills;
   },
 
   /** A fresh pubkey to receive a bill / endorsement (share it out-of-band) */
@@ -584,10 +600,16 @@ export const api = {
     return r.txid;
   },
 
-  /** Retire (settle) a bill */
-  async retireBill(id: number, fee = 0.001): Promise<string> {
-    const r = (await fbCall('retirebill', [id, fee])) as { txid: string };
-    return r.txid;
+  /** This wallet's coins of house `id`'s notes (listnotecoins): a coin is spent whole. */
+  async listNoteCoins(id: number): Promise<{ house_id: number; units: number; confirmations: number; demand_height: number }[]> {
+    return fbCall('listnotecoins', [id]) as Promise<{ house_id: number; units: number; confirmations: number; demand_height: number }[]>;
+  },
+
+  /** Retire (repay) a bill. `notes` (node v0.2.27, a bill a house holds): pay up to that many units of the house's own
+   *  notes, burned at par, and the rest in sECX; the node burns whole coins and says how many units went. */
+  async retireBill(id: number, notes = 0, fee = 0.001): Promise<{ txid: string; notes_burned: number }> {
+    const r = (await fbCall('retirebill', notes > 0 ? [id, fee, notes] : [id, fee])) as { txid: string; notes_burned?: number };
+    return { txid: r.txid, notes_burned: r.notes_burned ?? 0 };
   },
 
   /** Claim the escrow bond on a defaulted bill */

@@ -52,6 +52,8 @@ pub const RPC_ALLOWED: &[&str] = &[
     "addpoolliquidity",
     "removepoolliquidity",
     "listmybills",
+    // Repay in notes (v0.4.9): the wallet's coins of the lending house's notes, to work out what the node will burn.
+    "listnotecoins",
     "getnewbillpubkey",
     "issuebill",
     "endorsebill",

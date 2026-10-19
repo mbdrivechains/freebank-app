@@ -3055,6 +3055,14 @@ fn the_credit_tabs_payments_cost_what_leaves_the_wallet() {
     assert_eq!(cost("addpoolliquidity", json!([1, 10, 20, 0.001]), None), Some(30 + fee));
     assert_eq!(cost("issuebill", json!(["00", 2.0, 0.5, 900, 1008, 0.001]), None), Some(50_000_000 + fee));
     assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), Some(70)), Some(70 + fee));
+    // Repaying in the house's notes (node v0.2.27): the fee is the second argument, and the face leaves either way.
+    assert_eq!(cost("retirebill", json!([4, 0.001]), Some(70)), Some(70 + fee));
+    assert_eq!(cost("retirebill", json!([4, 0.001, 50]), Some(70)), Some(70 + fee));
+    let (_, what) = credit_payment("retirebill", json!([4, 0.001, 1_980_000]).as_array().unwrap(), Some(2_000_000)).unwrap();
+    assert_eq!(
+        what,
+        Approve::Action { text: "Repay bill #4: 0.02 sECX, up to 0.0198 of it in the house's own notes".into(), sats: Some(2_100_000) }
+    );
     assert_eq!(cost("redeemnote", json!([3, 9, 0.001]), None), Some(2_000 + fee));
     assert_eq!(cost("attesthouse", json!([3, 0.001]), None), Some(fee));
     // A house's pledges are locked away from this wallet's spending (re-review L1).

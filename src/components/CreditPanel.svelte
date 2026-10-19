@@ -73,7 +73,7 @@
     if (s === "notes") { loadNotes(); loadHouses(); }
     else if (s === "houses") loadHouses();
     else if (s === "pools") { loadPools(); loadHouses(); }
-    else loadBills();
+    else { loadBills(); loadNotes(); loadHouses(); checkRepayInNotes(); }
   }
   onMount(() => open("notes"));
 
@@ -645,8 +645,13 @@
   let bills: Bill[] = [];
   let billsLoading = false;
   let billBusy = false;
-  let billAction: { type: "endorse"; id: number } | null = null;
+  let billAction: { type: "endorse" | "retire"; id: number } | null = null;
   let endorsePubkey = "";
+  /** Retire's "in notes" amount, sECX (node v0.2.27: the drawee of a bill a house holds pays in that house's notes). */
+  let retireNotes = "";
+  /** The wallet's coins of the lending house's notes that the node may burn (confirmed, not demanded), largest first. */
+  let retireCoins: number[] = [];
+  let retireError = "";
   let newBillPubkey = "";
   let billBody = "";
   let billAmount = "";
@@ -740,17 +745,95 @@
     billBusy = false;
   }
 
-  async function doRetireBill(id: number) {
+  // Repay in notes (node v0.2.27, design's reflux item 1): a bill a house holds (owner_house_id) can be repaid, by its
+  // drawee, partly or wholly in that house's own notes, burned at par; the rest is paid in sECX. The units of the house's
+  // notes this wallet could pay that way: its undemanded ones, at most the face.
+  function repayNotes(b: Bill): number {
+    const h = b.owner_house_id ?? 0;
+    if (!repaysInNotes || !h || !(b.roles ?? []).includes("acceptor")) return 0;
+    const n = notes.find((x) => x.house_id === h);
+    const free = n ? n.units - n.demanded_units : 0;
+    return Math.max(0, Math.min(free, parseEcx(String(b.amount)) ?? 0));
+  }
+
+  // Node v0.2.27 or later takes `notes` on retirebill (its subversion, "/FreeBank:0.2.29/"); an older one refuses the
+  // argument, so the form isn't offered there.
+  let repaysInNotes = false;
+  async function checkRepayInNotes() {
+    try {
+      const m = /FreeBank:(\d+)\.(\d+)\.(\d+)/.exec((await api.getNetworkInfo()).subversion);
+      const v = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
+      repaysInNotes = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 27);
+    } catch {
+      repaysInNotes = false;
+    }
+  }
+
+  // What the node burns for "up to `target` units": whole coins, the largest that still fit (node v0.2.27,
+  // HouseHeldRetireBillInNotes). Worked out here so the form offers what will go, not what the node would refuse.
+  function burnFor(target: number): number {
+    let burned = 0;
+    for (const c of retireCoins) if (c <= target - burned) burned += c;
+    return burned;
+  }
+
+  async function startRetire(b: Bill) {
+    retireError = "";
+    if (repayNotes(b) <= 0) return doRetireBill(b.id, 0);
+    try {
+      retireCoins = (await api.listNoteCoins(b.owner_house_id ?? 0))
+        .filter((c) => c.house_id === b.owner_house_id && !c.demand_height && c.confirmations >= 1 && c.units > 0)
+        .map((c) => c.units)
+        .sort((x, y) => y - x);
+    } catch {
+      retireCoins = [];
+    }
+    billAction = { type: "retire", id: b.id };
+    retireNotes = ecxInput(burnFor(repayNotes(b)));
+    if (!burnFor(repayNotes(b))) retireError = "Your notes of this house aren't in a block yet: wait a block, or pay it all in sECX.";
+  }
+
+  async function doRetireBill(id: number, notesUnits: number) {
     billBusy = true;
     error = "";
     try {
-      const txid = await withUnlock(() => api.retireBill(id), { what: `retire Bill #${id}` });
-      showReceipt({ txid, what: `Retired Bill #${id}` });
-      await loadBills();
+      const r = await withUnlock(() => api.retireBill(id, notesUnits), { what: `repay Bill #${id}` });
+      const inNotes = r.notes_burned > 0;
+      showReceipt({
+        txid: r.txid,
+        what: inNotes ? `Repaid Bill #${id}, ${fmtEcx(r.notes_burned)} ${BASE_TICKER} of it in notes` : `Retired Bill #${id}`,
+        rows: inNotes ? [{ label: "In notes", value: `${fmtEcx(r.notes_burned)} ${BASE_TICKER}, back to the house that issued them` }] : undefined,
+      });
+      billAction = null;
+      retireNotes = "";
+      await Promise.all([loadBills(), loadNotes()]);
     } catch (e) {
-      error = nice(e);
+      // Beside the form when it is open, where the eye is; else at the top, as before.
+      if (billAction?.type === "retire" && billAction.id === id) retireError = nice(e);
+      else error = nice(e);
     }
     billBusy = false;
+  }
+
+  function retireInNotes(b: Bill) {
+    retireError = "";
+    const u = parseEcx(retireNotes);
+    if (u === null || u <= 0) { retireError = "Enter the notes to pay, with at most 8 decimals, or pay it all in sECX."; return; }
+    if (u > repayNotes(b)) { retireError = `You can pay at most ${fmtEcx(repayNotes(b))} ${BASE_TICKER} of it in notes.`; return; }
+    const burn = burnFor(u);
+    if (!burn) {
+      const smallest = retireCoins.length ? retireCoins[retireCoins.length - 1] : 0;
+      retireError = smallest
+        ? `Notes go whole, coin by coin, and your smallest coin of this house's notes is ${fmtEcx(smallest)} ${BASE_TICKER}: enter at least that, or Send the notes to yourself first to split a coin.`
+        : "Your notes of this house aren't in a block yet: wait a block, or pay it all in sECX.";
+      return;
+    }
+    if (burn !== u) {
+      retireNotes = ecxInput(burn);
+      retireError = `Notes go whole, coin by coin: ${fmtEcx(burn)} ${BASE_TICKER} of them fits. Press Repay again to pay that much in notes.`;
+      return;
+    }
+    doRetireBill(b.id, burn);
   }
 
   async function doClaimBillEscrow(id: number) {
@@ -1403,13 +1486,40 @@
                 {#if b.roles && b.roles.length}
                   <div><span class="stat-label">Your role</span> {b.roles.join(", ")}</div>
                 {/if}
+                {#if b.owner_house_id}
+                  <div><span class="stat-label">Lent by</span> {nameOf(houses, b.owner_house_id)}</div>
+                {/if}
               </div>
               <div class="note-actions">
                 <button on:click={() => { billAction = { type: "endorse", id: b.id }; endorsePubkey = ""; }} disabled={b.status !== "a"}>Endorse</button>
-                <button on:click={() => doRetireBill(b.id)} disabled={billBusy || b.status !== "a"}>Retire</button>
+                <button on:click={() => startRetire(b)} disabled={billBusy || b.status !== "a"}>{repayNotes(b) > 0 ? "Repay" : "Retire"}</button>
                 <button on:click={() => doClaimBillEscrow(b.id)} disabled={billBusy || b.status !== "d"}>Claim the bond</button>
               </div>
-              {#if billAction && billAction.id === b.id}
+              {#if billAction && billAction.type === "retire" && billAction.id === b.id}
+                <div class="note-form" data-testid="repay-in-notes">
+                  <p class="small">
+                    {nameOf(houses, b.owner_house_id ?? 0)} holds this bill, so you can repay it in the house's own notes: they
+                    go back to the house, at par. You hold {fmtEcx(repayNotes(b))} {BASE_TICKER} of them that you can use.
+                  </p>
+                  <label>
+                    In notes ({BASE_TICKER})
+                    <input type="number" bind:value={retireNotes} step="0.00000001" min="0" />
+                  </label>
+                  <p class="hint">
+                    The rest, {fmtEcx(Math.max(0, (parseEcx(String(b.amount)) ?? 0) - (parseEcx(retireNotes) ?? 0)))} {BASE_TICKER},
+                    is paid in {BASE_TICKER}; your bond comes back.
+                  </p>
+                  {#if retireError}<p class="soft-error small">{retireError}</p>{/if}
+                  <div class="note-form-actions">
+                    <button on:click={() => retireInNotes(b)} disabled={billBusy || !retireNotes} data-testid="repay-notes">
+                      {billBusy ? "…" : "Repay"}
+                    </button>
+                    <button class="secondary" on:click={() => doRetireBill(b.id, 0)} disabled={billBusy}>All in {BASE_TICKER}</button>
+                    <button class="secondary" on:click={() => { billAction = null; retireError = ""; }}>Cancel</button>
+                  </div>
+                </div>
+              {/if}
+              {#if billAction && billAction.type === "endorse" && billAction.id === b.id}
                 <div class="note-form">
                   <label>
                     Hand it to (their bill key)

@@ -2913,9 +2913,11 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
     let id = |i: usize| p.get(i).and_then(Value::as_u64).map_or("?".to_string(), |n| n.to_string());
     let e = |s: Option<u64>| s.map_or("?".to_string(), |s| to_ecx(s).to_string());
     // The fee is the last argument, except where optional ones follow it: transfernote's and mintnote's (house, units,
-    // fee, address) and registerhouse's (tier, threshold, classid, denommg, pledges, fee, type; node v0.2.19).
+    // fee, address), registerhouse's (tier, threshold, classid, denommg, pledges, fee, type; node v0.2.19) and
+    // retirebill's (id, fee, notes; node v0.2.27).
     let fee = match method {
         "transfernote" | "mintnote" => p.get(2),
+        "retirebill" => p.get(1),
         "registerhouse" => p.get(5),
         _ => p.last(),
     };
@@ -2938,7 +2940,11 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
         ),
         "issuebill" => (ecx(2), format!("Issue a bill for {} sECX, bonded with {} sECX", e(ecx(1)), e(ecx(2)))),
         "endorsebill" => (bill, format!("Hand bill #{} ({} sECX) to another holder", id(0), e(bill))),
-        "retirebill" => (bill, format!("Retire bill #{}: pay its holder {} sECX", id(0), e(bill))),
+        // In notes or in sECX, the face leaves the wallet either way (a note unit is a sat of sECX at par).
+        "retirebill" => match units(2).filter(|&n| n > 0) {
+            None => (bill, format!("Retire bill #{}: pay its holder {} sECX", id(0), e(bill))),
+            Some(n) => (bill, format!("Repay bill #{}: {} sECX, up to {} of it in the house's own notes", id(0), e(bill), e(Some(n)))),
+        },
         // Minted to this wallet: only the fee. Minted to an address (node v0.2.19), the notes leave this wallet's house
         // to someone who can redeem them from its reserves: they count (security review of v0.2.6, M1).
         "mintnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
