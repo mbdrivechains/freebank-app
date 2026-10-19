@@ -1,6 +1,6 @@
 [package]
 name = "freebank"
-version = "0.4.9"
+version = "0.4.10"
 description = "FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)"
 authors = ["The FreeBank developers"]
 license = "MIT"
@@ -54,6 +54,17 @@ arboard = { version = "3.6", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# "Copy words" on Linux (clipboard.rs, v0.4.10): the X11 cut buffers, which arboard doesn't reach. The version arboard uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+
+# "Copy words" on a Mac (clipboard.rs, v0.4.10): the pasteboard written directly, for this Mac only, which arboard can't
+# do. The same crates arboard already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
 
 [features]
 default = ["custom-protocol"]

@@ -89,7 +89,41 @@ macOS.
   phones is `hosted.json` beside it. The words are shown once to their phone and never stored after. A hosted phone
   is served by `serve_hosted` only, never by the owner's narrow door. Deleting a copy: emptied by the move home, the
   file and its passphrase are deleted at the node's next start; otherwise they move into `<app data>/hosted-removed/`.
-- **Copying the words to the clipboard:** `src-tauri/src/clipboard.rs`.
+- **Copying the words to the clipboard** (`src-tauri/src/clipboard.rs`, `copy_words`; v0.4.10, the Truthcoin app's
+  reviewed version): after a warning on the screen, the app puts the words on the clipboard as a numbered table and as
+  plain words. The command takes only 24 recovery words (the ones the screen shows); the grid on screen can't be
+  selected or copied.
+  - On Linux the copy is marked `x-kde-passwordManagerHint: secret`. Some clipboard managers honour that (Klipper);
+    some don't (GNOME's own clipboard keeper, which holds the latest copy).
+  - On a Mac it is written with AppKit, not arboard: one item, marked concealed and transient (the nspasteboard.org
+    convention for clipboard managers), and "current host only", so Universal Clipboard doesn't offer it to your other
+    Apple devices.
+  - The app clears it after 60 seconds, at quit, and after a panic, if the clipboard still holds the app's copy. A
+    SIGTERM, SIGINT or SIGHUP quits the app the same way (one that was ignored when the app started, as `nohup` does to
+    SIGHUP, stays ignored); a second one, a second or more later, ends it at once after one more try at the clear. On a
+    Mac the app's copy is told by the pasteboard's change count, so the app never reads another app's copy. A `kill -9`
+    or a crash outside the app's code skips the clear: then the words stay until something else is copied. At quit and
+    after a panic the app waits at most a second for the clear.
+  - The three-word check refuses the app's own copy, told from the clipboard itself (on Linux its HTML, on a Mac the
+    change count). A paste of all the words from elsewhere (notes, a password manager) is taken, and the app then clears
+    the clipboard (on Linux also the selection for middle-click paste, and any X11 cut buffer holding words, where xterm
+    puts its selections). It says the words are gone only when it could check: on Linux it reads them back at a quarter
+    second and at a second (a clipboard manager may put the words back; one slower than that is missed), and on a
+    Wayland desktop it can't check, so it says so; on a Mac `clearContents` empties the pasteboard. Otherwise it asks you
+    to copy something else. It can't clear what a clipboard history has already kept, and says so. A copy you make in
+    another app has none of the protections above.
+  - Closing the wallet screens takes the app's copy off the clipboard if it is still there.
+  - The app's process can't be dumped on Linux (no core dump with words in it), except when `GTK_USE_PORTAL=1`: then
+    GTK's file chooser goes through xdg-desktop-portal, which refuses a process that can't be dumped. That covers the
+    app's own process only. The page runs in WebKit's web process (`WebKitWebProcess`), which starts dumpable again,
+    and the page holds the words while they are shown or typed. If that process crashes then, Ubuntu's crash reporter
+    (apport) can write a report with its memory to `/var/crash` and offer to send it, whatever the core-dump limit says.
+    Don't send such a report, and delete it.
+  - The clipboard is reached through X11 on Linux (XWayland on a Wayland desktop); it has been checked on X11 only.
+- **Restoring from a list:** words typed or pasted in order, or a numbered list where every number has a word and the
+  numbers run 1 to n. Anything else is refused, not guessed at. For a numbered list the app shows the words in the
+  order it read them and asks before restoring (`seed.rs` `tokens`, and `wordsIn` in `src/lib/walletSeed.ts`, the same
+  rule). A paste of words into the restore box clears the clipboard the same way.
 - **The screens that show or take the words:** `src/components/RecoveryWords.svelte`, `WalletFlow.svelte` and
   `WalletSettings.svelte` (Show recovery words, and Show xprv: the wallet's master extended private key, derived from
   the words, after the passphrase). The passphrase is typed in `UnlockPrompt.svelte`, `PassphraseFields.svelte`,

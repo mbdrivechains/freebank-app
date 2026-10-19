@@ -45,9 +45,8 @@
 <div class="rw-copy">
   {#if copy === "ask"}
     <p class="rw-warn">
-      Other apps can read the clipboard, and so can clipboard history if you use one{mac
-        ? "; Universal Clipboard can pass it to your other Apple devices"
-        : ""}. FreeBank clears it after 60 seconds.
+      Other apps on this computer can read the clipboard while the words are on it. FreeBank marks them for clipboard
+      histories to skip{mac ? " and keeps them off your other Apple devices" : ""}, and clears them after 60 seconds.
     </p>
     <div class="row-actions">
       <button on:click={copyNow}>Copy anyway</button>

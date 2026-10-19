@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "freebank"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "aes-gcm",
  "arboard",
@@ -1184,6 +1184,9 @@ dependencies = [
  "hkdf",
  "libc",
  "native-tls",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "p256",
  "rand 0.8.5",
  "reqwest",
@@ -1200,6 +1203,7 @@ dependencies = [
  "tokio-native-tls",
  "tokio-tungstenite",
  "url",
+ "x11rb",
  "zeroize",
 ]
 

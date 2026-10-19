@@ -22,6 +22,7 @@
     type HostedPhone,
     HOSTED_STEP,
   } from "../lib/phone";
+  import { holdsWords, walletSeed } from "../lib/walletSeed";
   import { node } from "../lib/node";
   import { nice } from "../lib/errors";
 
@@ -117,6 +118,22 @@
   let approveDirty = false;
   let approveBusy = false;
   let approveNote = "";
+
+  // Words pasted instead of the phone: FreeBank puts them in itself, then clears the clipboard, as the restore box does
+  // (v0.4.10 review).
+  async function pasteWords(e: ClipboardEvent) {
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (!holdsWords(text)) return;
+    e.preventDefault();
+    const box = e.currentTarget as HTMLTextAreaElement;
+    const at = box.selectionStart ?? words.length;
+    words = words.slice(0, at) + text + words.slice(box.selectionEnd ?? at);
+    const r = await walletSeed.clearPastedWords().catch(() => "not_gone" as const);
+    approveNote =
+      r === "gone"
+        ? "FreeBank cleared your clipboard. If you use a clipboard history, delete the words there too."
+        : "FreeBank asked your clipboard to forget the words but couldn't make sure it did. Copy something else now, and delete the words from any clipboard history.";
+  }
   let withWords = false;
   let words = "";
   async function setApprove(over: number | null, useWords = false) {
@@ -760,7 +777,7 @@
         {#if withWords}
           <label class="words-row">
             <span class="small">Your 24 recovery words, instead of your phone. The change then waits a day.</span>
-            <textarea rows="3" bind:value={words} autocomplete="off" spellcheck="false"></textarea>
+            <textarea rows="3" bind:value={words} on:paste={pasteWords} autocomplete="off" spellcheck="false"></textarea>
           </label>
         {:else}
           <button class="link-btn inline" on:click={() => (withWords = true)}>Lost your phone? Use your recovery words instead</button>

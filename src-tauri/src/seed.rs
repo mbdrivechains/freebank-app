@@ -96,29 +96,45 @@ pub fn words(entropy: &[u8; 32]) -> Zeroizing<Vec<String>> {
     Zeroizing::new(m.words().map(String::from).collect())
 }
 
-/// Words as typed or pasted: lower case, split on spaces, commas and line breaks, with list numbering
-/// ("1.", "12)", "(3)", "4:") dropped. When every word has a number and the numbers are 1 to n, the
-/// words go in that order: a table of words copied out of Notes reads across its rows, not down.
-fn tokens(text: &str) -> Vec<String> {
+/// The answer when a list's numbers and words don't pair up.
+pub const NUMBERS_ASTRAY: &str =
+    "The numbers in this list don't line up with the words. Paste or type the words alone, in order.";
+
+/// Words as typed or pasted (v0.4.10: stricter, from the Truthcoin app's copy-words review L4): lower case, split on
+/// spaces, commas and line breaks. With no list numbers, the words stay in order. With numbers ("1.", "12)", "(3)",
+/// "4:"), every word must have one just before it, no number may be left without a word, and the numbers must be 1 to
+/// n; then the words go in that order (the table "Copy words" makes, pasted into Notes and copied back out, reads
+/// across its rows). Anything else is refused rather than guessed at. The same rule is `wordsIn` in
+/// `src/lib/walletSeed.ts`.
+fn tokens(text: &str) -> Result<Vec<String>, String> {
     let mut numbered: Vec<(Option<usize>, String)> = Vec::new();
     let mut number = None;
-    for t in text.split(|c: char| c.is_whitespace() || c == ',') {
+    let mut numbers = 0;
+    for t in text.split(|c: char| c.is_whitespace() || c == ',' || c == '\u{feff}') {
         let t = t.trim().to_lowercase();
         let n = t.trim_start_matches(['(', '#']).trim_end_matches(['.', ')', ':']);
         if t.is_empty() {
             continue;
         } else if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) {
-            number = n.parse().ok();
+            if number.is_some() {
+                return Err(NUMBERS_ASTRAY.into());
+            }
+            number = Some(n.parse::<usize>().unwrap_or(0));
+            numbers += 1;
         } else {
             numbered.push((number.take(), t));
         }
     }
+    if numbers == 0 {
+        return Ok(numbered.into_iter().map(|(_, t)| t).collect());
+    }
     let mut order: Vec<usize> = numbered.iter().filter_map(|(n, _)| *n).collect();
     order.sort_unstable();
-    if order.len() == numbered.len() && order.iter().enumerate().all(|(i, &n)| n == i + 1) {
-        numbered.sort_by_key(|(n, _)| *n);
+    if number.is_some() || order.len() != numbered.len() || !order.iter().enumerate().all(|(i, &n)| n == i + 1) {
+        return Err(NUMBERS_ASTRAY.into());
     }
-    numbered.into_iter().map(|(_, t)| t).collect()
+    numbered.sort_by_key(|(n, _)| *n);
+    Ok(numbered.into_iter().map(|(_, t)| t).collect())
 }
 
 /// What the restore screen says while the words are typed.
@@ -131,10 +147,14 @@ pub struct WordsCheck {
     pub ok: bool,
     /// 24 known words, but their checksum fails: one is wrong or out of place.
     pub checksum_failed: bool,
+    /// A numbered list whose numbers don't pair up with its words (v0.4.10): refused, not guessed at.
+    pub astray: bool,
 }
 
 pub fn check_words(text: &str) -> WordsCheck {
-    let t = Zeroizing::new(tokens(text));
+    let Ok(t) = tokens(text).map(Zeroizing::new) else {
+        return WordsCheck { count: 0, unknown: Vec::new(), ok: false, checksum_failed: false, astray: true };
+    };
     let english = bip39::Language::English;
     let unknown: Vec<usize> = t
         .iter()
@@ -144,12 +164,12 @@ pub fn check_words(text: &str) -> WordsCheck {
         .collect();
     let complete = t.len() == WORD_COUNT && unknown.is_empty();
     let ok = complete && parse_words(text).is_ok();
-    WordsCheck { count: t.len(), unknown, ok, checksum_failed: complete && !ok }
+    WordsCheck { count: t.len(), unknown, ok, checksum_failed: complete && !ok, astray: false }
 }
 
 /// The entropy behind 24 recovery words, checked word by word and by the BIP39 checksum.
 pub fn parse_words(text: &str) -> Result<Entropy, String> {
-    let t = Zeroizing::new(tokens(text));
+    let t = Zeroizing::new(tokens(text)?);
     if t.len() != WORD_COUNT {
         return Err(format!("FreeBank's recovery words are {} words; these are {}.", WORD_COUNT, t.len()));
     }
@@ -485,9 +505,14 @@ pub fn words_are_this_wallets(app_dir: &Path, words: &str) -> Result<bool, Strin
 }
 
 /// The key id of the wallet that `words` make, as getwalletinfo's hdmasterkeyid shows it; None if they aren't 24
-/// recovery words.
+/// recovery words. A numbered list whose numbers don't line up says so (NUMBERS_ASTRAY), rather than "not this
+/// wallet's words" (v0.4.10 review).
 pub fn words_key_id_hex(words: &str) -> Result<Option<String>, String> {
-    let Ok(entropy) = parse_words(words) else { return Ok(None) };
+    let entropy = match parse_words(words) {
+        Ok(e) => e,
+        Err(e) if e == NUMBERS_ASTRAY => return Err(e),
+        Err(_) => return Ok(None),
+    };
     let hd = freebank_hd_seed(&entropy)?;
     Ok(Some(key_id_hex(&key_id(&hd)?)))
 }
@@ -561,14 +586,26 @@ pub fn read_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
 mod tests {
     #[test]
     fn numbered_words_go_by_their_numbers() {
-        let w = |t: &str| super::tokens(t).join(" ");
-        assert_eq!(w("abandon ability, able\nabout"), "abandon ability able about");
+        let w = |t: &str| super::tokens(t).map(|v| v.join(" "));
+        let ok = |t: &str| w(t).unwrap();
+        assert_eq!(ok("abandon ability, able\nABOUT"), "abandon ability able about");
+        assert_eq!(ok("abandon\u{feff} ability\u{85}able"), "abandon ability able");
         // Copied back out of a table in Notes: across the rows, numbers kept.
-        assert_eq!(w("1. abandon\t3. able\n2. ability\t4. about"), "abandon ability able about");
-        assert_eq!(w("(2) ability #1 abandon 3: able"), "abandon ability able");
-        // Numbers that don't run 1 to n, or a word without one: the words stay as they came.
-        assert_eq!(w("1. abandon 3. ability"), "abandon ability");
-        assert_eq!(w("2. ability abandon"), "ability abandon");
+        assert_eq!(ok("1. abandon\t3. able\n2. ability\t4. about"), "abandon ability able about");
+        assert_eq!(ok("(2) ability #1 abandon 3: able"), "abandon ability able");
+        // Two columns of a list.
+        assert_eq!(ok("1. a 3. c\n2. b 4. d"), "a b c d");
+        // Numbers that don't pair with the words are refused, not guessed at (v0.4.10, review L4).
+        let astray = Err(super::NUMBERS_ASTRAY.to_string());
+        assert_eq!(w("1. abandon 3. ability"), astray);
+        assert_eq!(w("2. ability abandon"), astray);
+        assert_eq!(w("1. 2. abandon ability"), astray);
+        assert_eq!(w("abandon 1 ability 2"), astray);
+        // Numbers after the words, one stray before: the lax rule rotated the words; now it is refused.
+        let after: String = (1..=12).map(|i| format!("w{i:02} {i}\n")).collect();
+        assert_eq!(w(&format!("12\n{after}")), astray);
+        assert_eq!(w(&after), astray);
+        assert!(super::check_words("1. abandon 3. ability").astray);
     }
 
     use super::*;
@@ -763,23 +800,23 @@ mod tests {
         // Case, commas, extra spaces and numbering don't matter.
         let numbered: String = phrase.split(' ').enumerate().map(|(i, w)| format!("{}. {},\n", i + 1, w.to_uppercase())).collect();
         assert_eq!(*parse_words(&numbered).unwrap(), *e);
-        assert_eq!(check_words(&numbered), WordsCheck { count: 24, unknown: vec![], ok: true, checksum_failed: false });
+        assert_eq!(check_words(&numbered), WordsCheck { count: 24, unknown: vec![], ok: true, checksum_failed: false, astray: false });
 
         // A word that isn't in the list, by its position.
         let bad = phrase.replacen("diagram", "diagrom", 1);
         assert!(parse_words(&bad).unwrap_err().contains("Word 2 "));
-        assert_eq!(check_words(&bad), WordsCheck { count: 24, unknown: vec![2], ok: false, checksum_failed: false });
+        assert_eq!(check_words(&bad), WordsCheck { count: 24, unknown: vec![2], ok: false, checksum_failed: false, astray: false });
         // Two words swapped: all known, the checksum fails.
         let swapped = phrase.replacen("hamster diagram", "diagram hamster", 1);
         assert!(parse_words(&swapped).unwrap_err().contains("don't fit together"));
-        assert_eq!(check_words(&swapped), WordsCheck { count: 24, unknown: vec![], ok: false, checksum_failed: true });
+        assert_eq!(check_words(&swapped), WordsCheck { count: 24, unknown: vec![], ok: false, checksum_failed: true, astray: false });
         // Too few, and twelve-word phrases: FreeBank's are 24.
         let short: Vec<&str> = phrase.split(' ').take(23).collect();
         assert!(parse_words(&short.join(" ")).unwrap_err().contains("24 words; these are 23"));
         assert_eq!(check_words(&short.join(" ")).count, 23);
         assert!(!check_words(&short.join(" ")).ok);
         assert!(parse_words("legal winner thank year wave sausage worth useful legal winner thank yellow").is_err());
-        assert_eq!(check_words(""), WordsCheck { count: 0, unknown: vec![], ok: false, checksum_failed: false });
+        assert_eq!(check_words(""), WordsCheck { count: 0, unknown: vec![], ok: false, checksum_failed: false, astray: false });
     }
 
     #[test]
@@ -914,6 +951,10 @@ mod tests {
         assert_eq!(words_key_id_hex(&mine).unwrap(), Some(key_id_hex(&id)));
         assert_eq!(sealed_key_id_hex(&dir), Some(key_id_hex(&id)));
         assert_eq!(words_key_id_hex("not words").unwrap(), None);
+        // The right words with numbers that don't line up: told so, not "not this wallet's" (v0.4.10 review).
+        let numbered_after: String = mine.split(' ').enumerate().map(|(i, w)| format!("{w} {}\n", i + 1)).collect();
+        assert_eq!(words_key_id_hex(&numbered_after), Err(NUMBERS_ASTRAY.to_string()));
+        assert_eq!(words_are_this_wallets(&dir, &numbered_after), Err(NUMBERS_ASTRAY.to_string()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -65,6 +65,9 @@
   ];
   function toggle(what: Open) {
     hideSecrets();
+    // Hide takes FreeBank's copy of the words off the clipboard too (v0.4.10 review); a hidden window doesn't, as
+    // that is how a paste into a password manager goes.
+    walletSeed.forgetCopiedWords().catch(() => {});
     open = open === what ? null : what;
     changeMsg = "";
     changeError = "";
@@ -226,6 +229,7 @@
   onDestroy(() => {
     document.removeEventListener("visibilitychange", onVisibility);
     hideSecrets();
+    walletSeed.forgetCopiedWords().catch(() => {});
   });
   // The wallet got another seed (a flow elsewhere): ask again, once for each new seed.
   let reloadedFor: string | null = null;

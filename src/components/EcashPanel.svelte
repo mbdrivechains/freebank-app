@@ -40,7 +40,10 @@
   let settingUp = false;
 
   let address = "";
-  let copied = false;
+  /** What Copy last put on the clipboard, for its "Copied". */
+  let copied = "";
+  /** The payment opened in the list: its txid, address and fee. */
+  let openTx = "";
 
   // One payment form at a time: to an address, or into the bidding wallet.
   let mode: "" | "send" | "bids" = "";
@@ -130,10 +133,10 @@
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
+      copied = text;
+      setTimeout(() => (copied = copied === text ? "" : copied), 1500);
     } catch {
-      error = "Couldn't copy it; select the address and copy it by hand.";
+      error = "Couldn't copy it; select it and copy it by hand.";
     }
   }
 
@@ -248,6 +251,8 @@
     return out;
   }
 
+  const rowKey = (t: Line) => t.wallet + t.txid + t.category + t.sats;
+
   function txLine(t: Line): string {
     const fee = t.fee ? `, fee ${fmtEcx(t.fee)}` : "";
     if (t.moved === "in") return `Moved ${coins(-t.sats)} into the bidding wallet${fee}`;
@@ -344,7 +349,9 @@
         </p>
       {/if}
       {#if sent}
-        <p class="small" data-testid="ecash-sent">Sent. Transaction <span class="mono">{sent.slice(0, 16)}…</span></p>
+        <p class="small" data-testid="ecash-sent">Sent. Transaction ID:</p>
+        <p class="mono small ec-txid">{sent}</p>
+        <button class="link-btn" on:click={() => copy(sent)}>{copied === sent ? "Copied" : "Copy"}</button>
       {/if}
       <div class="home-actions">
         <button on:click={receive}>Receive</button>
@@ -360,7 +367,7 @@
         <div class="ec-receive">
           <QrCode text={address} size={180} />
           <p class="mono small ec-addr">{address}</p>
-          <button class="link-btn" on:click={() => copy(address)}>{copied ? "Copied" : "Copy"}</button>
+          <button class="link-btn" on:click={() => copy(address)}>{copied === address ? "Copied" : "Copy"}</button>
         </div>
       {/if}
 
@@ -414,13 +421,31 @@
         <p class="muted small">None yet.</p>
       {:else}
         <ul class="ec-history">
-          {#each merged(history).slice(0, 50) as t (t.wallet + t.txid + t.category + t.sats)}
+          {#each merged(history).slice(0, 50) as t (rowKey(t))}
             <li>
               <span class="ec-tag">{t.moved ? "Move" : t.wallet === "bids" ? "Bidding" : "eCash"}</span>
               <span>{txLine(t)}</span>
               <span class="muted small">
                 {t.confirmations > 0 ? `${t.confirmations} confirmation${t.confirmations === 1 ? "" : "s"}` : "unconfirmed"}
               </span>
+              <button class="link-btn small" on:click={() => (openTx = openTx === rowKey(t) ? "" : rowKey(t))} data-testid="ecash-tx-details">
+                {openTx === rowKey(t) ? "Hide" : "Details"}
+              </button>
+              {#if openTx === rowKey(t)}
+                <dl class="ec-tx">
+                  <div>
+                    <dt>Transaction ID</dt>
+                    <dd><span class="mono ec-txid">{t.txid}</span> <button class="link-btn" on:click={() => copy(t.txid)}>{copied === t.txid ? "Copied" : "Copy"}</button></dd>
+                  </div>
+                  {#if t.address}
+                    <div>
+                      <dt>Address</dt>
+                      <dd><span class="mono ec-txid">{t.address}</span> <button class="link-btn" on:click={() => copy(t.address ?? "")}>{copied === t.address ? "Copied" : "Copy"}</button></dd>
+                    </div>
+                  {/if}
+                  {#if t.time}<div><dt>Time</dt><dd>{new Date(t.time * 1000).toLocaleString()}</dd></div>{/if}
+                </dl>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -435,7 +460,11 @@
         Bids for FreeBank blocks are paid from here, with nobody there to type a passphrase. Keep in it only what you
         mean to bid.
       </p>
-      {#if backDone}<p class="small">Moved back. Transaction <span class="mono">{backDone.slice(0, 16)}…</span></p>{/if}
+      {#if backDone}
+        <p class="small">Moved back. Transaction ID:</p>
+        <p class="mono small ec-txid">{backDone}</p>
+        <button class="link-btn" on:click={() => copy(backDone)}>{copied === backDone ? "Copied" : "Copy"}</button>
+      {/if}
       {#if backQuote}
         <p class="small" data-testid="ecash-back-quote">
           {coins(backQuote.sats)} goes back to your main wallet; fee {fmtEcx(backQuote.fee)}.{bmm?.on ? " Bidding turns off too." : ""}
@@ -580,6 +609,28 @@
     display: grid;
     grid-template-columns: 5.5em 1fr auto;
     gap: 10px;
+  }
+  .ec-txid {
+    word-break: break-all;
+  }
+  .ec-tx {
+    flex-basis: 100%;
+    margin: 4px 0 0;
+    font-size: 13px;
+  }
+  .ec-tx div {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ec-tx dt {
+    min-width: 7.5em;
+    color: var(--muted, #8b93a1);
+  }
+  .ec-tx dd {
+    margin: 0;
+    flex: 1;
+    min-width: 0;
   }
   .ec-tag {
     font-size: 12px;

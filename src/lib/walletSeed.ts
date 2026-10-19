@@ -80,6 +80,8 @@ export interface WordsCheck {
   unknown: number[];
   ok: boolean;
   checksum_failed: boolean;
+  /** A numbered list whose numbers don't pair up with its words (v0.4.10). */
+  astray?: boolean;
 }
 
 export interface Revealed {
@@ -119,27 +121,49 @@ export interface Moved {
 export const WORD_COUNT = 24;
 
 /**
- * Words in pasted text, in order: lower case, list numbers ("1.", "12)", "(3)", "4:") dropped, and
- * put in their numbered order when every word has a number 1 to n (a table copied out of Notes
- * reads across its rows). The same rule as the app's restore (seed.rs `tokens`).
+ * Recovery words in pasted text, in order: the same rule as the app's restore (seed.rs `tokens`; v0.4.10, stricter,
+ * from the Truthcoin app's copy-words review L4). Lower case, split on spaces, commas and line breaks. With no list
+ * numbers ("1.", "12)", "(3)", "4:"), the words stay in order. With numbers, every word must have one just before it,
+ * none may be left without a word, and they must be 1 to n; then the words go in that order (the table "Copy words"
+ * makes, copied back out of Notes, reads across its rows). Anything else gives null: refused, not guessed at.
  */
-export function wordsIn(text: string): string[] {
+export function wordsIn(text: string): { words: string[]; numbered: boolean } | null {
   const got: { n: number | null; w: string }[] = [];
   let n: number | null = null;
-  for (const raw of text.split(/[\s,]+/)) {
+  let numbers = 0;
+  for (const raw of text.split(/[\s,\u0085\uFEFF]+/)) {
     const t = raw.trim().toLowerCase();
     const num = t.replace(/^[(#]+/, "").replace(/[.):]+$/, "");
     if (!t) continue;
-    if (/^\d+$/.test(num)) n = Number(num);
-    else {
+    if (/^\d+$/.test(num)) {
+      if (n !== null) return null;
+      n = Number(num);
+      numbers++;
+    } else {
       got.push({ n, w: t });
       n = null;
     }
   }
+  if (numbers === 0) return { words: got.map((g) => g.w), numbered: false };
   const order = got.map((g) => g.n).filter((x): x is number => x !== null).sort((a, b) => a - b);
-  if (order.length === got.length && order.every((x, i) => x === i + 1)) got.sort((a, b) => a.n! - b.n!);
-  return got.map((g) => g.w);
+  if (n !== null || order.length !== got.length || !order.every((x, i) => x === i + 1)) return null;
+  got.sort((a, b) => a.n! - b.n!);
+  return { words: got.map((g) => g.w), numbered: true };
 }
+
+/**
+ * Whether pasted text may hold recovery words: 12 or more runs of two or more letters, whatever separates them
+ * (clipboard.rs `holds_words`). Broad on purpose: it decides only that the app takes the paste in itself and clears the
+ * clipboard (review M1).
+ */
+export function holdsWords(text: string): boolean {
+  return text.split(/[^\p{L}]+/u).filter((t) => [...t].length >= 2).length >= 12;
+}
+
+/** What a clear after a paste of words could tell (clipboard.rs `Cleared`). */
+export type Cleared = "gone" | "unchecked" | "not_gone";
+
+export const NUMBERS_ASTRAY = "The numbers in this list don't line up with the words. Paste or type the words alone, in order.";
 
 /** The largest file taken as a wallet backup (the app checks it too). */
 export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
@@ -166,6 +190,12 @@ export const walletSeed = {
   reveal: (passphrase: string, what: "words" | "xprv") => tauriInvoke("wallet_reveal", { passphrase, what }) as Promise<Revealed>,
   /** On the clipboard as a numbered table and as plain words; cleared after 60 s if still there. */
   copyWords: (words: string[]) => tauriInvoke("copy_words", { words }) as Promise<void>,
+  /** v0.4.10: the clipboard holds FreeBank's own copy of the words, untouched (Rust looks, not the window). */
+  wordsOwnCopy: () => tauriInvoke("words_own_copy") as Promise<boolean>,
+  /** v0.4.10: after a paste of words, the clipboard (and the selection, and X11's cut buffers) cleared. */
+  clearPastedWords: () => tauriInvoke("clipboard_clear_words") as Promise<Cleared>,
+  /** v0.4.10: the words given up: FreeBank's own copy leaves the clipboard if it is still there. */
+  forgetCopiedWords: () => tauriInvoke("clipboard_forget_words") as Promise<void>,
   changePassphrase: (old: string, next: string) =>
     tauriInvoke("wallet_change_passphrase", { old, new: next }) as Promise<Changed>,
   backupNow: () => tauriInvoke("wallet_backup_now") as Promise<string[]>,

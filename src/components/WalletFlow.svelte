@@ -21,7 +21,9 @@
   import { showReceipt } from "../lib/receipts";
   import { withUnlock } from "../lib/wallet";
   import {
+    NUMBERS_ASTRAY,
     WORD_COUNT,
+    holdsWords,
     loadProtection,
     threePositions,
     walletSeed,
@@ -45,6 +47,7 @@
     | "passphrase"
     | "choose"
     | "words-in"
+    | "restore-check"
     | "working"
     | "unlock-words"
     | "show-words"
@@ -137,6 +140,8 @@
 
   function close() {
     wipeWords();
+    // FreeBank's own copy of the words, if the clipboard still holds it, goes with the flow (v0.4.10).
+    walletSeed.forgetCopiedWords().catch(() => {});
     dispatch("close");
   }
 
@@ -191,6 +196,7 @@
 
   onDestroy(() => {
     document.removeEventListener("visibilitychange", onVisibility);
+    walletSeed.forgetCopiedWords().catch(() => {});
     if (pollTimer) clearTimeout(pollTimer);
     if (checkTimer) clearTimeout(checkTimer);
     polling = false;
@@ -234,7 +240,9 @@
 
   $: wordsStatus = !check
     ? ""
-    : check.unknown.length
+    : check.astray
+      ? NUMBERS_ASTRAY
+      : check.unknown.length
       ? `Word ${check.unknown[0]} isn't one of the recovery words. Check its spelling.`
       : check.count < WORD_COUNT
         ? `${check.count} of ${WORD_COUNT} words`
@@ -329,26 +337,76 @@
     step = "confirm";
   }
 
-  // Pasting all the words into any box fills the three asked for (a paste of one word is left alone).
-  // Not straight from FreeBank's own copy, though: that proves no lasting backup, since the copy is
-  // cleared after a minute (security review L5). Leaving the window after copying (to paste them
-  // into notes or a password manager) counts as saving them.
-  let copiedHere = false;
-  function onCopied() {
-    copiedHere = true;
+  // Pasting all the words into any box fills the three asked for (a paste of one word is left alone). Not straight
+  // from FreeBank's own copy, though: that proves no lasting backup, since the copy is cleared after a minute (security
+  // review L5). Rust tells that copy by the clipboard itself, not by the window (v0.4.10, the Truthcoin app's
+  // copy-words review L2). A paste of words from anywhere else is taken, and the clipboard then cleared, since that
+  // copy has no protection (review M1); the screen says what the clear could tell (R1).
+  let note = "";
+  let noteWarn = false;
+  const CLEARED = "FreeBank cleared your clipboard. If you use a clipboard history, delete the words there too.";
+  const NOT_CLEARED =
+    "FreeBank asked your clipboard to forget the words but couldn't make sure it did (a clipboard manager may have put them back). Copy something else now, and delete the words from any clipboard history.";
+  const UNCHECKED =
+    "FreeBank asked your clipboard to forget the words, but it can't check the clipboard on this desktop. Copy something else now, and delete the words from any clipboard history.";
+  async function clearPasted() {
+    note = "";
+    const r = await walletSeed.clearPastedWords().catch(() => "not_gone" as const);
+    note = r === "gone" ? CLEARED : r === "unchecked" ? UNCHECKED : NOT_CLEARED;
+    noteWarn = r !== "gone";
   }
-  function pasteWords(e: ClipboardEvent) {
-    const got = wordsIn(e.clipboardData?.getData("text/plain") ?? "");
+  async function pasteWords(e: ClipboardEvent) {
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    const got = wordsIn(text);
     // Exactly the 24 words: with a title or a stray word along, every position would shift (code review 9).
-    if (got.length !== WORD_COUNT) return;
-    e.preventDefault();
-    if (copiedHere) {
-      confirmError =
-        "That is FreeBank's own copy, which it clears in a minute. Paste the words into your notes or password manager first, then copy them from there, or type the three words.";
+    if (!got || got.words.length !== WORD_COUNT) {
+      if (holdsWords(text)) {
+        e.preventDefault();
+        confirmError = got ? `That's ${got.words.length} words, not ${WORD_COUNT}. Type the three words instead.` : NUMBERS_ASTRAY;
+        await clearPasted();
+      }
       return;
     }
+    e.preventDefault();
     confirmError = "";
-    answers = positions.map((p) => got[p - 1] ?? "");
+    note = "";
+    if (await walletSeed.wordsOwnCopy().catch(() => false)) {
+      confirmError =
+        "That is FreeBank's own copy, which it clears in a minute: it isn't a backup. Type the three words from where you saved them.";
+      return;
+    }
+    answers = positions.map((p) => got.words[p - 1] ?? "");
+    await clearPasted();
+  }
+
+  // Words pasted into the restore box: FreeBank puts them in itself (the webview reads the clipboard only after this
+  // handler, by when it would be empty), then clears the clipboard (v0.4.10).
+  function pasteRestore(e: ClipboardEvent) {
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (!holdsWords(text)) return;
+    e.preventDefault();
+    const box = e.currentTarget as HTMLTextAreaElement;
+    const at = box.selectionStart ?? typed.length;
+    typed = typed.slice(0, at) + text + typed.slice(box.selectionEnd ?? at);
+    error = "";
+    note = "";
+    clearPasted();
+  }
+
+  // A restore from a numbered list: the words as FreeBank read them, shown before they go in (v0.4.10, review L4).
+  let restoreWords: string[] = [];
+  function restoreFromBox() {
+    const got = wordsIn(typed);
+    if (!got) {
+      error = NUMBERS_ASTRAY;
+      return;
+    }
+    if (got.numbered) {
+      restoreWords = got.words;
+      step = "restore-check";
+      return;
+    }
+    begin();
   }
 
   async function checkAnswers() {
@@ -466,7 +524,7 @@
   }
 </script>
 
-<svelte:window on:keydown={onKey} on:blur={() => (copiedHere = false)} />
+<svelte:window on:keydown={onKey} />
 
 <div class="wf-back">
   <div class="wf card" role="dialog" aria-modal="true" aria-labelledby="wf-title">
@@ -545,6 +603,7 @@
       <textarea
         class="wf-words"
         bind:value={typed}
+        on:paste={pasteRestore}
         rows="6"
         autocomplete="off"
         autocapitalize="off"
@@ -552,13 +611,24 @@
         aria-label="Your recovery words"
         aria-describedby="wf-words-status"
       ></textarea>
-      <p id="wf-words-status" class="wf-status" class:ok={check?.ok} class:bad={!!check && !check.ok && (check.unknown.length > 0 || check.checksum_failed || check.count > WORD_COUNT)} aria-live="polite">
+      <p id="wf-words-status" class="wf-status" class:ok={check?.ok} class:bad={!!check && !check.ok && (check.unknown.length > 0 || check.checksum_failed || check.count > WORD_COUNT || !!check.astray)} aria-live="polite">
         {wordsStatus}
       </p>
+      {#if note}<p class="wf-note" class:warn={noteWarn}>{note}</p>{/if}
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <div class="row-actions">
-        <button on:click={begin} disabled={!check?.ok || busy}>{busy ? "Starting…" : "Restore my wallet"}</button>
+        <button on:click={restoreFromBox} disabled={!check?.ok || busy}>{busy ? "Starting…" : "Restore my wallet"}</button>
         <button class="secondary" on:click={() => (step = fresh ? "passphrase" : "choose")} disabled={busy}>Back</button>
+      </div>
+    {:else if step === "restore-check"}
+      <p class="wf-lede">Your list is numbered, so FreeBank put the words in its numbers' order. Check them before they go in.</p>
+      <ol class="wf-readback" on:copy|preventDefault on:cut|preventDefault on:dragstart|preventDefault on:contextmenu|preventDefault>
+        {#each restoreWords as w, i}<li><span>{i + 1}</span>{w}</li>{/each}
+      </ol>
+      {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
+      <div class="row-actions">
+        <button on:click={() => { restoreWords = []; begin(); }} disabled={busy}>{busy ? "Starting…" : "These are right: restore"}</button>
+        <button class="secondary" on:click={() => { restoreWords = []; step = "words-in"; }} disabled={busy}>Back</button>
       </div>
     {:else if step === "working"}
       <ul class="stages">
@@ -624,7 +694,7 @@
           <button class="secondary" on:click={() => (hidden = false)}>Show them</button>
         </div>
       {:else}
-        <RecoveryWords {words} on:copied={onCopied} />
+        <RecoveryWords {words} />
       {/if}
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <p class="hint">
@@ -644,6 +714,7 @@
           </label>
         {/each}
         {#if confirmError}<p class="soft-error" role="alert">{confirmError}</p>{/if}
+        {#if note}<p class="wf-note" class:warn={noteWarn}>{note}</p>{/if}
         <div class="row-actions">
           <button type="submit" disabled={answers.some((a) => !a.trim()) || busy}>Check</button>
           <button type="button" class="secondary" on:click={() => { step = "show-words"; hidden = false; }} disabled={busy}>
@@ -838,6 +909,29 @@
     outline: none;
     border-color: var(--accent-color);
     box-shadow: 0 0 0 3px var(--accent-tint);
+  }
+  .wf-note {
+    font-size: 0.85rem;
+    color: var(--ok, #6fcf97);
+  }
+  .wf-note.warn {
+    color: var(--warn, #e0b252);
+  }
+  .wf-readback {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.3rem 0.75rem;
+    font-family: var(--mono, monospace);
+    /* No selecting or copying, as on RecoveryWords: on X11 a selection is already a copy (PRIMARY). */
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .wf-readback span {
+    display: inline-block;
+    min-width: 1.6rem;
+    color: var(--muted, #8b93a1);
   }
   .wf-status {
     min-height: 1.4em;

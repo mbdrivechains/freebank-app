@@ -248,6 +248,9 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
                 #[cfg(target_os = "linux")]
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
             }
+            // SIGTERM's default action, even if the app was started with it ignored (the app keeps such a signal
+            // ignored, lib.rs; v0.4.10, check C6), so that SIGTERM still stops the node. Async-signal-safe.
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
             Ok(())
         });
     }

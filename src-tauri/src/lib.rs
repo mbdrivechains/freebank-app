@@ -91,7 +91,40 @@ pub fn phone_background_main(app_dir: std::path::PathBuf, light: bool) -> i32 {
     phone::background::main(app_dir, light)
 }
 
+#[cfg(unix)]
+async fn any_signal(sigs: &mut [tokio::signal::unix::Signal]) {
+    futures_util::future::select_all(sigs.iter_mut().map(|s| Box::pin(s.recv()))).await;
+}
+
+/// Whether `sig` was set to be ignored when the app started (`nohup` ignores SIGHUP).
+#[cfg(unix)]
+fn ignored(sig: libc::c_int) -> bool {
+    // SAFETY: reads the current action only (a null new action changes nothing).
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(sig, std::ptr::null(), &mut old) == 0 && old.sa_sigaction == libc::SIG_IGN
+    }
+}
+
 pub fn run() {
+    // No core dump of the app's process (v0.4.10, the Truthcoin app's copy-words review, check C5): recovery words on
+    // screen are in its memory, and a crash handler such as Ubuntu's apport would keep a dump. The node, started later,
+    // is unaffected. A non-dumpable process can't call xdg-desktop-portal, which GTK uses for its file chooser (Restore
+    // a backup file) only when GTK_USE_PORTAL=1: then the app stays dumpable rather than lose the file chooser.
+    #[cfg(target_os = "linux")]
+    if std::env::var("GTK_USE_PORTAL").map_or(true, |v| v != "1") {
+        // SAFETY: sets a flag of this process only.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        }
+    }
+    // Copied recovery words leave the clipboard if the app panics (the release build aborts right after the hook), as
+    // they do at a quit (review L3).
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        report(info);
+        clipboard::clear_after_panic();
+    }));
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
     let builder = builder.menu(menu_with_report).on_menu_event(on_menu);
@@ -165,6 +198,41 @@ pub fn run() {
             app_update::spawn_auto(updater.clone(), mgr.clone());
             app.manage(updater);
             app.manage(mgr);
+            // SIGTERM, SIGINT or SIGHUP end the app as a quit does (v0.4.10, review L3): copied words leave the clipboard,
+            // and the node stops or keeps running as set. A signal ignored when the app started (`nohup`) stays ignored
+            // (R4). Another one a second or more later, while the quit runs, ends the app at once, after the
+            // clipboard's clear (R3).
+            #[cfg(unix)]
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let mut sigs: Vec<_> = [
+                        (libc::SIGTERM, SignalKind::terminate()),
+                        (libc::SIGINT, SignalKind::interrupt()),
+                        (libc::SIGHUP, SignalKind::hangup()),
+                    ]
+                    .into_iter()
+                    .filter(|(n, _)| !ignored(*n))
+                    .filter_map(|(_, k)| signal(k).ok())
+                    .collect();
+                    if sigs.is_empty() {
+                        return;
+                    }
+                    any_signal(&mut sigs).await;
+                    h.exit(0);
+                    let first = std::time::Instant::now();
+                    loop {
+                        any_signal(&mut sigs).await;
+                        if first.elapsed() >= std::time::Duration::from_secs(1) {
+                            break;
+                        }
+                    }
+                    clipboard::clear_at_exit();
+                    // SAFETY: ends the process without running exit handlers while the main thread is inside GTK.
+                    unsafe { libc::_exit(1) };
+                });
+            }
             Ok(())
         })
         // With "Keep running" on, the first close says what happens to the node (node/background.rs).
@@ -206,6 +274,9 @@ pub fn run() {
             recovery::commands::seed_check_words,
             recovery::commands::wallet_reveal,
             clipboard::copy_words,
+            clipboard::words_own_copy,
+            clipboard::clipboard_clear_words,
+            clipboard::clipboard_forget_words,
             feedback::feedback_details,
             phone::commands::phone_keep_info,
             phone::commands::phone_remove_passkey,
