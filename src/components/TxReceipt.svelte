@@ -283,7 +283,9 @@
     {/if}
 
     <div class="rc-actions">
-      <button type="button" class="secondary" on:click={() => openUrl(explorerTxUrl(txid))}>View on explorer ↗</button>
+      {#if explorerTxUrl(txid)}
+        <button type="button" class="secondary" on:click={() => openUrl(explorerTxUrl(txid) ?? "")}>View on explorer ↗</button>
+      {/if}
       <slot name="actions" {confirmations} {confirmed} {replaced} />
     </div>
   {/if}

@@ -5,8 +5,7 @@
 //! same path. (grpcurl isn't fetched any more: freebankd talks to the enforcer without it since v0.2.17.)
 
 use super::{
-    detect, platform, release_key, NodeManager, DATADIR_MARK, RELEASES_URL,
-    RELEASE_DOWNLOAD, SEED_TAG,
+    detect, platform, release_key, seed_tag, NodeManager, DATADIR_MARK, RELEASES_URL, RELEASE_DOWNLOAD,
 };
 use rand::Rng;
 use serde::Serialize;
@@ -84,14 +83,15 @@ pub fn validate_tag(t: &str) -> Result<(), String> {
     if t.starts_with(' ') || t.ends_with(' ') {
         return Err("No spaces at the start or end.".into());
     }
-    if t == SEED_TAG {
-        return Err(format!("{} is the FreeBank seed's name; pick your own.", SEED_TAG));
+    if t == seed_tag() {
+        return Err(format!("{} is the FreeBank seed's name; pick your own.", seed_tag()));
     }
     Ok(())
 }
 
-/// The newest published C++ release: non-draft, non-prerelease, tag v0.2.N.
-/// (The retired Rust node is the v0.3.x line; GitHub's "latest" flag is not relied on.)
+/// The newest published C++ release of this network's line (v0.2.N; mainnet v1.x) that carries this network's archive
+/// for this platform: non-draft, non-prerelease. (The retired Rust node is the v0.3.x line; GitHub's "latest" flag is
+/// not relied on: from fork day it is mainnet's.) On easynet, the newest v0.2.N with an easynet build.
 pub async fn find_release(http: &reqwest::Client) -> Result<String, String> {
     let list: serde_json::Value = http
         .get(RELEASES_URL)
@@ -104,22 +104,32 @@ pub async fn find_release(http: &reqwest::Client) -> Result<String, String> {
         .json()
         .await
         .map_err(|e| format!("GitHub's release list didn't parse: {}", e))?;
+    newest_release(&list, crate::network::current(), platform()?.0)
+}
+
+/// The pick of `find_release` from GitHub's release list.
+pub fn newest_release(list: &serde_json::Value, net: &crate::network::Network, triplet: &str) -> Result<String, String> {
     list.as_array()
         .into_iter()
         .flatten()
         .filter(|r| r["draft"] == false && r["prerelease"] == false)
         .filter_map(|r| {
             let tag = r["tag_name"].as_str()?;
-            let patch: u32 = tag.strip_prefix("v0.2.")?.parse().ok()?;
-            Some((patch, tag.to_string()))
+            let order = crate::network::order(net, tag)?;
+            let asset = crate::network::asset_name(net, tag, triplet)?;
+            // A release listing no assets at all is taken as before (the list may leave them out); one that lists
+            // assets must carry this network's archive.
+            let assets = r["assets"].as_array();
+            let has = assets.map_or(true, |a| a.is_empty() || a.iter().any(|x| x["name"] == asset.as_str()));
+            has.then(|| (order, tag.to_string()))
         })
         .max()
         .map(|(_, tag)| tag)
-        .ok_or_else(|| "GitHub lists no FreeBank v0.2 release.".into())
+        .ok_or_else(|| format!("GitHub lists no FreeBank release for {} yet.", crate::network::current().name))
 }
 
 /// Stream `url` to `dest`, reporting bytes as they arrive.
-async fn download(
+pub(crate) async fn download(
     http: &reqwest::Client,
     url: &str,
     dest: &Path,
@@ -189,7 +199,7 @@ fn signed_sums<'a>(tag: &str, sums: &'a [u8], sig: Option<&[u8]>) -> Result<&'a 
         .map_err(|_| "The release's checksums file isn't plain text, so nothing was installed.".into())
 }
 
-fn sha256_file(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
     let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut h = Sha256::new();
     std::io::copy(&mut f, &mut h).map_err(|e| e.to_string())?;
@@ -206,7 +216,7 @@ pub(crate) fn listed_hash(sums: &str, name: &str) -> Option<String> {
     })
 }
 
-fn untar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
+pub(crate) fn untar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
     let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut a = tar::Archive::new(flate2::read::GzDecoder::new(f));
     a.set_preserve_permissions(true);
@@ -223,14 +233,14 @@ fn runs(bin: &Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn unquarantine(p: &Path) {
+pub(crate) fn unquarantine(p: &Path) {
     let _ = std::process::Command::new("xattr")
         .args(["-dr", "com.apple.quarantine"])
         .arg(p)
         .output();
 }
 #[cfg(not(target_os = "macos"))]
-fn unquarantine(_: &Path) {}
+pub(crate) fn unquarantine(_: &Path) {}
 
 /// Written into releases/<tag>/ once its archive has passed the signature and hash checks; it holds
 /// the archive's SHA-256. Only a release with it is run or reused (NodeManager::verified). One
@@ -321,8 +331,8 @@ async fn fetch_release(
         set(p, |s| s.note = Some(format!("FreeBank {} is already downloaded.", tag)));
         return Ok(());
     }
-    let version = tag.trim_start_matches('v');
-    let asset = format!("freebank-{}-{}.tar.gz", version, triplet);
+    let asset = crate::network::asset_name(crate::network::current(), tag, triplet)
+        .ok_or_else(|| format!("{} isn't a FreeBank release for {}.", tag, crate::network::current().name))?;
     let base = format!("{}/{}", RELEASE_DOWNLOAD, tag);
     let archive = tmp.join(&asset);
     let got = fetch_checked(&mgr.http, &base, tag, &asset, &archive, p).await?;
@@ -334,7 +344,7 @@ async fn fetch_release(
     untar_gz(&archive, &rel)?;
     unquarantine(&rel);
     if !bin.is_file() {
-        return Err("The release archive has no freebank/bin/freebankd.".into());
+        return Err(format!("The release archive has no {}/bin/freebankd.", crate::network::current().asset));
     }
     if !runs(&bin) {
         return Err("freebankd doesn't run on this machine.".into());
@@ -381,7 +391,8 @@ async fn update(mgr: &Arc<NodeManager>) -> Result<(), String> {
     set(&p, |s| s.stage = "release".into());
     let tag = mgr.latest_release(true).await?;
     set(&p, |s| s.tag = Some(tag.clone()));
-    if super::patch(&tag) <= super::patch(&old) {
+    let net = crate::network::current();
+    if crate::network::order(net, &tag) <= crate::network::order(net, &old) {
         set(&p, |s| s.note = Some(format!("{} is already the newest.", old)));
         return Ok(());
     }
@@ -443,7 +454,8 @@ async fn refetch(mgr: &Arc<NodeManager>) -> Result<(), String> {
         .installed_tag
         .clone()
         .ok_or("FreeBank isn't installed yet.")?;
-    if super::patch(&tag).map_or(true, |n| n < FIRST_SIGNED) {
+    // Releases before v0.2.16 have no signature: such a tag is updated instead. Every other line is signed.
+    if crate::network::current().line == crate::network::Line::V02 && super::patch(&tag).map_or(true, |n| n < FIRST_SIGNED) {
         set(&p, |s| s.what = Some("update".into()));
         return update(mgr).await;
     }
@@ -619,7 +631,7 @@ mod tests {
         assert!(validate_tag("\"quoted\"").is_err());
         assert!(validate_tag(" lead").is_err());
         assert!(validate_tag("caf\u{e9}").is_err());
-        assert!(validate_tag(SEED_TAG).is_err());
+        assert!(validate_tag(seed_tag()).is_err());
         let t = suggest_tag();
         assert_eq!(t.len(), 13);
         assert!(validate_tag(&t).is_ok());

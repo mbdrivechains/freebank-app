@@ -2,6 +2,8 @@
 // before it issues any token: the house, the keyset id, its keys and the key that signs its posts. Here the app checks
 // the file before recording it: the id must be the one its keys give (Cashu's v1 id, NUT-02), so what is recorded is
 // what the mint signs with.
+import { get } from "svelte/store";
+import { network } from "./network";
 import { sha256 } from "./sha256";
 
 export interface MintKeyset {
@@ -72,10 +74,17 @@ export function lockHexFrom(text: string): string {
   return t;
 }
 
+/** Where a house's float address is kept: beta's key as before, another network's of its own (v0.5.0), since house N
+ *  on easynet isn't house N on beta and the two networks share address prefixes. */
+function floatKey(house: number): string {
+  const net = get(network).id;
+  return net === "beta" ? `fb.mintFloat.${house}` : `fb.${net}.mintFloat.${house}`;
+}
+
 /** The mint's float address for a house, as this computer last saw it in keyset.json (or typed). */
 export function savedFloat(house: number): string {
   try {
-    return localStorage.getItem(`fb.mintFloat.${house}`) ?? "";
+    return localStorage.getItem(floatKey(house)) ?? "";
   } catch {
     return "";
   }
@@ -83,7 +92,7 @@ export function savedFloat(house: number): string {
 
 export function saveFloat(house: number, address: string) {
   try {
-    localStorage.setItem(`fb.mintFloat.${house}`, address);
+    localStorage.setItem(floatKey(house), address);
   } catch {
     // no storage: typed again next time
   }

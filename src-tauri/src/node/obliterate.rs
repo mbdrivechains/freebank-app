@@ -25,6 +25,8 @@ use std::sync::atomic::Ordering;
 const APP_FILES: &[&str] = &[
     "settings.json", "releases", "tools", "tmp", "logs", "wallet", "sends.json", ".sends.json.tmp", "phone",
     "backups.json", "node.pid", "node.pid.new",
+    // v0.5.0: the eCash node and enforcer the app installed and runs for this network, their data, the install's tmp.
+    "stack", "stack-data", "tmp-stack",
 ];
 
 /// FreeBank's own files named by how they begin: a damaged send log moved aside
@@ -90,6 +92,8 @@ pub struct Places {
     /// files in it go, never the folder.
     pub app_dir_shared: bool,
     pub datadir: PathBuf,
+    /// The other networks' data folders (v0.5.0): a folder that holds one is never deleted from here.
+    pub others: Vec<(String, PathBuf)>,
     /// Every node folder the app created when it installed (Settings::created).
     pub created: Vec<PathBuf>,
     /// The folders FreeBank moved aside, during setup or a restore (Settings::moved_aside).
@@ -291,6 +295,16 @@ fn wallet_strings(dir: &Path) -> Vec<String> {
 }
 
 /// A folder a node other than the app's own is using (its lock is held) can't be ticked.
+/// A folder that holds (or is inside) another network's data folder stays: deleting it would take that network's
+/// wallet (v0.5.0).
+fn mark_holds_another(item: &mut Item, p: &Places) {
+    if let Some((name, _)) = p.others.iter().find(|(_, d)| crate::network::nested(Path::new(&item.path), d)) {
+        item.allowed = false;
+        item.checked = false;
+        item.note = format!("This folder holds your {name} node's data folder too, so it stays. Remove that network's data from it first.");
+    }
+}
+
 fn mark_in_use(item: &mut Item, p: &Places) {
     if let Some(u) = lock::in_use(Path::new(&item.path), &p.ours) {
         item.allowed = false;
@@ -330,6 +344,9 @@ fn app_contents(app_dir: &Path) -> String {
         ("backups.json", "the list of wallet backups FreeBank made (the backups themselves stay)"),
         ("logs", "logs"),
         ("tmp", "an unfinished download"),
+        // v0.5.0: the eCash node and enforcer the app installed for its network.
+        ("stack", "the eCash node and enforcer FreeBank installed"),
+        ("stack-data", "their chain and data"),
     ]
     .iter()
     .filter(|(name, _)| exists(&app_dir.join(name)) || (*name == "sends.json" && damaged_log))
@@ -387,6 +404,7 @@ pub fn plan_items(p: &Places) -> Vec<Item> {
         let mut node = entry(p, "node".into(), Kind::Node, "The node's data folder", &p.datadir, created, marked, note);
         node.wallets = wallet_strings(&p.datadir);
         mark_in_use(&mut node, p);
+        mark_holds_another(&mut node, p);
         items.push(node);
     }
     // Node folders the app created before a switch to another folder under Advanced.
@@ -545,6 +563,18 @@ pub fn execute(p: &Places, ticks: &[Tick]) -> Result<Done, String> {
             targets.extend(path.canonicalize().ok());
         }
         remove_item(path, &p.home)?;
+        // A network's own data folder sits in a top folder made for it (`~/.freebank-easynet/easynet`, v0.5.0): that
+        // goes too once it is empty. Never beta's (`~/.freebank`), which is the data folder itself.
+        if item.kind == Kind::Node {
+            let n = crate::network::current();
+            if let (Some(f), Some(top)) = (n.net_folder, path.parent()) {
+                let ours = path.file_name().and_then(|x| x.to_str()) == Some(f)
+                    && top.file_name().and_then(|x| x.to_str()).is_some_and(|t| t.ends_with(&format!("-{}", n.id)));
+                if ours && std::fs::read_dir(top).is_ok_and(|mut d| d.next().is_none()) {
+                    let _ = std::fs::remove_dir(top);
+                }
+            }
+        }
         done.removed.push(PathBuf::from(&item.path));
     }
     if chosen.iter().any(|i| i.kind == Kind::App) {
@@ -663,6 +693,13 @@ async fn refusal(mgr: &NodeManager) -> Option<String> {
     }
     if process::someone_elses_node(mgr).await {
         return Some("A FreeBank node started by another program is running. Stop it there first.".into());
+    }
+    // v0.5.0: an eCash node being installed, or a wallet job, would write into the folders as they go.
+    if crate::stack::installing() {
+        return Some("The eCash node is being installed. Let it finish first.".into());
+    }
+    if crate::recovery::job::progress().running {
+        return Some("FreeBank is working on your wallet. Let it finish first.".into());
     }
     None
 }
@@ -880,6 +917,8 @@ pub async fn run(mgr: &NodeManager, places: Places, ticks: Vec<Tick>) -> Result<
         .await
         .map_err(|e| e.to_string())??;
     process::stop(mgr).await?;
+    // The app's own eCash node and enforcer run from this network's folder (v0.5.0): down before it goes.
+    crate::stack::stop(mgr).await?;
     let home = places.home.clone();
     // The recent-activity log stops first, so a note can't bring the app's folder back while it goes; and the login
     // item goes, so nothing starts for a folder that is gone.
@@ -903,8 +942,29 @@ pub async fn run(mgr: &NodeManager, places: Places, ticks: Vec<Tick>) -> Result<
         kept: strings(&done.kept),
         backups: mgr.backups.lock().unwrap().iter().map(|b| b.saved.clone()).collect(),
         app_removed: done.app_removed,
-        app: how_to_remove_app(),
+        app: remove_app_here(&mgr.app_dir),
     })
+}
+
+/// How the app itself would go, unless another network's data is still on this computer (v0.5.0): then the app stays,
+/// and the screen names that network ("network", its name in `path`). After a network's own Obliterate the app opens on
+/// beta next time.
+fn remove_app_here(app_dir: &Path) -> RemoveApp {
+    let here = crate::network::current();
+    let top = crate::network::top_of(app_dir);
+    if here.id != crate::network::BETA.id {
+        let _ = crate::network::choose(&top, &crate::network::BETA);
+        return RemoveApp { kind: "network", path: Some(crate::network::BETA.name.into()), can_remove: false };
+    }
+    let left: Vec<&str> = crate::network::ALL
+        .iter()
+        .filter(|n| n.id != here.id && crate::network::present(&top, n))
+        .map(|n| n.name)
+        .collect();
+    if !left.is_empty() {
+        return RemoveApp { kind: "network", path: Some(left.join(" and ")), can_remove: false };
+    }
+    how_to_remove_app()
 }
 
 /// Local time as YYYYMMDD-HHMMSS, for backup names (seconds since 1970 if the clock can't say).
@@ -1163,12 +1223,27 @@ mod tests {
             screen_uses_app_dir: false,
             app_dir_shared: false,
             datadir: datadir.clone(),
+            others: Vec::new(),
             created: vec![datadir],
             moved_aside: Vec::new(),
             caches: Vec::new(),
             keep: Vec::new(),
             ours: Vec::new(),
         }
+    }
+
+    /// v0.5.0, review finding 1: beta's data folder holding easynet's stays, whatever the app created.
+    #[test]
+    fn a_folder_holding_another_networks_data_stays() {
+        let b = std::env::temp_dir().join(format!("fbobl-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&b);
+        let mut p = places(&b);
+        p.others = vec![("easynet".into(), p.datadir.join("easynet"))];
+        let items = plan_items(&p);
+        let node = items.iter().find(|i| i.kind == Kind::Node).unwrap();
+        assert!(!node.allowed && !node.checked, "{node:?}");
+        assert!(node.note.contains("easynet"));
+        std::fs::remove_dir_all(&b).unwrap();
     }
 
     /// Ticks as the screen sends them: each id with the path the list shows for it now (none for

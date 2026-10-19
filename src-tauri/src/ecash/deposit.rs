@@ -40,7 +40,8 @@ const OP_NOP8: u8 = 0xb7;
 
 fn opcodes(chain: Chain) -> &'static [u8] {
     match chain {
-        Chain::Main => &[OP_NOP8],
+        // easynet's enforcer takes OP_NOP8 too (its preset's op_drivechain).
+        Chain::Main | Chain::Test => &[OP_NOP8],
         Chain::Regtest => &[OP_NOP5, OP_NOP8],
     }
 }

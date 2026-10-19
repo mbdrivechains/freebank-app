@@ -7,15 +7,17 @@
 // A receipt follows its transaction: Unconfirmed, then 1, 2 and 3 confirmations (Confirmed), checked
 // with gettransaction on each new block.
 
-import { readable, writable } from "svelte/store";
+import { get, readable, writable } from "svelte/store";
 import { api } from "./api";
-import { EXPLORER_URL } from "./brand";
+import { network } from "./network";
 
 /** A transaction counts as Confirmed at this many confirmations, on Home and on receipts. */
 export const CONFIRMED_AT = 3;
 
-export function explorerTxUrl(txid: string): string {
-  return `${EXPLORER_URL}/tx/${encodeURIComponent(txid)}`;
+/** The transaction on this network's FreeBank explorer; null on a network without one (easynet, v0.5.0). */
+export function explorerTxUrl(txid: string): string | null {
+  const e = get(network).explorer;
+  return e ? `${e}/tx/${encodeURIComponent(txid)}` : null;
 }
 
 /** An extra line on a receipt, e.g. { label: "Fee", value: "0.00000226 sECX" }. */

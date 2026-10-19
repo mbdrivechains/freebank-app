@@ -21,6 +21,8 @@ export interface Settings {
   keep_running: boolean;
   /** Demo mode (v0.4.4): no eCash node; eCash facts come from FreeBank's gateway. Play money only. */
   demo?: boolean;
+  /** The eCash node and enforcer the app installed and runs itself (v0.5.0), or none. */
+  stack?: { tag: string; dir: string; ports: import("./network").Ports } | null;
 }
 
 export interface SetupInfo {
@@ -148,6 +150,8 @@ export interface NodeStatus {
   listens: boolean;
   /** freebank.conf binds the peer port to this computer only (v0.2.6). */
   peers_local?: boolean;
+  /** v0.5.0: the eCash node and enforcer are the app's own; it starts and stops them. */
+  own_stack?: boolean;
   versions: Versions;
 }
 
@@ -218,7 +222,7 @@ export interface ObliteratePlan {
 /** How to remove the app itself: "deb" (sudo apt remove freebank), "appimage" (delete the file at
  * path), "mac" (drag it to the Trash) or "other" (delete the program at path). */
 export interface RemoveApp {
-  kind: "deb" | "appimage" | "mac" | "other";
+  kind: "deb" | "appimage" | "mac" | "other" | "network"; // "network": another network's data stays, so the app does (v0.5.0)
   path: string | null;
   /** "Remove the app too" can do it (v0.2.9): the .deb through the password prompt, the Mac app to the Bin. */
   can_remove: boolean;

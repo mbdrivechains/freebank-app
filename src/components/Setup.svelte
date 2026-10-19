@@ -26,6 +26,7 @@
     type SetupInfo,
     type StackCheck,
   } from "../lib/node";
+  import { network, stack as ownStack, switchNetwork, STACK_STAGES, type StackProgress, type StackStatus } from "../lib/network";
 
   const dispatch = createEventDispatcher<{ ready: void; manual: void }>();
 
@@ -166,6 +167,17 @@
         return;
       }
       stack = await node.stackCheck();
+      // The app's own eCash node and enforcer (v0.5.0), stopped: start them, then look again.
+      const ownStack_ = info.settings.stack;
+      if (!stack.found && ownStack_ && info.settings.rest === `127.0.0.1:${ownStack_.ports.rpc}` && !info.settings.demo) {
+        try {
+          await ownStack.start();
+          stack = await node.stackCheck();
+        } catch (e) {
+          startError = String(e);
+        }
+      }
+      if (!stack.found && $network.stack) own = await ownStack.status().catch(() => null);
       if (!stack.found || !auto) {
         screen = "stack";
       } else {
@@ -186,6 +198,30 @@
     } else {
       await showInstall();
     }
+  }
+
+  // The eCash node and enforcer, installed by the app itself (v0.5.0; easynet): the status before (its ports, and
+  // which other programs hold the defaults) and the install's progress.
+  let own: StackStatus | null = null;
+  let ownProg: StackProgress | null = null;
+  // On beta, easynet is offered too (it needs no BitWindow).
+  $: easynetOffered = $network.id === "beta" && $network.all.some(([id, , offered]) => id === "easynet" && offered);
+  $: ownStage = ownProg ? STACK_STAGES.findIndex(([id]) => id === ownProg!.stage) : -1;
+  async function installOwn() {
+    startError = "";
+    try {
+      await ownStack.install();
+    } catch (e) {
+      startError = String(e);
+      return;
+    }
+    poll(async () => {
+      ownProg = await ownStack.progress().catch(() => ownProg);
+      if (ownProg && !ownProg.running) {
+        stopPolling();
+        if (ownProg.done) check();
+      }
+    }, 700);
   }
 
   async function showInstall() {
@@ -379,7 +415,7 @@
   {:else if screen === "checking"}
     <div class="hero">
       <div class="spinner big" aria-hidden="true"></div>
-      <h2>Looking for eCash beta</h2>
+      <h2>Looking for {$network.l1}</h2>
       <p class="lede">{info?.settings.demo ? "Checking FreeBank's gateway." : "Checking this computer for an eCash node and enforcer."}</p>
     </div>
 
@@ -418,9 +454,9 @@
   {:else if screen === "stack"}
     {#if stack?.found}
       <div class="hero left">
-        <h2>eCash beta node</h2>
+        <h2>{$network.l1} node</h2>
         <p class="lede">
-          FreeBank will use this eCash beta node and its enforcer. To use different ones, change them under
+          FreeBank will use this {$network.l1} node and its enforcer. To use different ones, change them under
           Advanced below.
         </p>
       </div>
@@ -430,13 +466,14 @@
         {#if newcomer}
           <h2>Welcome to FreeBank</h2>
           <p class="lede">
-            Try it in a few minutes with play money, or run it alongside your own <strong>eCash beta full node</strong>
-            and its <strong>enforcer</strong>.
+            Try it in a few minutes with play money, or run it alongside your own <strong>{$network.l1} full node</strong>
+            and its <strong>enforcer</strong>{#if easynetOffered}, or on <strong>easynet</strong>, a small test network
+            FreeBank sets up for you{/if}.
           </p>
         {:else}
-          <h2>FreeBank needs eCash beta</h2>
+          <h2>FreeBank needs {$network.l1}</h2>
           <p class="lede">
-            FreeBank runs alongside an <strong>eCash beta full node</strong> and its <strong>enforcer</strong>.
+            FreeBank runs alongside a <strong>{$network.l1} full node</strong> and its <strong>enforcer</strong>.
             This computer doesn't have them running yet.
           </p>
         {/if}
@@ -457,6 +494,51 @@
           </div>
         </div>
       {/if}
+      {#if $network.stack}
+        <div class="card steps" data-testid="own-stack">
+          <h3>Let FreeBank set it up</h3>
+          <p>
+            FreeBank downloads {$network.l1}'s node and enforcer (about 105 MB), checks them against the hashes it
+            knows, and runs them for you. The chain is small: it syncs in a few minutes.
+          </p>
+          {#if own?.clashes?.length}
+            <p class="hint">
+              {#each own.clashes as c}Port {c.port} is in use by {c.name}. {/each}FreeBank's own node will use free ports
+              instead, and leaves those programs alone.
+            </p>
+          {/if}
+          {#if ownProg?.running}
+            <ol class="stack-stages">
+              {#each STACK_STAGES as [id, label], i}
+                <li class:done={i < ownStage} class:now={i === ownStage}>
+                  {label}{#if i === ownStage && id.startsWith("download")}: {megabytes(ownProg.bytes, ownProg.total)}{:else if i === ownStage && id === "sync" && ownProg.headers}: block {(ownProg.blocks ?? 0).toLocaleString()} of {ownProg.headers.toLocaleString()}{/if}
+                </li>
+              {/each}
+            </ol>
+          {:else}
+            <div class="row-actions">
+              <button on:click={installOwn} disabled={checking} data-testid="own-stack-install">Install the {$network.l1} node</button>
+            </div>
+          {/if}
+          {#if ownProg?.error}<p class="soft-error">{ownProg.error}</p>{/if}
+        </div>
+      {/if}
+      {#if easynetOffered}
+        <div class="card steps" data-testid="try-easynet">
+          <h3>Or try easynet</h3>
+          <p>
+            easynet is a small test network on eCash's rules, with no value. FreeBank installs its eCash node and enforcer
+            itself, and it syncs in a few minutes, with no BitWindow.
+          </p>
+          <div class="row-actions">
+            <button class="secondary" on:click={() => switchNetwork("easynet").catch((e) => (startError = String(e)))} disabled={checking}>
+              Switch to easynet
+            </button>
+          </div>
+          <p class="hint">FreeBank restarts on easynet. Beta stays as it is, and you can switch back in Settings.</p>
+        </div>
+      {/if}
+      {#if $network.id === "beta"}
       <div class="card steps">
         <h3>{newcomer ? "With your own eCash node" : "The easiest way"}</h3>
         <ol>
@@ -471,6 +553,7 @@
           </button>
         </div>
       </div>
+      {/if}
       </div>
     {/if}
 
@@ -483,7 +566,7 @@
         <div class="check-item" class:ok={stack.rest_ok && stack.on_beta}>
           <span class="dot"></span>
           eCash node at <code>{info?.settings.rest}</code>
-          <span class="check-state">{stack.rest_ok ? (stack.on_beta ? "on beta" : "not on beta") : "not found"}</span>
+          <span class="check-state">{stack.rest_ok ? (stack.on_beta ? `on ${$network.l1}` : `not on ${$network.l1}`) : "not found"}</span>
         </div>
         <div class="check-item" class:ok={stack.enforcer_ok}>
           <span class="dot"></span>
@@ -534,7 +617,7 @@
           FreeBank installs its own node: a few minutes to download it, check it and catch up with the FreeBank chain.
         </p>
       {:else}
-        <p class="lede">FreeBank found an eCash beta node and its enforcer. It can now install its own node alongside them.</p>
+        <p class="lede">FreeBank found {$network.l1}'s node and its enforcer. It can now install its own node alongside them.</p>
       {/if}
     </div>
 
@@ -548,7 +631,7 @@
       {:else}
         <div class="check-item ok">
           <span class="dot"></span>
-          eCash beta node <code>{info?.settings.rest}</code>
+          {$network.l1} node <code>{info?.settings.rest}</code>
           <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
         </div>
         <div class="check-item ok">
@@ -714,7 +797,7 @@
           <div class="stat-num">{view?.rpc.state === "up" ? fmt(view.rpc.blocks) : "—"}</div>
         </div>
         <div class="stat-right">
-          <div class="stat-cap">Explorer tip</div>
+          <div class="stat-cap">{$network.explorer ? "Explorer tip" : "Network tip"}</div>
           <div class="stat-num dim">{fmt(view?.explorer_tip)}</div>
         </div>
       </div>
@@ -748,6 +831,19 @@
 </div>
 
 <style>
+  .stack-stages {
+    margin: 0.25rem 0 0;
+    padding-left: 1.2rem;
+    color: var(--muted, #8b93a1);
+  }
+  .stack-stages li.done {
+    color: inherit;
+    opacity: 0.7;
+  }
+  .stack-stages li.now {
+    color: var(--text, inherit);
+    font-weight: 600;
+  }
   .earlier-choice {
     display: flex;
     gap: 8px;

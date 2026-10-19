@@ -47,6 +47,7 @@
     | "passphrase"
     | "choose"
     | "words-in"
+    | "from-network"
     | "restore-check"
     | "working"
     | "unlock-words"
@@ -65,6 +66,15 @@
   let passOk = false;
   $: fresh = request.kind === "restore-words";
   $: hasPass = !!prot?.encrypted && !fresh;
+
+  // v0.5.0: another network's wallet on this computer whose words this one can take ([id, name]), the one chosen, and
+  // its passphrase.
+  let elsewhere: [string, string][] = [];
+  // With one, the choice comes before the passphrase: those words come with that wallet's passphrase, so a new one
+  // typed first would be thrown away.
+  let wordsFirst = false;
+  let from: [string, string] | null = null;
+  let fromPass = "";
 
   // Restoring: the words typed in, checked as they come.
   let restoring = request.kind === "restore-words";
@@ -131,6 +141,7 @@
   function doneTitle(): string {
     if (request.kind === "confirm-words") return "Your words are checked";
     if (prog?.kind === "restore-file") return "Your backup is restored";
+    if (prog?.kind === "restore-words" && from) return `Your wallet has your ${from[1]} wallet's words`;
     if (prog?.kind === "restore-words") return "Your wallet is restored";
     return "Your wallet is protected";
   }
@@ -163,6 +174,7 @@
   onMount(async () => {
     document.addEventListener("visibilitychange", onVisibility);
     prot = await loadProtection();
+    elsewhere = request.kind === "protect" ? await walletSeed.wordsElsewhere().catch(() => []) : [];
     // A job already under way (the window reloaded part way through): follow it.
     const p = await walletSeed.setupProgress().catch(() => null);
     if (p?.running) {
@@ -176,7 +188,10 @@
     }
     switch (request.kind) {
       case "protect":
-        step = "passphrase";
+        // A wallet that already has a passphrase keeps it, so it can't take another wallet's (and its words).
+        if (prot?.encrypted) elsewhere = [];
+        wordsFirst = elsewhere.length > 0;
+        step = wordsFirst ? "choose" : "passphrase";
         break;
       case "restore-words":
         step = "aside";
@@ -210,12 +225,17 @@
   function passphraseDone() {
     if (!passOk) return;
     error = "";
-    step = fresh ? "words-in" : "choose";
+    if (fresh) step = "words-in";
+    else if (wordsFirst) choose(restoring);
+    else step = "choose";
   }
 
   function choose(restore: boolean) {
     restoring = restore;
-    if (restore) {
+    if (wordsFirst && !pass) {
+      error = "";
+      step = "passphrase";
+    } else if (restore) {
       step = "words-in";
     } else {
       begin();
@@ -256,7 +276,8 @@
     error = "";
     busy = true;
     try {
-      await walletSeed.setupStart(pass, restoring ? typed : null, fresh);
+      if (from) await walletSeed.setupFromNetwork(pass, from[0], fromPass);
+      else await walletSeed.setupStart(pass, restoring ? typed : null, fresh);
     } catch (e) {
       error = nice(e);
       busy = false;
@@ -264,6 +285,7 @@
     }
     // They went to the app; nothing keeps them here.
     pass = "";
+    fromPass = "";
     typed = "";
     check = null;
     busy = false;
@@ -571,7 +593,9 @@
         {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
         <div class="row-actions">
           <button type="submit" disabled={!passOk}>Continue</button>
-          {#if request.kind === "protect"}
+          {#if wordsFirst}
+            <button type="button" class="secondary" on:click={() => { pass = ""; error = ""; step = "choose"; }}>Back</button>
+          {:else if request.kind === "protect"}
             <button type="button" class="secondary" on:click={close}>Not now</button>
           {:else}
             <button type="button" class="secondary" on:click={close}>Cancel</button>
@@ -595,9 +619,33 @@
           <strong>Restore from recovery words</strong>
           <span>You have 24 words from an earlier FreeBank wallet.</span>
         </button>
+        {#each elsewhere as n}
+          <button class="wf-choice secondary" on:click={() => { from = n; fromPass = ""; error = ""; step = "from-network"; }} disabled={busy} data-testid="words-from-network">
+            <strong>The words of my {n[1]} wallet</strong>
+            <span>One set of words for both: the same words bring back each network's wallet. The networks share no coins.</span>
+          </button>
+        {/each}
       </div>
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
-      <button class="link-btn" on:click={() => { pass = ""; step = "passphrase"; }} disabled={busy}>← Back</button>
+      {#if wordsFirst}
+        <button class="link-btn" on:click={close} disabled={busy}>Not now</button>
+      {:else}
+        <button class="link-btn" on:click={() => { pass = ""; step = "passphrase"; }} disabled={busy}>← Back</button>
+      {/if}
+    {:else if step === "from-network" && from}
+      <p class="wf-lede">
+        Your {from[1]} wallet's passphrase opens its recovery words on this computer. This wallet gets the same words and
+        the same passphrase: the same words under a weaker passphrase would be only as safe as that one.
+      </p>
+      <form class="wf-form" on:submit|preventDefault={begin}>
+        <label class="field-label" for="wf-from-pass">Your {from[1]} wallet's passphrase</label>
+        <input id="wf-from-pass" type="password" bind:value={fromPass} autocomplete="current-password" />
+        {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
+        <div class="row-actions">
+          <button type="submit" disabled={!fromPass || busy}>{busy ? "Starting…" : "Use these words"}</button>
+          <button type="button" class="secondary" on:click={() => { from = null; fromPass = ""; step = "choose"; }} disabled={busy}>Back</button>
+        </div>
+      </form>
     {:else if step === "words-in"}
       <p class="wf-lede">All {WORD_COUNT} words, in order, with spaces or new lines between them. A numbered list works too.</p>
       <textarea

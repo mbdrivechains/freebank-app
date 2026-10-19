@@ -26,16 +26,26 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The eCash beta fork block. freebankd refuses to start on any other chain.
-pub const PIN_HEIGHT: u64 = 967_680;
-pub const PIN_HASH: &str = "00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042";
-pub const EXPLORER: &str = "https://explorer.ecxfreebank.com";
+/// Every network's FreeBank releases are on one GitHub page (easynet's builds beside beta's, v0.5.0).
 pub const RELEASES_URL: &str = "https://api.github.com/repos/mbdrivechains/freebank/releases?per_page=50";
 pub const RELEASE_DOWNLOAD: &str = "https://github.com/mbdrivechains/freebank/releases/download";
+
+/// The L1 block freebankd is pinned to on this network (eCash beta's fork block; easynet's genesis). freebankd refuses
+/// to start on any other chain.
+pub fn pin_height() -> u64 {
+    crate::network::current().pin_height
+}
+pub fn pin_hash() -> &'static str {
+    crate::network::current().pin_hash
+}
+/// FreeBank's explorer on this network, if it has one.
+pub fn explorer() -> Option<&'static str> {
+    crate::network::current().explorer
+}
 /// The FreeBank seed's own coinbase tag; users pick their own.
-pub const SEED_TAG: &str = "ecxfreebank.com";
-pub const DEFAULT_RPC_PORT: u16 = 8454;
-pub const DEFAULT_P2P_PORT: u16 = 8455;
+pub fn seed_tag() -> &'static str {
+    crate::network::current().seed_tag
+}
 /// Marks a datadir this app set up, so it is never moved aside.
 pub const DATADIR_MARK: &str = ".freebank-node";
 
@@ -72,13 +82,9 @@ pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-/// freebankd's own default datadir (main network: no subfolder).
+/// This network's default data folder: freebankd's own on beta (no subfolder), beside it for the others.
 pub fn default_datadir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        home().join("Library/Application Support/FreeBank")
-    } else {
-        home().join(".freebank")
-    }
+    (crate::network::current().datadir)()
 }
 
 /// Settings the user can change under "Advanced", plus what the app has installed.
@@ -133,16 +139,20 @@ pub struct Settings {
     /// Demo mode (v0.4.4, relay.rs): no eCash node. The node asks FreeBank's read-only enforcer gateway for eCash facts,
     /// through the app's relay; `rest` and `enforcer` are kept for leaving it. Play money only: no deposits or withdrawals.
     pub demo: bool,
+    /// The eCash node and enforcer this app installed and runs for the network (v0.5.0, stack.rs). None: it uses a
+    /// stack that was already running (BitWindow's, or one set up by hand), at `rest` and `enforcer`.
+    pub stack: Option<crate::stack::StackSettings>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
+        let n = crate::network::current();
         Self {
-            rest: "127.0.0.1:18302".into(),
-            enforcer: "127.0.0.1:50051".into(),
+            rest: n.rest.into(),
+            enforcer: n.enforcer.into(),
             datadir: default_datadir().to_string_lossy().into_owned(),
-            rpc_port: DEFAULT_RPC_PORT,
-            p2p_port: DEFAULT_P2P_PORT,
+            rpc_port: n.rpc_port,
+            p2p_port: n.p2p_port,
             installed_tag: None,
             grpcurl: None,
             datadir_created: None,
@@ -161,6 +171,7 @@ impl Default for Settings {
             changer_key: None,
             auto_update: false,
             demo: false,
+            stack: None,
         }
     }
 }
@@ -358,7 +369,8 @@ impl NodeManager {
     }
 
     pub fn freebankd(&self, tag: &str) -> PathBuf {
-        self.release_dir(tag).join("freebank/bin/freebankd")
+        // The archive's top folder is named as the archive: freebank/, or freebank-easynet/ for easynet's build.
+        self.release_dir(tag).join(crate::network::current().asset).join("bin/freebankd")
     }
 
     /// Did this code put releases/<tag> there, after the signature and hash checks (`.verified`)?
@@ -404,9 +416,26 @@ impl NodeManager {
                 return Some(h);
             }
         }
+        // A network without a FreeBank explorer (easynet): the best height this node's peers report, or its own headers.
+        let Some(explorer) = explorer() else {
+            let s = self.settings.lock().await.clone();
+            let c = detect::local_client(&self.http, &s);
+            let peers = c.call("getpeerinfo", vec![]).await.ok()?;
+            let from_peers = peers
+                .as_array()?
+                .iter()
+                // Headers it has checked from each peer, not the height a peer says it has (review finding 8).
+                .filter_map(|p| p["synced_headers"].as_i64())
+                .max()
+                .filter(|&h| h > 0)? as u64;
+            let headers = c.call("getblockchaininfo", vec![]).await.ok().and_then(|i| i["headers"].as_u64()).unwrap_or(0);
+            let h = from_peers.max(headers);
+            *self.explorer_tip.lock().unwrap() = Some((Instant::now(), h));
+            return Some(h);
+        };
         let text = self
             .http
-            .get(format!("{}/api/blocks/tip/height", EXPLORER))
+            .get(format!("{}/api/blocks/tip/height", explorer))
             .timeout(Duration::from_secs(8))
             .send()
             .await

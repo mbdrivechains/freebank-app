@@ -9,6 +9,7 @@ mod ecash;
 mod feedback;
 mod house;
 mod house_watch;
+mod network;
 mod node;
 mod phone;
 mod recovery;
@@ -16,6 +17,7 @@ mod rpc;
 mod security;
 mod seed;
 mod send;
+mod stack;
 mod wallet;
 mod wallets;
 mod withdraw;
@@ -88,6 +90,8 @@ pub fn phone_background_requested(args: &[String]) -> Option<(std::path::PathBuf
 
 /// The background part's whole life; its exit code.
 pub fn phone_background_main(app_dir: std::path::PathBuf, light: bool) -> i32 {
+    // It runs for the network whose app folder it was given (v0.5.0).
+    network::set(network::of_app_dir(&app_dir));
     phone::background::main(app_dir, light)
 }
 
@@ -137,10 +141,14 @@ pub fn run() {
         .manage(house_watch::AutoAttestState::default())
         .setup(|app| {
             // FREEBANK_APP_DIR lets a developer run the app against a scratch folder.
-            let dir = match std::env::var_os("FREEBANK_APP_DIR") {
+            let top: std::path::PathBuf = match std::env::var_os("FREEBANK_APP_DIR") {
                 Some(d) => d.into(),
                 None => app.path().app_data_dir()?,
             };
+            // The network this run is on (v0.5.0), and its own app folder: beta's is the top folder, as before.
+            let net = network::chosen(&top);
+            network::set(net);
+            let dir = network::app_dir(&top, net);
             let client = app.state::<Arc<Mutex<FreeBankClient>>>().inner().clone();
             let relock = app.state::<wallet::RelockState>().inner().clone();
             // "Include recent activity" in a report reads this log (activity.rs).
@@ -152,7 +160,7 @@ pub fn run() {
                 phone::login_item::refresh(&login_dir);
                 app_update::sweep_leftovers();
             });
-            activity::note(&format!("FreeBank app {} started", env!("CARGO_PKG_VERSION")));
+            activity::note(&format!("FreeBank app {} started on {}", env!("CARGO_PKG_VERSION"), net.id));
             // A background part kept the phone connected while the app was closed: it stops first,
             // so the app's own link never takes turns with it at the relay.
             app.manage(phone::commands::PhoneBackground(phone::background::take_back(&dir)));
@@ -242,6 +250,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            network::network_info,
+            network::network_switch,
+            stack::stack_status,
+            stack::stack_install,
+            stack::stack_install_progress,
+            stack::stack_start,
+            stack::stack_stop,
             commands::get_balance,
             commands::get_new_address,
             commands::get_transactions,
@@ -268,6 +283,8 @@ pub fn run() {
             recovery::commands::wallet_protection,
             recovery::commands::wallet_info,
             recovery::commands::wallet_setup_start,
+            recovery::commands::wallet_words_elsewhere,
+            recovery::commands::wallet_setup_from_network,
             recovery::commands::wallet_setup_progress,
             recovery::commands::wallet_setup_words,
             recovery::commands::wallet_words_confirmed,
@@ -414,6 +431,8 @@ pub fn run() {
             }
             clipboard::clear_at_exit();
             tauri::async_runtime::block_on(node::background::at_exit(&mgr));
+            // The app's own eCash node and enforcer after the FreeBank node that uses them (v0.5.0).
+            tauri::async_runtime::block_on(stack::at_exit(&mgr));
             node::obliterate::wipe_at_exit(&mgr);
         }
     });

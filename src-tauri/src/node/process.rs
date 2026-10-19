@@ -4,7 +4,7 @@
 //! managed like its own child.
 
 use super::background::{self, PidFile};
-use super::{conf_tag, detect, install, lock, NodeManager, EXPLORER, PIN_HASH, PIN_HEIGHT};
+use super::{conf_tag, detect, install, lock, pin_hash, pin_height, NodeManager};
 use serde::Serialize;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,18 @@ use std::time::Duration;
 /// FreeBank's node running after I close the app" on, the node starts in its own session, so it
 /// outlives the app; otherwise (on Linux) the kernel stops it if the app dies.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
+    ensure_stack(mgr).await?;
     start_opts(mgr, false).await
+}
+
+/// The app's own eCash node and enforcer first, when it runs them (v0.5.0): the FreeBank node needs both. Before the
+/// node's lock is taken, so the Node tab isn't held while the eCash node comes up.
+pub async fn ensure_stack(mgr: &NodeManager) -> Result<(), String> {
+    let s = mgr.settings.lock().await.clone();
+    if s.stack.as_ref().is_some_and(|st| st.in_use(&s)) && !s.demo {
+        crate::stack::start(mgr).await?;
+    }
+    Ok(())
 }
 
 /// No -reindex start pending.
@@ -218,13 +229,17 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     if Path::new(&s.datadir).is_dir() {
         cmd.current_dir(&s.datadir);
     }
-    cmd.arg(format!("-datadir={}", s.datadir))
+    let net = crate::network::current();
+    cmd.args(crate::network::datadir_args(net, Path::new(&s.datadir)))
         .arg("-server=1")
         .arg("-mainchaintransport=enforcer")
         .arg(format!("-enforceraddr={}", enforcer))
         .arg(format!("-mainchainrest={}", rest))
-        .arg("-mainchainchain=main")
-        .arg(format!("-mainchainblockpin={}:{}", PIN_HEIGHT, PIN_HASH))
+        .arg(format!("-mainchainblockpin={}:{}", pin_height(), pin_hash()));
+    if !net.l1_chain.is_empty() {
+        cmd.arg(format!("-mainchainchain={}", net.l1_chain));
+    }
+    cmd
         // Always explicit, so an rpcport= line in freebank.conf can't hide the node from us.
         .arg(format!("-rpcport={}", s.rpc_port))
         .arg(format!("-port={}", s.p2p_port))
@@ -542,6 +557,8 @@ pub struct NodeStatus {
     /// freebank.conf binds the peer port to this computer only.
     pub peers_local: bool,
     pub versions: Versions,
+    /// The eCash node and enforcer are the app's own (v0.5.0, stack.rs): it starts and stops them.
+    pub own_stack: bool,
 }
 
 /// "FreeBank app 0.1.0 · node v0.2.15 (843ccae)"
@@ -645,7 +662,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         l1_blocks: None,
         peers: Vec::new(),
         tag: conf_tag(&datadir),
-        explorer: EXPLORER.to_string(),
+        explorer: super::explorer().unwrap_or_default().to_string(),
         datadir: s.datadir.clone(),
         rest: if s.demo { String::new() } else { s.rest.clone() },
         enforcer: if s.demo { super::relay::GATEWAY.to_string() } else { s.enforcer.clone() },
@@ -660,6 +677,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
             app: super::APP_VERSION.to_string(),
             ..Default::default()
         },
+        own_stack: !s.demo && s.stack.as_ref().is_some_and(|st| st.in_use(&s)),
     };
     // Mid-operation the node may not answer for a while; say what is happening instead.
     let activity = mgr.activity.lock().unwrap().clone();

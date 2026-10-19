@@ -89,6 +89,17 @@ macOS.
   phones is `hosted.json` beside it. The words are shown once to their phone and never stored after. A hosted phone
   is served by `serve_hosted` only, never by the owner's narrow door. Deleting a copy: emptied by the move home, the
   file and its passphrase are deleted at the node's next start; otherwise they move into `<app data>/hosted-removed/`.
+- **Networks** (v0.5.0, `src-tauri/src/network.rs`): each network is a set of facts in that file: where its FreeBank
+  node comes from, its eCash node and enforcer with their sha256, its ports and its pinned block. The app runs one at a
+  time, each with its own folder (`<app data>/networks/<id>/`; beta's stays at the top) and its own wallet. Switching
+  restarts the app.
+- **The eCash node and enforcer the app runs itself** (v0.5.0, easynet; `src-tauri/src/stack.rs`): downloaded from
+  `github.com/mbdrivechains/bitcoin/releases/download/<tag>/` and used only if each archive's sha256 is the one in
+  `network.rs` (that release's `SHA256SUMS` isn't signed, so the app trusts only these). The node's RPC, its ZMQ and
+  the enforcer listen on 127.0.0.1 only. The node's RPC logs in by its cookie (readable by your user only); the
+  enforcer has no login, so it stays on this computer. Before starting them the app looks at which programs hold their
+  ports (Linux `/proc`, Mac `lsof`) and takes free ones; it never changes another program's settings. Their data:
+  `<app data>/networks/<id>/stack-data/<chain>/`.
 - **Copying the words to the clipboard** (`src-tauri/src/clipboard.rs`, `copy_words`; v0.4.10, the Truthcoin app's
   reviewed version): after a warning on the screen, the app puts the words on the clipboard as a numbered table and as
   plain words. The command takes only 24 recovery words (the ones the screen shows); the grid on screen can't be
@@ -139,9 +150,13 @@ macOS.
   - the app's own releases (v0.2.4, `src-tauri/src/app_update.rs`): `SHA256SUMS` and `SHA256SUMS.sig` from
     `github.com/mbdrivechains/freebank-app/releases/latest/download/`, 15 seconds after the app starts and every 12
     hours while it runs (an answer is reused for 6 hours), and when you press Check for updates; the new package from
-    `github.com/mbdrivechains/freebank-app/releases/download/v<version>/` only when you press Update and restart.
+    `github.com/mbdrivechains/freebank-app/releases/download/v<version>/` only when you press Update and restart;
+  - on easynet (v0.5.0): its eCash node and enforcer from `github.com/mbdrivechains/bitcoin/releases/download/<tag>/`,
+    when you press Install or Update, checked as above; FreeBank's easynet node (`freebank-easynet-<version>-...`) from
+    the same FreeBank releases, with the same signature check.
 - **explorer.ecxfreebank.com:** the chain's tip height, for Setup's sync progress and the Node tab
-  (`src-tauri/src/node/process.rs`, `mod.rs`).
+  (`src-tauri/src/node/process.rs`, `mod.rs`). On easynet there is no explorer: the tip comes from the headers the
+  node has checked.
 - **app.ecxfreebank.com:**
   - the phone relay (`wss://app.ecxfreebank.com/ws`, or another set in Settings > Phone > Relay), over WebSocket,
     only while a phone is paired or you are pairing one (`src-tauri/src/phone/link.rs`, `Phone::wanted` in
@@ -157,6 +172,8 @@ macOS.
 - **The eCash node and its enforcer** that run beside FreeBank, at the addresses found or entered at setup. The eCash
   wallets (v0.2.6) reach the eCash node's JSON-RPC with BitWindow's login or the one typed in Settings > Node &
   connection: plain HTTP only (`https://` is refused), no proxy, host and port only (`src-tauri/src/ecash/conn.rs`).
+  On easynet the eCash node the app runs talks to easynet's other nodes (P2P, its network port), starting from the
+  seed in `network.rs`.
 - **This computer's own addresses:** Settings > Security tries a few TCP connections to them, to see which of the
   node's ports other computers could reach (`src-tauri/src/security.rs`). They stay on this computer.
 - **Links** (the explorer, GitHub, BitWindow's site) open in your browser, not in the app. The allowed ones are
@@ -308,4 +325,8 @@ The `.deb`'s hash must be the one in the release's `SHA256SUMS`, and the program
 - **The relay's own binary** at app.ecxfreebank.com can't be checked yet; the page it serves can (above). The relay
   only passes sealed messages along, and the desktop decides everything a phone may do (its daily limit, your
   approval, Face ID).
-- **Other software you run with FreeBank** (the eCash node, the enforcer, BitWindow) is not covered here.
+- **The eCash node and enforcer the app installs on easynet** are mbdrivechains' builds of eCash's node and LayerTwo
+  Labs' enforcer. The app checks they are the files this release names, not how they were built: easynet's release
+  notes at `github.com/mbdrivechains/bitcoin/releases` say how each was built.
+- **Other software you run with FreeBank** (on beta, the eCash node and enforcer you run, BitWindow) is not covered
+  here.

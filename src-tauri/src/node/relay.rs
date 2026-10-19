@@ -54,7 +54,8 @@ pub fn relay_addr() -> String {
 }
 
 pub fn available() -> bool {
-    !GATEWAY.is_empty()
+    // The gateway answers for eCash beta only: a network without a demo (easynet, mainnet) doesn't offer it (v0.5.0).
+    !GATEWAY.is_empty() && crate::network::current().demo
 }
 
 /// The installed node release runs without an eCash node ("v0.2.25" and later).

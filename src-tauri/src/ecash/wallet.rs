@@ -32,7 +32,10 @@ pub struct Record {
 
 impl Record {
     pub fn chain(&self) -> Result<Chain, String> {
-        Chain::from_name(&self.chain)
+        match self.chain.as_str() {
+            "test" => Ok(Chain::Test),
+            other => Chain::from_name(other),
+        }
     }
 
     pub fn name(&self, a: Account) -> &str {
@@ -136,6 +139,7 @@ pub fn chain_name(c: Chain) -> &'static str {
     match c {
         Chain::Main => "main",
         Chain::Regtest => "regtest",
+        Chain::Test => "test",
     }
 }
 
@@ -178,7 +182,7 @@ async fn rescan_from(conn: &Conn) -> Value {
     if conn.chain == Chain::Regtest {
         return json!(0);
     }
-    match conn.node().call_typed("getblockheader", vec![json!(crate::node::PIN_HASH)]).await {
+    match conn.node().call_typed("getblockheader", vec![json!(crate::network::current().pin_hash)]).await {
         Ok(h) => json!(h["time"].as_u64().unwrap_or(0).saturating_sub(7200)),
         Err(_) => json!(0),
     }

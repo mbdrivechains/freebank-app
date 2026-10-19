@@ -48,6 +48,7 @@ impl Conn {
         let net = match self.chain {
             Chain::Main => bitcoin::Network::Bitcoin,
             Chain::Regtest => bitcoin::Network::Regtest,
+            Chain::Test => bitcoin::Network::Testnet,
         };
         let a = bitcoin::Address::from_str(address.trim()).map_err(|_| "That isn't an eCash address.")?;
         Ok(a.require_network(net).map_err(|_| "That address is for another network.")?.script_pubkey())
@@ -216,12 +217,13 @@ pub async fn connect(_http: &reqwest::Client, s: &Settings, app_dir: Option<&Pat
         let conn = Conn { base: base.clone(), user, pass, http: http.clone(), chain: Chain::Main, default_login };
         match conn.node().call_typed("getblockchaininfo", vec![]).await {
             Ok(info) => {
-                let chain = Chain::from_name(info["chain"].as_str().unwrap_or(""))
-                    .map_err(|_| format!("The eCash node at {} is on \"{}\", not eCash.", at, info["chain"].as_str().unwrap_or("?")))?;
-                if chain == Chain::Main {
-                    let pinned = conn.node().call_typed("getblockhash", vec![json!(crate::node::PIN_HEIGHT)]).await;
-                    if pinned.ok().and_then(|h| h.as_str().map(String::from)).as_deref() != Some(crate::node::PIN_HASH) {
-                        return Err(format!("The node at {} isn't on eCash beta (it lacks eCash's pinned block).", at));
+                let net = crate::network::current();
+                let chain = Chain::from_l1_name(info["chain"].as_str().unwrap_or(""))
+                    .map_err(|_| format!("The eCash node at {} is on \"{}\", not {}.", at, info["chain"].as_str().unwrap_or("?"), net.l1))?;
+                if chain != Chain::Regtest {
+                    let pinned = conn.node().call_typed("getblockhash", vec![json!(net.pin_height)]).await;
+                    if pinned.ok().and_then(|h| h.as_str().map(String::from)).as_deref() != Some(net.pin_hash) {
+                        return Err(format!("The node at {} isn't on {} (it lacks {}'s pinned block).", at, net.l1, net.l1));
                     }
                 }
                 return Ok(Conn { chain, ..conn });

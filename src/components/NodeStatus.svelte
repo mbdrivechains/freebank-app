@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { network } from "../lib/network";
   // The node was started once with -reindex (a new release's data format, or an unclean stop, asked for it).
   const REBUILDING =
     "Your node is rebuilding its data from the blocks it already has. That takes a few minutes. Your wallet stays as it is, but its balance may read low until the rebuild is done.";
@@ -239,13 +240,13 @@
           <div class="stat-num">{fmt(st.blocks)}</div>
         </div>
         <div class="stat-right">
-          <div class="stat-cap">Explorer</div>
+          <div class="stat-cap">{st.explorer ? "Explorer" : "Network"}</div>
           <div class="stat-num dim">{fmt(tip)}</div>
         </div>
       </div>
       <span class="bar"><span class="bar-fill" style="width:{pct}%"></span></span>
       <dl class="facts">
-        <div><dt>eCash beta block</dt><dd>{fmt(st.l1_blocks)}</dd></div>
+        <div><dt>{$network.l1} block</dt><dd>{fmt(st.l1_blocks)}</dd></div>
       </dl>
     {:else if st.state === "busy" || st.state === "warming"}
       <div class="node-quiet-state">
@@ -311,7 +312,7 @@
           {:else if external}
             Your node was started by another program. The name is saved in freebank.conf, and it takes effect when that program restarts the node.
           {:else}
-            The explorer shows this name on blocks your node wins.
+            {st.explorer ? "The explorer shows this name on blocks your node wins." : "This name goes on blocks your node wins."}
           {/if}
         </p>
       {/if}
@@ -322,7 +323,9 @@
     {:else if tagNote}
       <p class="hint ok-note">{tagNote}</p>
     {/if}
-    <button class="wide secondary" on:click={() => openUrl(st?.explorer ?? "")}>Open the explorer ↗</button>
+    {#if st?.explorer}
+      <button class="wide secondary" on:click={() => openUrl(st?.explorer ?? "")}>Open the explorer ↗</button>
+    {/if}
   </div>
 
   {#if actError}<p class="soft-error">{actError}</p>{/if}
@@ -391,7 +394,7 @@
       <div class="update-row">
         <span class="muted small">
           {#if $update?.error}
-            Couldn't reach GitHub just now.
+            {$update.error.includes("no FreeBank release for") ? $update.error : "Couldn't reach GitHub just now."}
           {:else if $update?.latest}
             Up to date.
           {/if}

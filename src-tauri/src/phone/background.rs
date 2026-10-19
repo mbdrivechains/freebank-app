@@ -317,6 +317,8 @@ struct WakeState {
     failed: Option<(Instant, String)>,
     /// This part spawned the node that runs (an adopted or already running one is never idle-stopped).
     spawned: bool,
+    /// v0.5.0: it also started the app's own eCash node and enforcer (stack.rs) for it, which then stop with it.
+    stack_spawned: bool,
     last_ask: Option<Instant>,
 }
 
@@ -367,9 +369,13 @@ impl Waker {
             }
             crate::activity::note("daemon: a phone asked; starting the node");
             let had = self.mgr.child.lock().await.is_some();
+            let stack_was_up = crate::stack::status(&self.mgr).await.node_up;
             crate::node::process::start(&self.mgr).await?;
             if !had && self.mgr.child.lock().await.is_some() {
                 self.st.lock().unwrap().spawned = true;
+            }
+            if !stack_was_up && crate::stack::status(&self.mgr).await.node_up {
+                self.st.lock().unwrap().stack_spawned = true;
             }
             let until = Instant::now() + Duration::from_secs(START_WAIT_SECS);
             loop {
@@ -417,12 +423,17 @@ impl Waker {
             if !due {
                 continue;
             }
-            {
+            let stack_too = {
                 let mut s = self.st.lock().unwrap();
                 s.answering = false;
                 s.spawned = false;
-            }
+                std::mem::take(&mut s.stack_spawned)
+            };
             let _ = crate::node::process::stop(&self.mgr).await;
+            // The eCash node and enforcer it started for the node go too (review finding 4).
+            if stack_too {
+                let _ = crate::stack::stop(&self.mgr).await;
+            }
             crate::activity::note("daemon: no phone for 30 minutes; the node stopped");
         }
     }

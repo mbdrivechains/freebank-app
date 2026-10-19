@@ -1,7 +1,7 @@
 //! Looking around: is there an eCash beta node + enforcer, is a FreeBank node already running,
 //! and what is in the datadir.
 
-use super::{Settings, DATADIR_MARK, PIN_HASH, PIN_HEIGHT};
+use super::{pin_hash, pin_height, Settings, DATADIR_MARK};
 use crate::rpc::{FreeBankClient, RpcError, RPC_IN_WARMUP};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -54,9 +54,9 @@ pub async fn check_stack(http: &reqwest::Client, rest: &str, enforcer: &str) -> 
     let rest_ok_blocks = l1_blocks(http, rest).await;
     let rest_ok = rest_ok_blocks.is_some();
     let on_beta = rest_ok
-        && get_json(http, &format!("http://{}/rest/blockhashbyheight/{}.json", rest, PIN_HEIGHT))
+        && get_json(http, &format!("http://{}/rest/blockhashbyheight/{}.json", rest, pin_height()))
             .await
-            .and_then(|v| v.get("blockhash")?.as_str().map(|s| s == PIN_HASH))
+            .and_then(|v| v.get("blockhash")?.as_str().map(|s| s == pin_hash()))
             .unwrap_or(false);
     // v0: a TCP connect is enough to say the enforcer is there.
     let enforcer_ok = matches!(
@@ -67,8 +67,8 @@ pub async fn check_stack(http: &reqwest::Client, rest: &str, enforcer: &str) -> 
         format!("No eCash node answered at {}.", rest)
     } else if !on_beta {
         format!(
-            "The eCash node at {} is not on eCash beta, or has not synced past block {} yet.",
-            rest, PIN_HEIGHT
+            "The eCash node at {} is not on {}, or has not synced past block {} yet.",
+            rest, crate::network::current().l1, pin_height()
         )
     } else if !enforcer_ok {
         format!("No enforcer answered at {}.", enforcer)
@@ -169,7 +169,7 @@ pub async fn probe(http: &reqwest::Client, s: &Settings) -> Probe {
 /// The eCash block-hash cache entry at the pin height, in display order.
 fn pin_entry(mainblockhash: &Path) -> Option<String> {
     let mut f = std::fs::File::open(mainblockhash).ok()?;
-    f.seek(SeekFrom::Start(12 + PIN_HEIGHT * 32)).ok()?;
+    f.seek(SeekFrom::Start(12 + pin_height() * 32)).ok()?;
     let mut b = [0u8; 32];
     f.read_exact(&mut b).ok()?;
     b.reverse();
@@ -225,7 +225,7 @@ pub fn check_datadir(datadir: &Path) -> DatadirCheck {
         return mk("ours", "FreeBank will keep using the data already in this folder.".into(), None);
     }
     if datadir.join("blocks").is_dir()
-        && pin_entry(&datadir.join("mainblockhash.dat")).as_deref() == Some(PIN_HASH)
+        && pin_entry(&datadir.join("mainblockhash.dat")).as_deref() == Some(pin_hash())
     {
         return mk(
             "ours",
@@ -424,13 +424,14 @@ pub async fn test_connection(http: &reqwest::Client, rest: &str, enforcer: &str)
         None => add("eCash node answers", false, format!("nothing at {}", rest)),
     }
     if blocks.is_some() {
-        let pin = get_json(http, &format!("http://{}/rest/blockhashbyheight/{}.json", rest, PIN_HEIGHT))
+        let pin = get_json(http, &format!("http://{}/rest/blockhashbyheight/{}.json", rest, pin_height()))
             .await
             .and_then(|v| v.get("blockhash")?.as_str().map(String::from));
+        let on = format!("On {}", crate::network::current().l1);
         match pin {
-            Some(h) if h == PIN_HASH => add("On eCash beta", true, format!("block {} matches", grouped(PIN_HEIGHT))),
-            Some(_) => add("On eCash beta", false, format!("block {} is a different block", grouped(PIN_HEIGHT))),
-            None => add("On eCash beta", false, format!("not synced to block {} yet", grouped(PIN_HEIGHT))),
+            Some(h) if h == pin_hash() => add(&on, true, format!("block {} matches", grouped(pin_height()))),
+            Some(_) => add(&on, false, format!("block {} is a different block", grouped(pin_height()))),
+            None => add(&on, false, format!("not synced to block {} yet", grouped(pin_height()))),
         }
     }
 

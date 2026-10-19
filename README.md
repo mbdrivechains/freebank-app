@@ -93,6 +93,11 @@ carry on the [explorer](https://explorer.ecxfreebank.com), and starts the node. 
 tab then shows its height against the explorer and its peers. If the node is already running,
 the app just connects to it.
 
+**easynet** (v0.5.0), a small public test network on eCash's rules with no value, needs none of that: choose it on the
+welcome screen or in Settings › Node & connection, and FreeBank downloads easynet's eCash node and enforcer, checks
+them against the hashes it knows, runs them and syncs in a few minutes. Each network keeps its own wallet, settings
+and node; switching restarts the app.
+
 ## Features
 
 Four tabs: **Home** (balance, Send, Receive, Deposit, Withdraw), **Credit** (notes, houses, pools, bills), **eCash** (wallet,
@@ -182,8 +187,8 @@ freebankd -daemon
 #   -rpcbind=<tailscale-ip> -rpcallowip=<client-tailscale-ip>
 ```
 
-FreeBank has two networks only — **main** (RPC 8454) and **regtest** (RPC 18457); there is
-no testnet. Then enter the host/port/credentials in the connect screen.
+The FreeBank node has two networks — **main** (RPC 8454) and **regtest** (RPC 18457); easynet has a
+build of its own (`freebank-easynet`, RPC 28454), which the app installs there. Then enter the host/port/credentials in the connect screen.
 
 ### Browser (PWA) mode + CORS
 

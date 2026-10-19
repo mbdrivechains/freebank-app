@@ -80,7 +80,17 @@ pub async fn setup_save(mgr: State<'_, Mgr>, input: SettingsInput) -> Result<Set
     let mut s = mgr.settings.lock().await.clone();
     s.rest = detect::normalize_endpoint(&input.rest);
     s.enforcer = detect::normalize_endpoint(&input.enforcer);
-    s.datadir = datadir.to_string();
+    // On a network whose node keeps its files in a folder of its own (easynet), that folder inside the chosen one.
+    let fitted = crate::network::fit_datadir(crate::network::current(), Path::new(datadir));
+    // Never inside another network's data folder, nor around it: removing one would take the other's wallet (v0.5.0).
+    let top = crate::network::top_of(&mgr.app_dir);
+    if let Some((name, _)) = crate::network::other_datadirs(&top, crate::network::current())
+        .into_iter()
+        .find(|(_, other)| crate::network::nested(&fitted, other))
+    {
+        return Err(format!("That folder holds your {name} node's data folder, or is inside it. Choose a folder of its own."));
+    }
+    s.datadir = fitted.to_string_lossy().into_owned();
     s.rpc_port = input.rpc_port;
     s.p2p_port = input.p2p_port;
     mgr.save_settings(s.clone()).await?;
@@ -249,7 +259,10 @@ pub async fn update_check(mgr: State<'_, Mgr>, force: bool) -> Result<UpdateInfo
     }
     let latest = mgr.latest_release(force).await;
     let available = match (&latest, &installed) {
-        (Ok(l), Some(i)) => super::patch(l) > super::patch(i),
+        (Ok(l), Some(i)) => {
+            let net = crate::network::current();
+            crate::network::order(net, l) > crate::network::order(net, i)
+        }
         _ => false,
     };
     Ok(UpdateInfo {
@@ -309,15 +322,27 @@ async fn obliterate_places(app: &AppHandle, mgr: &NodeManager) -> obliterate::Pl
         app_dir: mgr.app_dir.clone(),
         // WebKitGTK keeps the screen's data (mediakeys/, storage/) in the app's own folder.
         screen_uses_app_dir: cfg!(target_os = "linux") && local_data.as_deref() == Some(mgr.app_dir.as_path()),
-        // A developer's scratch folder may hold other work: only FreeBank's own files in it go.
-        app_dir_shared: std::env::var_os("FREEBANK_APP_DIR").is_some(),
+        // A developer's scratch folder may hold other work: only FreeBank's own files in it go. So does beta's folder when
+        // another network's lives inside it (networks/, v0.5.0): beta's own files go, the other networks stay.
+        app_dir_shared: std::env::var_os("FREEBANK_APP_DIR").is_some() || other_networks_inside(&mgr.app_dir),
         datadir: PathBuf::from(&s.datadir),
+        others: crate::network::other_datadirs(&crate::network::top_of(&mgr.app_dir), crate::network::current())
+            .into_iter()
+            .map(|(name, d)| (name.to_string(), d))
+            .collect(),
         created: s.created().iter().map(PathBuf::from).collect(),
         moved_aside: s.moved_aside.iter().map(PathBuf::from).collect(),
-        caches: screen_caches(app),
+        // The screen's caches are the whole app's: only beta's Obliterate, the app's own, takes them.
+        caches: if crate::network::current().id == crate::network::BETA.id { screen_caches(app) } else { Vec::new() },
         keep,
         ours,
     }
+}
+
+/// Beta's app folder holds another network's (networks/<id>/, v0.5.0).
+fn other_networks_inside(app_dir: &Path) -> bool {
+    crate::network::current().id == crate::network::BETA.id
+        && crate::network::ALL.iter().any(|n| n.id != crate::network::BETA.id && crate::network::present(app_dir, n))
 }
 
 /// The folders the screen (the system webview) writes to. With FREEBANK_APP_DIR a developer's
@@ -414,6 +439,12 @@ pub async fn remove_app_itself(mgr: State<'_, Mgr>) -> Result<(), String> {
     static REMOVING: AtomicBool = AtomicBool::new(false);
     if !mgr.obliterated.load(Ordering::SeqCst) {
         return Err("Remove FreeBank's data first.".into());
+    }
+    // Another network's wallet and settings are still on this computer (v0.5.0): the app stays for them.
+    let top = crate::network::top_of(&mgr.app_dir);
+    let here = crate::network::current();
+    if let Some(n) = crate::network::ALL.iter().find(|n| n.id != here.id && crate::network::present(&top, n)) {
+        return Err(format!("Your {} wallet and settings are still on this computer, so the app stays.", n.name));
     }
     if REMOVING.swap(true, Ordering::SeqCst) {
         return Err("FreeBank is being removed already.".into());
@@ -533,4 +564,25 @@ pub fn refetch_start(mgr: State<'_, Mgr>) -> Result<(), String> {
     }
     tauri::async_runtime::spawn(install::run_refetch(mgr.inner().clone()));
     Ok(())
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    /// Beta's Obliterate keeps the other networks' folders inside its own (v0.5.0): the folder counts as shared then.
+    #[test]
+    fn beta_folder_with_networks_inside_is_shared() {
+        let d = std::env::temp_dir().join(format!("fbnetobl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(!other_networks_inside(&d));
+        std::fs::create_dir_all(d.join("networks")).unwrap();
+        assert!(!other_networks_inside(&d), "an empty networks/ holds nothing to keep");
+        std::fs::create_dir_all(d.join("networks/easynet")).unwrap();
+        assert!(!other_networks_inside(&d), "nor an empty network folder");
+        std::fs::write(d.join("networks/easynet/settings.json"), b"{}").unwrap();
+        assert!(other_networks_inside(&d));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }

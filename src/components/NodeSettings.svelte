@@ -10,6 +10,8 @@
   import { createEventDispatcher, onMount } from "svelte";
   import AdvancedSettings from "./AdvancedSettings.svelte";
   import KeepRunning from "./KeepRunning.svelte";
+  import NetworkCard from "./NetworkCard.svelte";
+  import { network } from "../lib/network";
   import PathText from "./PathText.svelte";
   import { BASE_TICKER } from "../lib/brand";
   import { bmmStatus } from "../lib/ecash";
@@ -281,11 +283,12 @@
 
 {#if info && st}
   {#if part !== "startover"}
+  <NetworkCard />
   <KeepRunning keepRunning={info.settings.keep_running} />
 
   <div class="card">
     <h3>Connection</h3>
-    <p class="muted small">Where your FreeBank node finds eCash beta, and where it keeps its data.</p>
+    <p class="muted small">Where your FreeBank node finds {$network.l1}, and where it keeps its data.</p>
     {#if info.settings.demo}
       <div class="demo-mode" data-testid="demo-mode">
         <p>
@@ -381,7 +384,14 @@
     <div class="maint">
       <div class="maint-text">
         <strong>Obliterate: remove everything</strong>
-        <span class="muted small">Removes everything FreeBank put on this computer, your wallet included. It can't be undone.</span>
+        <span class="muted small">
+          {#if $network.id !== "beta"}
+            Removes everything FreeBank put on this computer for {$network.name}, your {$network.name} wallet included. Beta isn't
+            touched. It can't be undone.
+          {:else}
+            Removes everything FreeBank put on this computer, your wallet included. It can't be undone.
+          {/if}
+        </span>
       </div>
       <button class="secondary danger-text" on:click={openObliterate} disabled={busy || confirm === "obliterate"}>Obliterate…</button>
     </div>
@@ -393,11 +403,18 @@
             <button class="secondary" on:click={() => (confirm = null)}>Cancel</button>
           </div>
         {:else}
-          <p>
-            This stops your node and deletes everything ticked below, for good. The eCash node, the enforcer and
-            BitWindow are not touched: FreeBank's eCash wallets stay in the eCash node, watch-only (they hold no keys;
-            the bidding key goes with FreeBank's folder).
-          </p>
+          {#if info.settings.stack}
+            <p>
+              This stops your node, and the {$network.l1} node and enforcer FreeBank runs for you, and deletes everything
+              ticked below, for good. Those two go with FreeBank's folder, with their data. BitWindow isn't touched.
+            </p>
+          {:else}
+            <p>
+              This stops your node and deletes everything ticked below, for good. The eCash node, the enforcer and
+              BitWindow are not touched: FreeBank's eCash wallets stay in the eCash node, watch-only (they hold no keys;
+              the bidding key goes with FreeBank's folder).
+            </p>
+          {/if}
           <ul class="wipe-list">
             {#each plan.items as item (item.id)}
               <li>

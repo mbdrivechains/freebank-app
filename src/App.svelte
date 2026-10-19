@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { loadNetwork, network } from "./lib/network";
   import { api, getSavedConfig, type Transaction, type BlockchainInfo } from "./lib/api";
   import {
     APP_NAME,
@@ -272,6 +273,7 @@
     if (i.chain === "beta") return "Beta";
     if (i.chain === "main") return "dormant" in i ? "Mainnet" : "Beta";
     if (i.chain === "regtest") return "Regtest";
+    if (i.chain === "easynet") return "easynet";
     return i.chain;
   }
 
@@ -291,6 +293,8 @@
   });
 
   onMount(async () => {
+    // The network this run is on (v0.5.0): the screens name it and its eCash chain from the store.
+    if (!isPWA) await loadNetwork();
     // Prefill from a previously saved connection, then infer the mode from the host.
     const saved = getSavedConfig();
     if (saved) {
@@ -376,7 +380,7 @@
 
   {#if gone}
     <div class="card removed">
-      <h2>{gone.app_removed ? "FreeBank is removed" : "Removed"}</h2>
+      <h2>{gone.app_removed ? (gone.app.kind === "network" && $network.id !== "beta" ? `${$network.name} is removed` : "FreeBank is removed") : "Removed"}</h2>
       <p>
         Everything you ticked is gone{gone.at_exit.length ? ", except the app's window cache, which is removed when FreeBank closes" : ""}.
       </p>
@@ -402,6 +406,12 @@
             {/if}
           </p>
         {/if}
+      {:else if gone.app_removed && gone.app.kind === "network"}
+        <p>
+          {$network.id === "beta"
+            ? `Your ${gone.app.path} wallet and settings are still on this computer, so the app stays. FreeBank opens on ${gone.app.path} from Settings, Node & connection.`
+            : `FreeBank opens on ${gone.app.path} next time. Its wallet and settings are still on this computer.`}
+        </p>
       {:else if gone.app_removed}
         <p>FreeBank can't remove the app itself while it runs. Once it has closed:</p>
         <div class="gone-step">

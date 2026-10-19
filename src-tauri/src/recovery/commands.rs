@@ -55,6 +55,82 @@ pub async fn wallet_setup_start(
         Some(w) => Some(seed::parse_words(w)?),
         None => None,
     };
+    setup_start(&client, &mgr, &guard, &phone, passphrase, restore, fresh, None).await
+}
+
+/// The other networks on this computer whose wallet has recovery words this app keeps (v0.5.0): (id, name), for "Use the
+/// words of my Beta wallet" on easynet.
+#[tauri::command]
+pub fn wallet_words_elsewhere(mgr: State<'_, Mgr>) -> Vec<(String, String)> {
+    let top = crate::network::top_of(&mgr.app_dir);
+    let here = crate::network::current();
+    crate::network::ALL
+        .iter()
+        .filter(|n| n.id != here.id)
+        .filter(|n| seed::seed_path(&crate::network::app_dir(&top, n)).is_file())
+        .map(|n| (n.id.to_string(), n.name.to_string()))
+        .collect()
+}
+
+/// Set this wallet up with the recovery words of another network's wallet on this computer (v0.5.0): its sealed copy
+/// opened with that wallet's passphrase (`from_passphrase`), then the words go in as a restore would put them, under that
+/// same passphrase: the same words under a weaker one would be only as safe as it (review finding 8). `passphrase`, the
+/// one chosen first, isn't used. The same words make the same FreeBank keys on each network; the networks share no
+/// coins.
+#[tauri::command]
+pub async fn wallet_setup_from_network(
+    client: State<'_, ClientState>,
+    mgr: State<'_, Mgr>,
+    guard: State<'_, RelockState>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
+    passphrase: String,
+    from: String,
+    from_passphrase: String,
+) -> Result<(), String> {
+    drop(Zeroizing::new(passphrase));
+    let from_passphrase = Zeroizing::new(from_passphrase);
+    if from_passphrase.is_empty() {
+        return Err("Please enter that wallet's passphrase.".into());
+    }
+    let (entropy, n) = words_elsewhere(&mgr.app_dir, crate::network::current(), &from, &from_passphrase)?;
+    let text = format!("Give this wallet the recovery words of your {} wallet", n.name);
+    setup_start(&client, &mgr, &guard, &phone, from_passphrase, Some(entropy), false, Some(text)).await
+}
+
+/// The words sealed in network `from`'s app folder beside this one (`app_dir`, network `here`), opened with that
+/// wallet's passphrase.
+pub fn words_elsewhere(
+    app_dir: &std::path::Path,
+    here: &crate::network::Network,
+    from: &str,
+    passphrase: &str,
+) -> Result<(seed::Entropy, &'static crate::network::Network), String> {
+    let n = crate::network::by_id(from).filter(|n| n.id != here.id).ok_or("No such wallet on this computer.")?;
+    let top = if here.id == crate::network::BETA.id {
+        app_dir.to_path_buf()
+    } else {
+        app_dir.parent().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf).unwrap_or_default()
+    };
+    let file = std::fs::read(seed::seed_path(&crate::network::app_dir(&top, n)))
+        .map_err(|_| format!("Your {} wallet's recovery words aren't on this computer.", n.name))?;
+    let (entropy, _) = seed::open(&file, passphrase).map_err(|e| match e {
+        seed::OpenError::WrongPassphrase => format!("That isn't your {} wallet's passphrase: it doesn't open its recovery words.", n.name),
+        e => format!("Your {} wallet's copy of its recovery words can't be read: {}", n.name, e.for_ui()),
+    })?;
+    Ok((entropy, n))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn setup_start(
+    client: &State<'_, ClientState>,
+    mgr: &State<'_, Mgr>,
+    guard: &State<'_, RelockState>,
+    phone: &State<'_, crate::phone::commands::PhoneState>,
+    passphrase: Zeroizing<String>,
+    restore: Option<seed::Entropy>,
+    fresh: bool,
+    approve: Option<String>,
+) -> Result<(), String> {
     mgr.still_here()?;
     if !fresh {
         let p = {
@@ -68,12 +144,15 @@ pub async fn wallet_setup_start(
         }
     }
     // New words would answer "Lost your phone?" for an attacker's wallet in this one's place (security re-review M1).
-    let text = match (fresh, restore.is_some()) {
-        (true, true) => "Put a wallet from recovery words in place of this one",
-        (true, false) => "Make a new wallet in place of this one",
-        (false, _) => "Give this wallet new recovery words",
-    };
-    crate::phone::commands::approve_change(&phone, &mgr.app_dir, text).await?;
+    let text = approve.unwrap_or_else(|| {
+        match (fresh, restore.is_some()) {
+            (true, true) => "Put a wallet from recovery words in place of this one",
+            (true, false) => "Make a new wallet in place of this one",
+            (false, _) => "Give this wallet new recovery words",
+        }
+        .to_string()
+    });
+    crate::phone::commands::approve_change(phone, &mgr.app_dir, &text).await?;
     job::start(mgr.inner().clone(), guard.inner().clone(), Job::Setup { passphrase, restore, fresh })
 }
 
@@ -253,4 +332,28 @@ pub async fn wallet_move_coins(client: State<'_, ClientState>) -> Result<ops::Mo
     let shared = client.lock().await;
     let mut c = shared.for_main();
     ops::move_coins(&mut c).await
+}
+
+#[cfg(test)]
+mod elsewhere_tests {
+    use super::*;
+
+    #[test]
+    fn another_networks_words_open_with_its_passphrase() {
+        let top = std::env::temp_dir().join(format!("fbelse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&top);
+        let entropy = seed::new_entropy();
+        let hd = seed::freebank_hd_seed(&entropy).unwrap();
+        let file = seed::seal(&entropy, &seed::key_id(&hd).unwrap(), "beta pass", seed::Kdf { m_kib: 64, t: 1, p: 1 }).unwrap();
+        seed::private_dir(&top.join("wallet")).unwrap();
+        std::fs::write(seed::seed_path(&top), file).unwrap();
+        let easy = crate::network::app_dir(&top, &crate::network::EASYNET);
+        let (got, n) = words_elsewhere(&easy, &crate::network::EASYNET, "beta", "beta pass").unwrap();
+        assert_eq!(&*got, &*entropy);
+        assert_eq!(n.id, "beta");
+        assert!(words_elsewhere(&easy, &crate::network::EASYNET, "beta", "wrong").unwrap_err().contains("isn't your Beta wallet's passphrase"));
+        assert!(words_elsewhere(&top, &crate::network::BETA, "beta", "beta pass").is_err(), "not its own network");
+        assert!(words_elsewhere(&top, &crate::network::BETA, "easynet", "x").unwrap_err().contains("aren't on this computer"));
+        std::fs::remove_dir_all(&top).unwrap();
+    }
 }

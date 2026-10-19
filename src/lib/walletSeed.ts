@@ -182,6 +182,11 @@ export const walletSeed = {
   /** words: null for new words. fresh: move the current wallet aside first (restore into a new wallet). */
   setupStart: (passphrase: string, words: string | null, fresh: boolean) =>
     tauriInvoke("wallet_setup_start", { passphrase, words, fresh }) as Promise<void>,
+  /** v0.5.0: the other networks on this computer whose wallet has recovery words here: [id, name]. */
+  wordsElsewhere: () => tauriInvoke("wallet_words_elsewhere") as Promise<[string, string][]>,
+  /** v0.5.0: this wallet set up with another network's words, opened with that wallet's passphrase. */
+  setupFromNetwork: (passphrase: string, from: string, fromPassphrase: string) =>
+    tauriInvoke("wallet_setup_from_network", { passphrase, from, fromPassphrase }) as Promise<void>,
   setupProgress: () => tauriInvoke("wallet_setup_progress") as Promise<SetupProgress>,
   /** The new words, once. */
   setupWords: () => tauriInvoke("wallet_setup_words") as Promise<string[] | null>,

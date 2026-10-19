@@ -51,6 +51,9 @@ pub type Entropy = Zeroizing<[u8; 32]>;
 pub enum Chain {
     Main,
     Regtest,
+    /// An eCash test network's L1 with Bitcoin's test prefixes (easynet, v0.5.0). Only the app's eCash wallet meets it:
+    /// FreeBank on easynet keeps beta's prefixes.
+    Test,
 }
 
 impl Chain {
@@ -58,9 +61,26 @@ impl Chain {
     /// prefixes as before.
     pub fn from_name(name: &str) -> Result<Chain, String> {
         match name {
-            "main" | "beta" => Ok(Chain::Main),
+            // FreeBank on easynet (an easynet build) has beta's keys and prefixes.
+            "main" | "beta" | "easynet" => Ok(Chain::Main),
             "regtest" => Ok(Chain::Regtest),
             other => Err(format!("FreeBank doesn't know the network \"{}\".", other)),
+        }
+    }
+
+    /// The chain of this network's eCash node, from the name it gives it (getblockchaininfo's `chain`): the network's
+    /// kind for its own names, regtest's for "regtest".
+    pub fn from_l1_name(name: &str) -> Result<Chain, String> {
+        let n = crate::network::current();
+        if n.l1_names.contains(&name) {
+            return Ok(match n.l1_kind {
+                crate::network::L1Kind::Main => Chain::Main,
+                crate::network::L1Kind::Test => Chain::Test,
+            });
+        }
+        match name {
+            "regtest" => Ok(Chain::Regtest),
+            other => Err(format!("This eCash node is on \"{}\", not {}.", other, n.l1)),
         }
     }
 
@@ -68,7 +88,7 @@ impl Chain {
     pub fn wif_prefix(self) -> u8 {
         match self {
             Chain::Main => 128,
-            Chain::Regtest => 239,
+            Chain::Regtest | Chain::Test => 239,
         }
     }
 
@@ -76,7 +96,7 @@ impl Chain {
     pub fn xprv_version(self) -> [u8; 4] {
         match self {
             Chain::Main => [0x04, 0x88, 0xAD, 0xE4],
-            Chain::Regtest => [0x04, 0x35, 0x83, 0x94],
+            Chain::Regtest | Chain::Test => [0x04, 0x35, 0x83, 0x94],
         }
     }
 }

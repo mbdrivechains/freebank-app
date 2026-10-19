@@ -90,7 +90,9 @@
             <span class="dot" class:on={l1Up}></span>
             <div>
               <span>eCash node and enforcer</span>
-              <span class="muted small">{l1Up ? `block ${st.l1_blocks?.toLocaleString()}` : "not answering"} · run by BitWindow or yourself; FreeBank doesn't stop them</span>
+              <span class="muted small">{l1Up ? `block ${st.l1_blocks?.toLocaleString()}` : "not answering"} · {st.own_stack
+                  ? "FreeBank runs them, and stops them when you quit unless your node keeps running"
+                  : "run by BitWindow or yourself; FreeBank doesn't stop them"}</span>
             </div>
           </li>
         {/if}

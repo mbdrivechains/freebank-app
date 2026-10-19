@@ -39,14 +39,14 @@ impl Account {
 pub fn coin(chain: Chain) -> u32 {
     match chain {
         Chain::Main => 0,
-        Chain::Regtest => 1,
+        Chain::Regtest | Chain::Test => 1,
     }
 }
 
 fn network_kind(chain: Chain) -> NetworkKind {
     match chain {
         Chain::Main => NetworkKind::Main,
-        Chain::Regtest => NetworkKind::Test,
+        Chain::Regtest | Chain::Test => NetworkKind::Test,
     }
 }
 
@@ -54,6 +54,7 @@ fn hrp(chain: Chain) -> KnownHrp {
     match chain {
         Chain::Main => KnownHrp::Mainnet,
         Chain::Regtest => KnownHrp::Regtest,
+        Chain::Test => KnownHrp::Testnets,
     }
 }
 
