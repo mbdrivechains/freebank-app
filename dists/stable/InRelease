@@ -5,27 +5,27 @@ Acquire-By-Hash: yes
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Mon, 19 Oct 2026 02:06:15 +0000
+Date: Mon, 19 Oct 2026 06:07:39 +0000
 Description: FreeBank desktop app
 Label: FreeBank
 Origin: FreeBank
 Suite: stable
 MD5Sum:
- f7af4707b49999aacb933959bddec74f            19468 main/binary-amd64/Packages
- cce56ab12bf117208f064048c7bb2c1a             4585 main/binary-amd64/Packages.gz
+ 485d03e8c5a85ab47cb9af9b1ff47932            20355 main/binary-amd64/Packages
+ 27d05c4973168e6d4f7f07e515b2cafc             4770 main/binary-amd64/Packages.gz
 SHA1:
- 03bbd75e9e173b594ac2feb36184f1a4a4bbd46b            19468 main/binary-amd64/Packages
- 765512f69bf1e0eccecf04f2c771060486f237cf             4585 main/binary-amd64/Packages.gz
+ 1f9d70a2955c6c3025184fe29fe87d3a7949033c            20355 main/binary-amd64/Packages
+ 5607e90780dc8f9f01e1fd897ef9739d89742e12             4770 main/binary-amd64/Packages.gz
 SHA256:
- cac71dc1dd0a46bc6e900661d51544a326a7de7397f6676f9e27ae8cfda8f514            19468 main/binary-amd64/Packages
- 6dc14f421d0ca9938728405fc6706e83b1881c7f497d062b71e6eec1ef50aebe             4585 main/binary-amd64/Packages.gz
+ ef806576c3c6d96332fdec1f7592b5e819c425c7a6cf5e37b151b83d18ba45c3            20355 main/binary-amd64/Packages
+ 82f49688323c6fe8b1e1ca6c6e6ce2c4e6032efac685e7a2ad6a575a70c58ca4             4770 main/binary-amd64/Packages.gz
 SHA512:
- e9ae6f5deff621d50391bc0a389861b82b44be369c195cc6c8c4f08c363987ec3230e2fc85e48bb7b16f8c02b93b7eeabbd681c1eb30392c82ff7fd2c0a32fb4            19468 main/binary-amd64/Packages
- 374f6e5304e5b9a30a359570e3b299011975ce872f4f63cb92d273f920905ddca78eaa2a99f64625261710e94ad97da8f8e7f991ad7ce56c9fd244b3e986f35e             4585 main/binary-amd64/Packages.gz
+ 1c40c083e3b1f8cd4481ddec35817117bf460f4f1bae0f8bfabda6a2928d55e7f509df902caa5bf302b8e58701fe00341bc7a8fa51f8823755be25cf3c800d9d            20355 main/binary-amd64/Packages
+ 432023bb158ec74d590936688b262fdded94501fbbfb9d5f4d14981b7d699e9ad98dc6f0aad279bb21b8adfcaafe068160196bca22c93d6f37a766f519975f4b             4770 main/binary-amd64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQitK9YVWUJ/FXtBtp6gMfMN8lgOwUCatV7FwAKCRB6gMfMN8lg
-O3NuAP48eyl/IIgZqJVopUXhNJqDcFI6BXlCrQpxzpp9lIWcywD/Vlrk8fZD2mtK
-TOirOu1LgASiUhoRfb9ge4GR96AjXww=
-=KDEb
+iHUEARYKAB0WIQQitK9YVWUJ/FXtBtp6gMfMN8lgOwUCatWzqwAKCRB6gMfMN8lg
+O8kjAQCOwxrnDCrrmFWdwUOrjv/bWwmXmZ8q/nIVn6pnP54HiAEAu0wZgwSsns+6
+QgfOA21JrqbvhGq7xuvnpKlfKpnKEwk=
+=0FK7
 -----END PGP SIGNATURE-----
