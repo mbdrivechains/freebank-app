@@ -92,7 +92,7 @@ pub fn start(
         Ok((phone, out)) => {
             // Unlocks from the phone link and from the screens take turns (the freebankd deadlock).
             phone.share_relock_guard(relock);
-            tauri::async_runtime::spawn(super::link::run(phone.clone(), out));
+            tauri::async_runtime::spawn(super::carrier::run(phone.clone(), out));
             tauri::async_runtime::spawn(phone.clone().expire_forever());
             PhoneState(Ok(phone))
         }
@@ -221,9 +221,10 @@ pub struct PairStart {
     pub expires: u64,
 }
 
+/// A pairing code. Over Nostr (v0.6.0) unless `over` is "relay": the old relay stays for this release.
 #[tauri::command]
-pub fn phone_pair_start(phone: State<'_, PhoneState>) -> Result<PairStart, String> {
-    let (url, expires) = phone.get()?.pair_start()?;
+pub fn phone_pair_start(phone: State<'_, PhoneState>, over: Option<String>) -> Result<PairStart, String> {
+    let (url, expires) = phone.get()?.pair_start(over.as_deref() != Some("relay"))?;
     Ok(PairStart { url, expires })
 }
 
@@ -376,6 +377,8 @@ pub struct DeviceView {
     /// Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too.
     pub face_id: bool,
     pub face_id_sends: bool,
+    /// Paired over Nostr (v0.6.0), not the relay.
+    pub nostr: bool,
 }
 
 #[tauri::command]
@@ -390,6 +393,7 @@ pub fn phone_devices(phone: State<'_, PhoneState>) -> Result<Vec<DeviceView>, St
             spent_today: to_ecx(d.spent_on(today)),
             face_id: d.passkey.is_some(),
             face_id_sends: d.passkey.as_ref().is_some_and(|k| k.sends),
+            nostr: d.np.is_some(),
             id: d.id,
             name: d.name,
             added: d.added,
@@ -468,6 +472,10 @@ pub struct RelayStatus {
     pub room: String,
     #[serde(flatten)]
     pub link: LinkStatus,
+    /// The link over Nostr (v0.6.0): its state, relays, and the phone page's address.
+    pub nostr: LinkStatus,
+    pub nostr_relays: Vec<String>,
+    pub page: String,
     /// Phones waiting for "Allow this phone?", each with its comparison code
     pub pair_pending: Vec<Ask>,
     /// Sends waiting for the desktop
@@ -481,6 +489,9 @@ pub fn phone_relay_status(phone: State<'_, PhoneState>) -> Result<RelayStatus, S
         url: p.relay_url(),
         room: p.room.clone(),
         link: p.status(),
+        nostr: p.nostr_status(),
+        nostr_relays: p.nostr_relays(),
+        page: p.page(),
         pair_pending: p.pair_pending(),
         held: p.held(),
     })
@@ -489,6 +500,11 @@ pub fn phone_relay_status(phone: State<'_, PhoneState>) -> Result<RelayStatus, S
 #[tauri::command]
 pub fn phone_set_relay(phone: State<'_, PhoneState>, url: String) -> Result<(), String> {
     phone.get()?.set_relay(&url)
+}
+
+#[tauri::command]
+pub fn phone_set_nostr_relays(phone: State<'_, PhoneState>, relays: Vec<String>) -> Result<(), String> {
+    phone.get()?.set_nostr_relays(&relays)
 }
 
 /// The latest phone sends from the log, newest first.

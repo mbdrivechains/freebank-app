@@ -23,7 +23,7 @@
 //! two desktops never take turns at the relay room. "Stop everything and close" stops the node and
 //! starts no background part. Never SIGKILL.
 
-use super::{commands::NodeRpc, link, unix_now, Events, Phone, RpcFail};
+use super::{commands::NodeRpc, unix_now, Events, Phone, RpcFail};
 use crate::rpc::FreeBankClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -270,7 +270,7 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
         // Checked by unlocking once, as when it is turned on in the app; without it, sends wait for the app.
         let _ = phone.phone_send_on(p).await;
     }
-    let link = tokio::spawn(link::run(phone.clone(), out));
+    let link = tokio::spawn(super::carrier::run(phone.clone(), out));
     tokio::spawn(phone.clone().expire_forever());
     tokio::spawn(phone.clone().resume_hosted());
     // Automatic updates (v0.4.2, opt in): the background part takes rounds too, so a copy whose window stays closed

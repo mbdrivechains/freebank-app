@@ -54,6 +54,8 @@ export interface PhoneDevice {
   /** Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too. */
   face_id: boolean;
   face_id_sends: boolean;
+  /** Paired over Nostr (v0.6.0), not the relay. */
+  nostr: boolean;
 }
 
 /** An approval the desktop is waiting for on a phone (v0.2.5, "Approve sends on my phone"). */
@@ -128,6 +130,10 @@ export interface RelayStatus {
   /** phones waiting for "Allow this phone?", oldest first; allowing one refuses the rest */
   pair_pending: PairAsk[];
   held: HeldSend[];
+  /** The link over Nostr (v0.6.0): its state, relays, and the phone page's address. */
+  nostr: { state: string; detail: string };
+  nostr_relays: string[];
+  page: string;
 }
 
 export interface PhoneSend {
@@ -220,7 +226,8 @@ export const phone = {
   loginSet: (on: boolean) => tauriInvoke("phone_login_set", { on }) as Promise<void>,
   /** The close notice's "Keep the phone connected": start the background part, then close. */
   keepConnectedQuit: () => tauriInvoke("phone_keep_connected_quit") as Promise<void>,
-  pairStart: () => tauriInvoke("phone_pair_start") as Promise<{ url: string; expires: number }>,
+  /** Over Nostr (v0.6.0) unless `over` is "relay" (the old relay, for this release). */
+  pairStart: (over?: "relay") => tauriInvoke("phone_pair_start", { over: over ?? null }) as Promise<{ url: string; expires: number }>,
   pairAnswer: (id: string, allow: boolean) => tauriInvoke("phone_pair_answer", { id, allow }) as Promise<void>,
   approveInfo: () => tauriInvoke("phone_approve_info") as Promise<ApproveInfo>,
   /** `over` in sECX (null: off). Off or a higher amount waits for a phone's Face ID; with `words`, it happens a day
@@ -244,6 +251,7 @@ export const phone = {
   sendOff: () => tauriInvoke("phone_send_off") as Promise<void>,
   status: () => tauriInvoke("phone_relay_status") as Promise<RelayStatus>,
   setRelay: (url: string) => tauriInvoke("phone_set_relay", { url }) as Promise<void>,
+  setNostrRelays: (relays: string[]) => tauriInvoke("phone_set_nostr_relays", { relays }) as Promise<void>,
   recentSends: () => tauriInvoke("phone_recent_sends") as Promise<PhoneSend[]>,
   hosted: () => tauriInvoke("phone_hosted") as Promise<HostedInfo>,
   hostedAnswer: (id: string, allow: boolean) => tauriInvoke("phone_hosted_answer", { id, allow }) as Promise<void>,

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Settings, "Phone": pair a phone through the relay (a QR code it opens in Safari or Firefox),
+  // Settings, "Phone": pair a phone over Nostr (v0.6.0; or, for this release, through the old relay): a QR code it opens in Safari or Firefox,
   // the phones allowed in, each with its own daily limit and Revoke, "Let my phone send while
   // FreeBank is open" for a wallet with a passphrase, the relay address and link state, and the
   // latest sends phones made. "Allow this phone?" and held sends are answered in PhoneAlerts,
@@ -33,6 +33,10 @@
   let relayInput = "";
   let relayDirty = false;
   let relayNote = "";
+  // The link over Nostr's relays, one per line (v0.6.0).
+  let nostrInput = "";
+  let nostrDirty = false;
+  let nostrNote = "";
 
   let pair: { url: string; expires: number } | null = null;
   let left = 0;
@@ -84,6 +88,7 @@
     try {
       [status, devices, sends] = await Promise.all([phone.status(), phone.devices(), phone.recentSends()]);
       if (!relayDirty) relayInput = status.url;
+      if (!nostrDirty) nostrInput = status.nostr_relays.join("\n");
       for (const d of devices) if (!(d.id in limits)) limits[d.id] = String(d.limit);
       error = "";
     } catch (e) {
@@ -308,11 +313,11 @@
     clearInterval(tick);
   });
 
-  async function startPairing() {
+  async function startPairing(over?: "relay") {
     error = "";
     copied = false;
     try {
-      pair = await phone.pairStart();
+      pair = await phone.pairStart(over);
       left = Math.max(0, pair.expires - Math.floor(Date.now() / 1000));
       load();
     } catch (e) {
@@ -336,6 +341,18 @@
       load();
     } catch (e) {
       relayNote = String(e);
+    }
+  }
+
+  async function saveNostrRelays() {
+    nostrNote = "";
+    try {
+      await phone.setNostrRelays(nostrInput.split(/\s+/).filter(Boolean));
+      nostrDirty = false;
+      nostrNote = "Saved. Phones paired over Nostr move to the new list the next time they connect; this computer keeps listening on the old relays for a week meanwhile.";
+      load();
+    } catch (e) {
+      nostrNote = String(e);
     }
   }
 
@@ -405,9 +422,15 @@
 
   const STATE_TEXT: Record<string, string> = {
     off: "Not connected.",
-    connecting: "Connecting to the relay…",
-    online: "Connected to the relay.",
-    retrying: "Can't reach the relay.",
+    connecting: "Connecting to the old relay…",
+    online: "Connected to the old relay.",
+    retrying: "Can't reach the old relay.",
+  };
+  const NOSTR_TEXT: Record<string, string> = {
+    off: "Not connected.",
+    connecting: "Connecting to the Nostr relays…",
+    online: "Connected over Nostr",
+    waiting: "FreeBank's background part has the link over Nostr; it hands it over when it stops.",
   };
 
   const RESULT_TEXT: Record<string, string> = {
@@ -445,17 +468,26 @@
 <div class="card phone-card">
   <h3>Phone</h3>
   <p class="muted small">
-    Use this wallet from your phone's browser. The phone talks to this computer through a relay that only passes
-    sealed messages along; your keys stay on your node. A phone can see your balance and history, get an address,
-    and send up to its daily limit. Anything above that waits for you here.
+    Use this wallet from your phone's browser. The phone talks to this computer through public Nostr relays, which
+    only pass sealed messages along: nobody hosts the link, and your keys stay on your node. A phone can see your
+    balance and history, get an address, and send up to its daily limit. Anything above that waits for you here.
   </p>
 
   {#if status}
-    <div class="phone-link">
-      <span class="dot" class:ok={status.state === "online"} class:bad={status.state === "retrying"}></span>
-      <span>{STATE_TEXT[status.state] ?? status.state}</span>
-      {#if status.state === "retrying" && status.detail}<span class="muted small">{status.detail}</span>{/if}
-    </div>
+    {#if status.nostr.state !== "off" || status.state === "off"}
+      <div class="phone-link" data-testid="nostr-link">
+        <span class="dot" class:ok={status.nostr.state === "online"} class:bad={status.nostr.state === "connecting" && status.nostr.detail.startsWith("No relay")}></span>
+        <span>{NOSTR_TEXT[status.nostr.state] ?? status.nostr.state}{status.nostr.state === "online" ? ` (${status.nostr.detail}).` : ""}</span>
+        {#if status.nostr.state === "connecting" && status.nostr.detail.startsWith("No relay")}<span class="muted small">{status.nostr.detail}</span>{/if}
+      </div>
+    {/if}
+    {#if status.state !== "off"}
+      <div class="phone-link">
+        <span class="dot" class:ok={status.state === "online"} class:bad={status.state === "retrying"}></span>
+        <span>{STATE_TEXT[status.state] ?? status.state}</span>
+        {#if status.state === "retrying" && status.detail}<span class="muted small">{status.detail}</span>{/if}
+      </div>
+    {/if}
   {/if}
 
   {#if pair}
@@ -493,8 +525,12 @@
     </div>
   {:else}
     <div class="row-actions">
-      <button on:click={startPairing}>Pair a phone</button>
+      <button on:click={() => startPairing()}>Pair a phone</button>
     </div>
+    <p class="hint">
+      Pairs over Nostr. Phones paired before keep the old relay until you pair them again;
+      <button class="link-btn inline" on:click={() => startPairing("relay")}>pair over the old relay</button> instead.
+    </p>
   {/if}
 
   {#if devices.length}
@@ -525,6 +561,7 @@
             {#if d.online}<span class="pill pill-ok">connected</span>{/if}
             {#if d.face_id}<span class="pill" title="The phone asks for Face ID{d.face_id_sends ? ' when it opens and before each send' : ' when it opens'}">Face ID</span>{/if}
             {#if d.face_id && approving}<span class="pill" title="It approves this computer's payments over the day's amount">approves</span>{/if}
+            {#if !d.nostr}<span class="pill" title="Paired before v0.6.0: it uses the old relay. Pair it again to move it to Nostr.">old relay</span>{/if}
           </div>
           <span class="muted small">
             Last seen {when(d.last_seen)} ·
@@ -801,7 +838,32 @@
   {/if}
 
   <details class="advanced">
-    <summary>Relay</summary>
+    <summary>Nostr relays</summary>
+    <div class="adv-body">
+      <label>
+        Relays, one per line
+        <textarea
+          rows="4"
+          bind:value={nostrInput}
+          on:input={() => { nostrDirty = true; nostrNote = ""; }}
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+        ></textarea>
+      </label>
+      <p class="hint">
+        Public Nostr relays (wss://), five at most; one working relay is enough. They see two random keys talking and
+        when, never what is said. A house can add its own here.
+      </p>
+      <div class="adv-actions">
+        <button class="secondary" on:click={saveNostrRelays} disabled={!nostrDirty}>Save</button>
+      </div>
+      {#if nostrNote}<p class="hint">{nostrNote}</p>{/if}
+    </div>
+  </details>
+
+  <details class="advanced">
+    <summary>Old relay</summary>
     <div class="adv-body">
       <label>
         Relay address

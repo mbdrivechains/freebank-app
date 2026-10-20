@@ -1,6 +1,6 @@
 [package]
 name = "freebank"
-version = "0.5.1"
+version = "0.6.0"
 description = "FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)"
 authors = ["The FreeBank developers"]
 license = "MIT"
@@ -41,6 +41,8 @@ p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pkcs8"] }
 hkdf = "0.12"
 aes-gcm = "0.10"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+# The phone link over Nostr (v0.6.0): BIP340 Schnorr on secp256k1 signs the events that carry its frames
+k256 = { version = "0.13", features = ["schnorr"] }
 # Demo mode's relay to the enforcer gateway (node/relay.rs): the TLS tokio-tungstenite already brings.
 native-tls = "0.2"
 tokio-native-tls = "0.3"

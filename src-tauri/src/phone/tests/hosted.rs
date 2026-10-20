@@ -121,7 +121,7 @@ async fn invite_join_pay_move_and_delete() {
     let mut shop = Sim::new();
     h.feed(2, shop.pair_frame(&h.d_pub(), &c, "Shop"));
     assert_eq!(h.next().await["d"]["t"], "pair-refused");
-    let (pairing, _) = h.phone.pair_start().unwrap();
+    let (pairing, _) = h.phone.pair_start(false).unwrap();
     h.feed(2, shop.pair_frame_hosted(&h.d_pub(), &code_of(&pairing), "Shop", true).0);
     assert_eq!(h.next().await["d"]["t"], "pair-refused");
     assert!(h.phone.pair_pending().is_empty() && h.phone.hosted_pending().is_empty());

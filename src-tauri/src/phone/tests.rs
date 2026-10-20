@@ -547,7 +547,7 @@ fn allow_the_one(h: &H) {
 }
 
 async fn paired(h: &mut H, sim: &mut Sim, ch: u64) {
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     h.feed(ch, sim.pair_frame(&h.d_pub(), &code_of(&url), "Test phone"));
     allow_the_one(h);
     assert_eq!(h.next().await["d"]["t"], "paired");
@@ -710,7 +710,7 @@ async fn pairing_url_shape() {
     // The public relay by default: the page at app.ecxfreebank.com, naming that same relay (the
     // page refuses a link whose relay isn't its own host).
     assert_eq!(h.phone.relay_url(), "wss://app.ecxfreebank.com/ws");
-    let (url, exp) = h.phone.pair_start().unwrap();
+    let (url, exp) = h.phone.pair_start(false).unwrap();
     assert!(url.starts_with("https://app.ecxfreebank.com/#pair="), "{url}");
     assert_eq!(exp, h.at() + PAIR_TTL_SECS);
     let link = link_of(&url);
@@ -722,11 +722,11 @@ async fn pairing_url_shape() {
 
     // The override the tests use: a local relay over ws://, its page over http://, same host.
     h.phone.set_relay("ws://127.0.0.1:18480/ws").unwrap();
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     assert!(url.starts_with("http://127.0.0.1:18480/#pair="), "{url}");
     assert_eq!(link_of(&url)["relay"], "ws://127.0.0.1:18480/ws");
     h.phone.set_relay("wss://relay.example.org/ws").unwrap();
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     assert!(url.starts_with("https://relay.example.org/#pair="), "{url}");
     assert!(h.phone.set_relay("https://x/ws").is_err());
     assert!(h.phone.wanted(), "an open pairing wants the link");
@@ -737,7 +737,7 @@ async fn pairing_url_shape() {
 async fn pairing_expires() {
     let mut h = harness(None);
     let sim = Sim::new();
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     h.later(PAIR_TTL_SECS);
     assert!(!h.phone.wanted(), "an expired pairing doesn't keep the link up");
     h.feed(1, sim.pair_frame(&h.d_pub(), &code_of(&url), "late"));
@@ -753,7 +753,7 @@ async fn pairing_expires() {
 async fn pairing_shows_each_request_with_its_own_code() {
     let mut h = harness(None);
     let (intruder, owner) = (Sim::new(), Sim::new());
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     let c = code_of(&url);
     let (f1, intruder_code) = intruder.pair_frame_and_code(&h.d_pub(), &c, "Owner's iPhone");
     let (f2, owner_code) = owner.pair_frame_and_code(&h.d_pub(), &c, "Owner's iPhone");
@@ -792,7 +792,7 @@ async fn pairing_shows_each_request_with_its_own_code() {
 #[tokio::test]
 async fn pair_requests_are_bounded_and_one_per_channel() {
     let mut h = harness(None);
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     let c = code_of(&url);
     let sim = Sim::new();
     // A second request on the same channel replaces the first.
@@ -814,11 +814,11 @@ async fn pair_requests_are_bounded_and_one_per_channel() {
 #[tokio::test]
 async fn pair_requests_end_with_their_code() {
     let mut h = harness(None);
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     h.feed(1, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), "slow"));
     assert!(h.phone.wanted());
     // A new code: requests for the old one are refused.
-    let (url2, _) = h.phone.pair_start().unwrap();
+    let (url2, _) = h.phone.pair_start(false).unwrap();
     assert_eq!(h.next().await, json!({"ch": 1, "d": {"t": "pair-refused"}}));
     assert!(h.phone.pair_pending().is_empty());
     h.feed(2, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), "old code"));
@@ -849,7 +849,7 @@ async fn pair_requests_end_with_their_code() {
 async fn pairing_wrong_code_and_deny() {
     let mut h = harness(None);
     let sim = Sim::new();
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     // Wrong code: refused, and the right code still works.
     h.feed(1, sim.pair_frame(&h.d_pub(), &[0u8; 16], "x"));
     assert_eq!(h.next().await["d"]["t"], "pair-refused");
@@ -872,7 +872,7 @@ async fn pairing_wrong_code_and_deny() {
 async fn pairing_phone_leaves_before_the_answer() {
     let mut h = harness(None);
     let sim = Sim::new();
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     h.feed(5, sim.pair_frame(&h.d_pub(), &code_of(&url), "gone"));
     let id = h.phone.pair_pending()[0].id.clone();
     h.phone.handle_frame(json!({"t": "closed", "ch": 5}));
@@ -917,7 +917,7 @@ async fn idle_channels_are_closed_after_30_seconds() {
     assert!(h.phone.online(&h.phone.devices()[0].id), "the paired phone's session stays");
 
     // A waiting pair request keeps its channel while it waits; once answered, 30 s to go.
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     h.feed(11, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), "waiting"));
     h.later(60);
     h.phone.expire();
@@ -967,7 +967,7 @@ fn device_names_are_cleaned() {
 #[tokio::test]
 async fn names_are_cleaned_before_they_are_shown_or_stored() {
     let mut h = harness(None);
-    let (url, _) = h.phone.pair_start().unwrap();
+    let (url, _) = h.phone.pair_start(false).unwrap();
     let dirty = format!("Bank\u{202E}lagel\u{200B} {}", "y".repeat(60));
     h.feed(1, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), &dirty));
     let ask = h.phone.pair_pending().pop().unwrap();
@@ -1849,7 +1849,7 @@ async fn revoking_the_last_phone_tells_it_before_the_link_goes() {
     let rx = std::mem::replace(&mut h.rx, mpsc::unbounded_channel().1);
     tokio::spawn(link::run(h.phone.clone(), rx));
     for round in 0..8u64 {
-        let (pair_url, _) = h.phone.pair_start().unwrap();
+        let (pair_url, _) = h.phone.pair_start(false).unwrap();
         assert!(link::wait_for(&h.phone, "online", Duration::from_secs(5)).await, "round {round}");
         let mut sim = Sim::new();
         let (pch, sch) = (100 + 2 * round, 101 + 2 * round);
@@ -1902,7 +1902,7 @@ async fn relay_e2e() {
 
     // Nothing paired and no pairing open: the link stays off.
     assert!(link::wait_for(&phone, "off", Duration::from_secs(3)).await);
-    let (pair_url, _) = phone.pair_start().unwrap();
+    let (pair_url, _) = phone.pair_start(false).unwrap();
     assert!(link::wait_for(&phone, "online", Duration::from_secs(10)).await, "{}", phone.status().detail);
     eprintln!("link online, pairing open");
 
@@ -2013,7 +2013,7 @@ async fn host_command(phone: &Arc<Phone>, line: &str, pass_file: Option<&str>) -
     let r: Result<Value, String> = async {
         match verb.as_str() {
             "pair" => {
-                let (url, expires) = phone.pair_start()?;
+                let (url, expires) = phone.pair_start(false)?;
                 Ok(json!({"url": url, "expires": expires}))
             }
             "send-on" => {
@@ -2236,7 +2236,7 @@ async fn page_host() {
     phone.set_relay(&url).unwrap();
     tokio::spawn(link::run(phone.clone(), rx));
     tokio::spawn(phone.clone().expire_forever());
-    let (pair_url, _) = phone.pair_start().unwrap();
+    let (pair_url, _) = phone.pair_start(false).unwrap();
     assert!(link::wait_for(&phone, "online", Duration::from_secs(10)).await, "{}", phone.status().detail);
     if let Some(f) = env("FB_PAIR_FILE") {
         std::fs::write(&f, &pair_url).unwrap();
@@ -3287,3 +3287,4 @@ async fn a_held_send_the_wallet_cant_pay_says_so_before_the_passphrase() {
 }
 
 mod hosted;
+mod nostr_link;

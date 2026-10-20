@@ -143,6 +143,9 @@ pub struct HostedPhone {
     /// next start (`sweep_removed`).
     #[serde(default)]
     pub remove: bool,
+    /// Paired over Nostr (v0.6.0): the phone's Nostr key, as for an owner's phone (`Device::np`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub np: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -173,6 +176,8 @@ pub struct Invite {
     pub by_name: String,
     pub expires: u64,
     pub used: bool,
+    /// Made by a phone over Nostr: its link names the Nostr relays.
+    pub nostr: bool,
 }
 
 /// A hosted pair request waiting for the inviting phone (or the desktop).
@@ -182,6 +187,8 @@ pub struct HostedAsk {
     pub ch: u64,
     #[serde(skip)]
     pub p_pub: String,
+    #[serde(skip)]
+    pub np: Option<String>,
     #[serde(skip)]
     pub c: [u8; 16],
     #[serde(skip)]
@@ -352,7 +359,12 @@ impl Phone {
 
     /// Delete the copy here: the phone is no longer served, and its wallet file moves aside at the node's next start.
     pub fn hosted_remove(&self, hid: &str) -> Result<(), String> {
-        self.with_hosted(hid, |h| h.remove = true)?;
+        let mut np = None;
+        self.with_hosted(hid, |h| {
+            h.remove = true;
+            np = h.np.clone();
+        })?;
+        self.heard_while_gone(np);
         let dev = format!("{PREFIX}{hid}");
         for ch in self.channels_of(&dev) {
             self.chans.lock().unwrap().remove(&ch);
@@ -362,16 +374,16 @@ impl Phone {
         }
         crate::activity::note("hosted wallets: a hosted copy marked for deletion");
         self.events.emit(EV_CHANGED, json!({}));
-        self.wake.notify_one();
+        self.wake_links();
         Ok(())
     }
 
-    /// Whether the link has hosted phones to serve or invites open.
-    pub(super) fn hosting_wanted(&self) -> bool {
+    /// Whether a link (over Nostr or the relay) has hosted phones to serve or invites open.
+    pub(super) fn hosting_wanted(&self, nostr: bool) -> bool {
         let now = self.now();
-        self.hosted.lock().unwrap().phones.iter().any(|h| !h.remove)
-            || self.invites.lock().unwrap().iter().any(|i| !i.used && now < i.expires)
-            || !self.hosted_asks.lock().unwrap().is_empty()
+        self.hosted.lock().unwrap().phones.iter().any(|h| !h.remove && h.np.is_some() == nostr)
+            || self.invites.lock().unwrap().iter().any(|i| i.nostr == nostr && !i.used && now < i.expires)
+            || self.hosted_asks.lock().unwrap().iter().any(|a| super::carrier::is_nostr(a.ch) == nostr)
     }
 
     // ----- inviting (an owner's phone) ---------------------------------------------------------
@@ -426,24 +438,22 @@ impl Phone {
             .ok_or(ERR_NOT_MINE)?;
         let house_name = h["name"].as_str().unwrap_or("").to_string();
         let by_name = self.device_name(dev);
-        let page = self.page_url()?;
         let c = rand16();
-        let link = json!({
-            "v": 1, "relay": self.relay_url(), "room": self.room, "d": self.d_pub, "c": crypto::b64u(&c),
-            "h": {"house": house, "name": house_name, "by": by_name},
-        });
-        let url = format!("{page}/#pair={}", crypto::b64u(link.to_string().as_bytes()));
         let now = self.now();
+        // The shopkeeper's phone pairs over the link the inviting phone uses.
+        let nostr = super::carrier::is_nostr(ch);
+        let h = json!({"house": house, "name": house_name, "by": by_name});
+        let url = self.pair_url(nostr, &c, now + INVITE_TTL_SECS, Some(h))?;
         {
             let mut inv = self.invites.lock().unwrap();
             inv.retain(|i| !i.used && now < i.expires);
             if inv.len() >= MAX_INVITES {
                 return Err("Four invites are open already. Wait for one to be used or to run out.".into());
             }
-            inv.push(Invite { c, house, house_name, by_dev: dev.to_string(), by_name, expires: now + INVITE_TTL_SECS, used: false });
+            inv.push(Invite { c, house, house_name, by_dev: dev.to_string(), by_name, expires: now + INVITE_TTL_SECS, used: false, nostr });
         }
         crate::activity::note("hosted wallets: an invite made");
-        self.wake.notify_one();
+        self.wake_links();
         Ok(json!({"url": url, "secs": INVITE_TTL_SECS}))
     }
 
@@ -456,7 +466,7 @@ impl Phone {
     // ----- joining: the hosted pair request ----------------------------------------------------
 
     /// A pair request that opened with an invite's code and says `hosted`: ask the inviting phone (and the desktop).
-    pub(super) fn hosted_ask(&self, ch: u64, e: &p256::PublicKey, phone: &p256::PublicKey, name: String, c: [u8; 16]) {
+    pub(super) fn hosted_ask(&self, ch: u64, e: &p256::PublicKey, phone: &p256::PublicKey, name: String, c: [u8; 16], np: Option<String>) {
         let refuse = || self.send_clear(ch, json!({"t": "pair-refused"}));
         let p_pub = crypto::pub_b64u(phone);
         // A phone can't be both an owner's and hosted.
@@ -478,6 +488,7 @@ impl Phone {
         let ask = HostedAsk {
             ch,
             p_pub,
+            np,
             c,
             by_dev: by_dev.clone(),
             challenge,
@@ -500,6 +511,9 @@ impl Phone {
                 return refuse();
             }
             asks.push(ask.clone());
+        }
+        if super::carrier::is_nostr(ch) {
+            self.send_clear(ch, json!({"t": "pair-seen"}));
         }
         crate::activity::note("hosted wallets: an invited phone asks to join");
         let mut view = serde_json::to_value(&ask).unwrap();
@@ -631,6 +645,7 @@ impl Phone {
             by: ask.by.clone(),
             wallet: format!("hosted-{}", ask.device),
             step: Step::Setup,
+            np: ask.np.clone(),
             ..Default::default()
         };
         let saved = {
@@ -1425,10 +1440,14 @@ impl Phone {
             Some(ibd) => !ibd,
             None => !r.is_null() && r["blocks"] == r["headers"],
         };
-        Ok(json!({
+        let mut st = json!({
             "hosted": true, "house": h.house, "house_name": h.house_name, "step": h.step, "why": h.why, "move_to": h.move_to,
             "blocks": r["blocks"], "synced": synced, "face_id": h.passkey.is_some(), "credit": true,
-        }))
+        });
+        if h.np.is_some() {
+            st["relays"] = json!(self.nostr_relays());
+        }
+        Ok(st)
     }
 
     /// One payment from a hosted wallet, unlocked with its passphrase for the moment. An answer that doesn't come

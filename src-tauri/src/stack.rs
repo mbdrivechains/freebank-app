@@ -554,7 +554,7 @@ pub async fn stop(mgr: &NodeManager) -> Result<(), String> {
 /// End an install under way, without waiting for OPS, which it holds: cancelled with `why`, its programs stopped (that
 /// ends a header wait or a snapshot load at once), then a little time for it to give up.
 async fn halt_install(mgr: &NodeManager, why: &str) -> Result<(), String> {
-    *cancel_slot().lock().unwrap() = Some(why.to_string());
+    cancel_install(why);
     let st = mgr.settings.lock().await.stack.clone();
     let r = match &st {
         Some(st) => stop_locked(mgr, st).await,
@@ -564,7 +564,6 @@ async fn halt_install(mgr: &NodeManager, why: &str) -> Result<(), String> {
     while installing() && Instant::now() < until {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    *cancel_slot().lock().unwrap() = None;
     r
 }
 
@@ -573,7 +572,11 @@ async fn stop_locked(mgr: &NodeManager, st: &StackSettings) -> Result<(), String
     let Some(s) = network::current().stack else { return Ok(()) };
     let st = st.clone();
     let enf_bin = enforcer_bin(mgr, &st.tag);
+    // Logged only when something was running: Stop and delete stops twice (the second catches a node started in
+    // between), and said "stopped" twice.
+    let mut stopped_any = false;
     if let Some(p) = enforcer_pid(&st).filter(|&p| runs_bin(p, &enf_bin)) {
+        stopped_any = true;
         #[cfg(unix)]
         unsafe {
             libc::kill(p as libc::pid_t, libc::SIGTERM);
@@ -582,6 +585,7 @@ async fn stop_locked(mgr: &NodeManager, st: &StackSettings) -> Result<(), String
     }
     let node_bin = bitcoind(mgr, &st.tag);
     if let Some(p) = node_pid(&st, s).filter(|&p| runs_bin(p, &node_bin)) {
+        stopped_any = true;
         if node_call(&st, s, "stop").await.is_err() {
             #[cfg(unix)]
             unsafe {
@@ -600,7 +604,9 @@ async fn stop_locked(mgr: &NodeManager, st: &StackSettings) -> Result<(), String
     if !still.is_empty() {
         return Err(format!("{} didn't stop. Nothing else was changed.", still.join(" and ")));
     }
-    crate::activity::note("stack: stopped");
+    if stopped_any {
+        crate::activity::note("stack: stopped");
+    }
     Ok(())
 }
 
@@ -622,9 +628,10 @@ pub async fn at_exit(mgr: &NodeManager) {
         return;
     }
     // "Keep running" keeps the FreeBank node up, which needs the stack; a stack it doesn't read from (the user went on to
-    // another computer's) has no reason to outlive the app (review M3).
+    // another computer's) has no reason to outlive the app (review M3), nor does one whose FreeBank node is down: "Stop
+    // everything and close" stops that node first, and left the eCash node and enforcer running (found in v0.6.0's walk).
     if let Some(st) = &s.stack {
-        if !st.in_use(&s) || !s.keep_running {
+        if !st.in_use(&s) || !s.keep_running || !crate::node::process::child_alive(mgr).await {
             let _ = stop(mgr).await;
         }
     }
@@ -744,12 +751,21 @@ fn stopped_low() -> &'static Mutex<Option<String>> {
     &L
 }
 
-/// Cancel what the install is doing (Stop and delete, or the disk watch), with the reason it gives.
+/// Cancel what the install is doing (Stop and delete, or the disk watch), with the reason it gives. Only an install
+/// run's start and end clear it (review L2: when each canceller cleared it after itself, one clearing another's let
+/// the install go on), and it counts only while an install runs.
 fn cancel_slot() -> &'static Mutex<Option<String>> {
     static C: Mutex<Option<String>> = Mutex::new(None);
     &C
 }
+/// The first reason stands.
+fn cancel_install(why: &str) {
+    cancel_slot().lock().unwrap().get_or_insert_with(|| why.to_string());
+}
 fn cancelled() -> Option<String> {
+    if !installing() {
+        return None;
+    }
     cancel_slot().lock().unwrap().clone()
 }
 fn check_cancel() -> Result<(), String> {
@@ -802,9 +818,25 @@ fn snapshot_file(st: &StackSettings, s: &Stack, x: &Snapshot) -> PathBuf {
     st.blocks_at(s).join(format!("utxo-{}-{}.dat", x.height, x.id))
 }
 
+/// Beside a snapshot's part-file: the server's validator for it (a strong ETag, else Last-Modified), so a resumed
+/// download asks for the rest of the same file only (`If-Range`, review L7).
+fn validator_file(dest: &Path) -> PathBuf {
+    let name = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    dest.with_file_name(format!("{name}.validator"))
+}
+
+/// The snapshot and its validator go together.
+fn remove_snapshot(dest: &Path) {
+    let _ = std::fs::remove_file(dest);
+    let _ = std::fs::remove_file(validator_file(dest));
+}
+
 /// Download snapshot `x` to `dest`, carrying on from what is there (Range), retrying an interrupted read a few times.
+/// A resumed request carries `If-Range`: if the file at the address changed, the server sends it whole and the
+/// download starts over, rather than gluing two files together.
 async fn fetch_snapshot(x: &Snapshot, dest: &Path) -> Result<(), String> {
     use std::io::Write;
+    let vfile = validator_file(dest);
     let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
     let mut tries = 0;
     loop {
@@ -820,12 +852,25 @@ async fn fetch_snapshot(x: &Snapshot, dest: &Path) -> Result<(), String> {
         let mut req = http.get(x.url);
         if have > 0 && have < x.size {
             req = req.header(reqwest::header::RANGE, format!("bytes={}-", have));
+            if let Some(v) = std::fs::read_to_string(&vfile).ok().filter(|v| !v.trim().is_empty()) {
+                req = req.header(reqwest::header::IF_RANGE, v.trim());
+            }
         }
         let result: Result<(), String> = async {
             let mut resp = req.send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("The snapshot's download failed: {}", e))?;
             let mut f = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
                 std::fs::OpenOptions::new().append(true).open(dest).map_err(|e| e.to_string())?
             } else {
+                // The whole file: keep what names this version of it, for a later resume.
+                let h = resp.headers();
+                let etag = h.get(reqwest::header::ETAG).and_then(|v| v.to_str().ok()).filter(|e| !e.starts_with("W/"));
+                let v = etag.or_else(|| h.get(reqwest::header::LAST_MODIFIED).and_then(|v| v.to_str().ok()));
+                match v {
+                    Some(v) => std::fs::write(&vfile, v).map_err(|e| e.to_string())?,
+                    None => {
+                        let _ = std::fs::remove_file(&vfile);
+                    }
+                }
                 std::fs::File::create(dest).map_err(|e| e.to_string())?
             };
             let mut got = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT { have } else { 0 };
@@ -856,7 +901,7 @@ async fn fetch_snapshot(x: &Snapshot, dest: &Path) -> Result<(), String> {
             }
             Err(e) => {
                 if e.contains("bigger") {
-                    let _ = std::fs::remove_file(dest);
+                    remove_snapshot(dest);
                 }
                 return Err(e);
             }
@@ -937,7 +982,7 @@ async fn load_snapshot(mgr: &NodeManager, st: &mut StackSettings, s: &Stack, x: 
     let f2 = file.clone();
     let sum = tokio::task::spawn_blocking(move || install::sha256_file(&f2)).await.map_err(|e| e.to_string())??;
     if sum != x.sha256 {
-        let _ = std::fs::remove_file(&file);
+        remove_snapshot(&file);
         return Err(format!(
             "The snapshot from {} didn't match the hash FreeBank expects, so it was deleted and not loaded. Try again, or \
              choose another way to start.",
@@ -957,7 +1002,7 @@ async fn load_snapshot(mgr: &NodeManager, st: &mut StackSettings, s: &Stack, x: 
             return Err(format!("The eCash node didn't load the snapshot: {}", e));
         }
     }
-    let _ = std::fs::remove_file(&file);
+    remove_snapshot(&file);
     done(st);
     let mut settings = mgr.settings.lock().await.clone();
     settings.stack = Some(st.clone());
@@ -1055,10 +1100,10 @@ pub async fn remove(mgr: &Arc<NodeManager>) -> Result<Removed, String> {
     if st.in_use(&settings) {
         crate::node::process::stop(mgr).await.map_err(|e| format!("The FreeBank node didn't stop, so nothing was deleted: {}", e))?;
     }
-    *cancel_slot().lock().unwrap() = Some("Stopped: Stop and delete.".into());
-    let r = remove_locked(mgr, &st).await;
-    *cancel_slot().lock().unwrap() = None;
-    r
+    // An install under way (a snapshot's download, say) gives up at its next check rather than hold OPS to the end
+    // (security review of v0.6.0, M6). With none running this does nothing.
+    cancel_install("Stopped: Stop and delete.");
+    remove_locked(mgr, &st).await
 }
 
 async fn remove_locked(mgr: &Arc<NodeManager>, st: &StackSettings) -> Result<Removed, String> {
@@ -1129,14 +1174,13 @@ pub fn spawn_watch(mgr: Arc<NodeManager>) {
                 crate::activity::note(&format!("stack: {}", why));
                 *stopped_low().lock().unwrap() = Some(why.clone());
                 if installing() {
-                    *cancel_slot().lock().unwrap() = Some(why.clone());
+                    cancel_install(&why);
                 }
                 let _ = stop_locked(&mgr, &st).await;
                 let until = Instant::now() + Duration::from_secs(60);
                 while installing() && Instant::now() < until {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                *cancel_slot().lock().unwrap() = None;
             }
         }
     });
@@ -1161,12 +1205,30 @@ pub struct Remote {
     pub detail: String,
 }
 
-/// A Tailscale address: 100.64.0.0/10, or fd7a:115c:a1e0::/48.
+/// An address in Tailscale's ranges: 100.64.0.0/10, or fd7a:115c:a1e0::/48. Mobile carriers use 100.64.0.0/10 too
+/// (shared address space), so this alone doesn't make a link Tailscale's: `via_tailscale` does.
 pub fn is_tailscale(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v) => v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64,
         std::net::IpAddr::V6(v) => v.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
     }
+}
+
+/// The link to `ip` is Tailscale's: the address is in its ranges and this computer reaches it from a Tailscale
+/// address of its own (review L6). The system says which local address it would use: a UDP socket "connected" to
+/// `ip` sends nothing.
+pub fn via_tailscale(ip: std::net::IpAddr) -> bool {
+    let local = (|| {
+        let any: std::net::SocketAddr = if ip.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
+        let sock = std::net::UdpSocket::bind(any).ok()?;
+        sock.connect((ip, 9)).ok()?;
+        sock.local_addr().ok().map(|a| a.ip())
+    })();
+    tailscale_route(ip, local)
+}
+
+fn tailscale_route(peer: std::net::IpAddr, local: Option<std::net::IpAddr>) -> bool {
+    is_tailscale(peer) && local.is_some_and(is_tailscale)
 }
 
 /// "nearby-box", "100.64.0.2", "box.tail1234.ts.net:18303", "[fd7a::1]": the host, and a port if one was given.
@@ -1227,7 +1289,7 @@ pub async fn find_remote(http: &reqwest::Client, input: &str) -> Remote {
         return out;
     };
     out.address = Some(ip.to_string());
-    out.tailscale = is_tailscale(ip) || host.ends_with(".ts.net");
+    out.tailscale = via_tailscale(ip);
     for p in &node_ports {
         let a = join_host(&host, *p);
         out.tried.push(a.clone());
@@ -1630,6 +1692,8 @@ pub async fn stack_install(mgr: tauri::State<'_, Arc<NodeManager>>, choice: Opti
         if p.running {
             return Err("The eCash node is already being installed.".into());
         }
+        // A new run starts with no cancel, cleared under the same lock, so a Stop right after counts (review L8).
+        *cancel_slot().lock().unwrap() = None;
         *p = Progress { running: true, ..Default::default() };
     }
     // A blocks folder that won't do is said now, not after the programs' download (re-review 6).
@@ -1640,11 +1704,12 @@ pub async fn stack_install(mgr: tauri::State<'_, Arc<NodeManager>>, choice: Opti
             return Err(e);
         }
     }
-    *cancel_slot().lock().unwrap() = None;
     let m = mgr.inner().clone();
     tauri::async_runtime::spawn(async move {
         let r = install_stack(&m, choice.unwrap_or_default()).await;
         set(|p| {
+            // The run is over: its cancel goes with it, before another run can start (review L8).
+            *cancel_slot().lock().unwrap() = None;
             p.running = false;
             match r {
                 Ok(()) => p.done = true,
@@ -1936,14 +2001,23 @@ mod tests {
                 let mut buf = vec![0u8; 4096];
                 let n = c.read(&mut buf).await.unwrap_or(0);
                 let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                let from = req
+                let mut from = req
                     .lines()
                     .find_map(|x| x.to_ascii_lowercase().strip_prefix("range: bytes=").map(|r| r.trim_end_matches('-').parse::<usize>().unwrap_or(0)));
-                seen2.lock().unwrap().push(from.map_or("whole".into(), |f| format!("from {f}")));
+                let if_range = req.lines().find_map(|x| x.strip_prefix("if-range: ").or_else(|| x.strip_prefix("If-Range: ")).map(String::from));
+                seen2.lock().unwrap().push(match (&from, &if_range) {
+                    (None, _) => "whole".into(),
+                    (Some(f), None) => format!("from {f}"),
+                    (Some(f), Some(v)) => format!("from {f} if {v}"),
+                });
+                // If-Range naming another version: the whole file, as HTTP says.
+                if if_range.as_deref().is_some_and(|v| v != "\"v1\"") {
+                    from = None;
+                }
                 let part = &body[from.unwrap_or(0)..];
                 let head = match from {
                     Some(f) => format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n", part.len(), f, body.len() - 1, body.len()),
-                    None => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len()),
+                    None => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n", part.len()),
                 };
                 let _ = c.write_all(head.as_bytes()).await;
                 let send = if first { &part[..cut.min(part.len())] } else { part };
@@ -1957,6 +2031,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_snapshot_download_carries_on_where_it_stopped() {
+        let _turn = INSTALL_STATE.lock().await;
         let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let (url, seen) = serve(body.clone(), 100_000).await;
         let x: &'static Snapshot = Box::leak(Box::new(Snapshot {
@@ -1974,26 +2049,42 @@ mod tests {
         let f = d.join("snap.dat");
         fetch_snapshot(x, &f).await.unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), body, "whole, after one interruption");
-        assert_eq!(*seen.lock().unwrap(), vec!["whole".to_string(), "from 100000".to_string()]);
+        assert_eq!(*seen.lock().unwrap(), vec!["whole".to_string(), "from 100000 if \"v1\"".to_string()], "the resume names the version (L7)");
         // A file already whole isn't fetched again; a part-file left by a stopped app carries on.
         fetch_snapshot(x, &f).await.unwrap();
         assert_eq!(seen.lock().unwrap().len(), 2);
         std::fs::write(&f, &body[..250_000]).unwrap();
         fetch_snapshot(x, &f).await.unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), body);
-        assert_eq!(seen.lock().unwrap().last().unwrap(), "from 250000");
+        assert_eq!(seen.lock().unwrap().last().unwrap(), "from 250000 if \"v1\"");
+        // A part-file of another version (its validator says so): the server sends the whole file, and it starts over.
+        std::fs::write(&f, &body[..250_000]).unwrap();
+        std::fs::write(validator_file(&f), "\"v0\"").unwrap();
+        fetch_snapshot(x, &f).await.unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), body);
+        assert_eq!(std::fs::read_to_string(validator_file(&f)).unwrap(), "\"v1\"");
         // Stop and delete ends it at once.
         std::fs::remove_file(&f).unwrap();
-        *cancel_slot().lock().unwrap() = Some("Stopped: Stop and delete.".into());
+        // (A cancel counts while an install runs, L2.)
+        progress().lock().unwrap().running = true;
+        *cancel_slot().lock().unwrap() = None;
+        cancel_install("Stopped: Stop and delete.");
+        cancel_install("a later reason doesn't replace the first");
         assert_eq!(fetch_snapshot(x, &f).await.unwrap_err(), "Stopped: Stop and delete.");
+        progress().lock().unwrap().running = false;
+        assert_eq!(cancelled(), None, "with no install running, nothing is cancelled");
         *cancel_slot().lock().unwrap() = None;
         std::fs::remove_dir_all(&d).unwrap();
     }
 
     /// v0.5.1, found in the walk: an install holds OPS for as long as it runs (on beta, an hour), so Start refuses, and
     /// Stop and the app's exit end it instead of waiting for it.
+    /// Tests that use the install's progress and its cancel take turns: they are the process's.
+    static INSTALL_STATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn an_install_under_way_is_never_waited_for() {
+        let _turn = INSTALL_STATE.lock().await;
         network::set(&network::BETA);
         let d = std::env::temp_dir().join(format!("fbhalt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -2010,6 +2101,7 @@ mod tests {
         progress().lock().unwrap().running = false; // the install gives up
         tokio::time::timeout(Duration::from_secs(5), stopping).await.expect("Stop never waits for OPS").unwrap().unwrap();
         assert!(cancelled().is_none());
+        *cancel_slot().lock().unwrap() = None; // the run's end clears it
         drop(held);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -2192,6 +2284,13 @@ mod tests {
         assert!(!is_tailscale("100.128.0.1".parse().unwrap()));
         assert!(!is_tailscale("192.168.1.20".parse().unwrap()));
         assert!(is_tailscale("fd7a:115c:a1e0::5".parse().unwrap()));
+        // A carrier's shared address reached from an ordinary one isn't Tailscale's (L6); from a tailnet address it is.
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert!(!tailscale_route(ip("100.64.0.2"), Some(ip("192.168.1.5"))));
+        assert!(tailscale_route(ip("100.64.0.2"), Some(ip("100.64.0.9"))));
+        assert!(!tailscale_route(ip("192.168.1.20"), Some(ip("100.64.0.9"))));
+        assert!(!tailscale_route(ip("100.64.0.2"), None));
+        assert!(!via_tailscale(ip("127.0.0.1")));
     }
 
     #[tokio::test]

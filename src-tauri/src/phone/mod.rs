@@ -7,13 +7,20 @@
 //! into `handle_frame`, frames for the relay come out of the channel `new` returns, the node is
 //! reached through `Rpc` and the screen through `Events`. `link` runs the WebSocket; `commands`
 //! are what the Settings screen calls.
+//!
+//! v0.6.0: the same frames also travel over Nostr (`carrier`; PROTOCOL.md, "Over Nostr"). Its
+//! channels are numbered from `carrier::CH_BASE`; a phone paired over Nostr keeps its Nostr key (`Device::np`), and its
+//! sessions come only over Nostr, from that key. Both links run side by side.
 
 pub mod background;
+pub mod carrier;
 pub mod commands;
 pub mod crypto;
 pub mod hosted;
 pub mod link;
 pub mod login_item;
+pub mod nostr;
+pub mod relays;
 pub mod store;
 pub mod webauthn;
 #[cfg(test)]
@@ -133,6 +140,11 @@ pub const MAX_ASKS: usize = 8;
 /// A phone channel that hasn't completed `hello` or a pair request this long after its first
 /// frame is closed, so a stranger with the room id can't hold the room's phone slots (P5).
 pub const IDLE_CHANNEL_SECS: u64 = 30;
+/// After a change of the Nostr relays, the old ones are listened to this long (v0.6.0, M5).
+pub const NOSTR_PREV_SECS: u64 = 7 * 86_400;
+/// A phone revoked or removed while paired over Nostr is still heard this long, so its next hello hears `denied`
+/// rather than nothing (v0.6.0, review L5); the link stays up for it meanwhile. Memory only.
+pub const GONE_HEARD_SECS: u64 = 3_600;
 /// A held send waits this long for the desktop; then its phone is told it wasn't confirmed.
 pub const HELD_TTL_SECS: u64 = 600;
 /// Face ID (PROTOCOL.md, "Face ID: passkeys"): a request before the session proved the passkey. The
@@ -246,6 +258,8 @@ struct Code {
     c: [u8; 16],
     expires: u64,
     state: CodeState,
+    /// Its link names the Nostr relays (v0.6.0), not the relay.
+    nostr: bool,
 }
 
 /// A pair request waiting for "Allow this phone?". Several can wait on one pairing code (whoever
@@ -257,6 +271,9 @@ pub struct Ask {
     ch: u64,
     #[serde(skip)]
     p_pub: String,
+    /// Over Nostr: the phone's Nostr key, kept with it once allowed.
+    #[serde(skip)]
+    np: Option<String>,
     /// This request: the answer names it.
     pub id: String,
     /// The phone's device id.
@@ -541,6 +558,12 @@ pub struct Phone {
     out: mpsc::UnboundedSender<Value>,
     /// Wakes the link: the relay URL changed, or it has (or no longer has) something to do.
     pub wake: tokio::sync::Notify,
+    /// The same for the link over Nostr (`carrier`), and that link's state; and the desktop's Nostr key.
+    pub wake_nostr: tokio::sync::Notify,
+    nostr_status: Mutex<LinkStatus>,
+    pub nkey: nostr::NostrKey,
+    /// Nostr keys of phones revoked or removed lately, and until when they are still heard (`GONE_HEARD_SECS`).
+    gone_np: Mutex<HashMap<String, u64>>,
     rpc: Arc<dyn Rpc>,
     events: Arc<dyn Events>,
     clock: Clock,
@@ -767,6 +790,7 @@ impl Phone {
     ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<Value>), String> {
         let store = Store::new(app_dir);
         let d = store.desktop_key()?;
+        let nkey = store.nostr_key()?;
         let d_pub = crypto::pub_b64u(&d.public_key());
         let room = crypto::room(&d.public_key());
         let mut devices = store.load_devices();
@@ -815,6 +839,10 @@ impl Phone {
             maker: Mutex::new(None),
             out,
             wake: tokio::sync::Notify::new(),
+            wake_nostr: tokio::sync::Notify::new(),
+            nostr_status: Mutex::new(LinkStatus { state: "off".into(), detail: String::new() }),
+            nkey,
+            gone_np: Mutex::default(),
             rpc,
             events,
             clock,
@@ -862,14 +890,122 @@ impl Phone {
         Ok(json!({"t": "proof", "sig": crypto::b64u(&crypto::proof(&self.d, &n))}))
     }
 
-    /// Whether the link should be up: a phone is paired, or a pairing is open.
+    /// Whether the relay link should be up: a phone paired over it, or a pairing open on it.
     pub fn wanted(&self) -> bool {
-        if !self.devices.lock().unwrap().devices.is_empty() || self.hosting_wanted() {
+        self.wanted_on(false)
+    }
+
+    /// The same for the link over Nostr.
+    pub fn nostr_wanted(&self) -> bool {
+        self.wanted_on(true)
+    }
+
+    fn wanted_on(&self, nostr: bool) -> bool {
+        if self.devices.lock().unwrap().devices.iter().any(|d| d.np.is_some() == nostr) || self.hosting_wanted(nostr) {
             return true;
         }
+        if nostr {
+            let now = self.now();
+            if self.gone_np.lock().unwrap().values().any(|until| now < *until) {
+                return true;
+            }
+        }
         let p = self.pairing.lock().unwrap();
-        !p.asks.is_empty()
-            || p.code.as_ref().is_some_and(|c| c.state == CodeState::Live && self.now() < c.expires)
+        p.asks.iter().any(|a| carrier::is_nostr(a.ch) == nostr)
+            || p.code.as_ref().is_some_and(|c| c.nostr == nostr && c.state == CodeState::Live && self.now() < c.expires)
+    }
+
+    /// Wake both links: something they may have to do (or stop doing) changed.
+    fn wake_links(&self) {
+        self.wake.notify_one();
+        self.wake_nostr.notify_one();
+    }
+
+    /// The Nostr keys the link over Nostr listens to: the phones paired over it.
+    pub fn nostr_keys(&self) -> std::collections::HashSet<String> {
+        let mut keys: std::collections::HashSet<String> =
+            self.devices.lock().unwrap().devices.iter().filter_map(|d| d.np.clone()).collect();
+        keys.extend(self.hosted.lock().unwrap().phones.iter().filter(|h| !h.remove).filter_map(|h| h.np.clone()));
+        let now = self.now();
+        let mut gone = self.gone_np.lock().unwrap();
+        gone.retain(|_, until| now < *until);
+        keys.extend(gone.keys().cloned());
+        keys
+    }
+
+    /// A phone paired over Nostr was revoked or removed: its next hello still gets through, and hears `denied` (L5).
+    fn heard_while_gone(&self, np: Option<String>) {
+        if let Some(np) = np {
+            self.gone_np.lock().unwrap().insert(np, self.now() + GONE_HEARD_SECS);
+            self.wake_links();
+        }
+    }
+
+    /// Over Nostr, a key that isn't a paired phone's gets a channel only for a pair request that opens with a live
+    /// pairing code or invite and names that key (security review of v0.6.0, M1): strangers can't use up the channels.
+    pub fn pair_opens(&self, d: &Value, np: &str) -> bool {
+        if d["t"] != "pair" {
+            return false;
+        }
+        let live = {
+            let p = self.pairing.lock().unwrap();
+            p.code.as_ref().filter(|c| c.state == CodeState::Live && self.now() < c.expires).map(|c| c.c)
+        };
+        live.into_iter().chain(self.invite_codes()).any(|c| self.open_pair(d, &c).is_ok_and(|pt| pt["np"].as_str() == Some(np)))
+    }
+
+    /// A pair request's plaintext, opened with code `c`.
+    fn open_pair(&self, d: &Value, c: &[u8; 16]) -> Result<Value, String> {
+        let e = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
+        let n: [u8; 12] = crypto::unb64u(d["n"].as_str().ok_or("n")?)?.try_into().map_err(|_| "nonce must be 12 bytes")?;
+        let ct = crypto::unb64u(d["ct"].as_str().ok_or("ct")?)?;
+        let k = crypto::pair_key(&self.d, &e, c);
+        serde_json::from_slice(&crypto::open(&k, &n, &ct)?).map_err(|_| "not JSON".into())
+    }
+
+    /// A pairing code or an invite is live with a link over Nostr: anyone's events are worth opening, as a pair
+    /// request may be among them.
+    pub fn nostr_pairing_open(&self) -> bool {
+        let now = self.now();
+        self.pairing.lock().unwrap().code.as_ref().is_some_and(|c| c.nostr && c.state == CodeState::Live && now < c.expires)
+            || self.invites.lock().unwrap().iter().any(|i| i.nostr && !i.used && now < i.expires)
+    }
+
+    pub fn nostr_relays(&self) -> Vec<String> {
+        self.config.lock().unwrap().nostr_relays.clone()
+    }
+
+    /// The relays the link listens on: the list, and for a week after a change the one before it (M5).
+    pub fn nostr_listen(&self) -> Vec<String> {
+        let c = self.config.lock().unwrap();
+        let mut all = c.nostr_relays.clone();
+        if self.now() < c.nostr_prev_until {
+            for r in &c.nostr_relays_prev {
+                if !all.contains(r) {
+                    all.push(r.clone());
+                }
+            }
+        }
+        all
+    }
+
+    /// The phone page's address, for pairing links over Nostr and Face ID.
+    pub fn page(&self) -> String {
+        self.config.lock().unwrap().page_url.trim_end_matches('/').to_string()
+    }
+
+    pub fn set_nostr_status(&self, state: &str, detail: &str) {
+        let mut s = self.nostr_status.lock().unwrap();
+        if s.state != state || s.detail != detail {
+            *s = LinkStatus { state: state.into(), detail: detail.into() };
+            drop(s);
+            crate::activity::note(&format!("phone link over Nostr: {state}: {detail}"));
+            self.events.emit(EV_CHANGED, json!({}));
+        }
+    }
+
+    pub fn nostr_status(&self) -> LinkStatus {
+        self.nostr_status.lock().unwrap().clone()
     }
 
     pub fn set_status(&self, state: &str, detail: &str) {
@@ -888,13 +1024,23 @@ impl Phone {
 
     /// The relay link dropped: every channel with it, and the pair requests that came on them.
     pub fn clear_channels(&self) {
-        self.chans.lock().unwrap().clear();
-        self.auth.lock().unwrap().clear();
-        self.idle.lock().unwrap().clear();
-        self.hosted_asks.lock().unwrap().clear();
+        self.clear_where(|ch| !carrier::is_nostr(ch));
+    }
+
+    /// The same for the link over Nostr.
+    pub fn clear_nostr_channels(&self) {
+        self.clear_where(carrier::is_nostr);
+    }
+
+    fn clear_where(&self, gone: impl Fn(u64) -> bool) {
+        self.chans.lock().unwrap().retain(|ch, _| !gone(*ch));
+        self.auth.lock().unwrap().retain(|ch, _| !gone(*ch));
+        self.idle.lock().unwrap().retain(|ch, _| !gone(*ch));
+        self.hosted_asks.lock().unwrap().retain(|a| !gone(a.ch));
         let mut p = self.pairing.lock().unwrap();
-        if !p.asks.is_empty() {
-            p.asks.clear();
+        let before = p.asks.len();
+        p.asks.retain(|a| !gone(a.ch));
+        if p.asks.len() != before {
             drop(p);
             self.events.emit(EV_CHANGED, json!({}));
         }
@@ -911,7 +1057,7 @@ impl Phone {
     fn send_sealed(&self, ch: u64, msg: &Value) -> bool {
         let mut chans = self.chans.lock().unwrap();
         let Some((s, _)) = chans.get_mut(&ch) else { return false };
-        let ct = s.tx.seal(msg.to_string().as_bytes());
+        let ct = s.tx.seal(&carrier::padded(msg, carrier::is_nostr(ch)));
         let _ = self.out.send(json!({"ch": ch, "d": {"t": "m", "ct": crypto::b64u(&ct)}}));
         true
     }
@@ -940,9 +1086,11 @@ impl Phone {
             return;
         }
         let (Some(ch), Some(d)) = (f["ch"].as_u64(), f.get("d")) else { return };
+        // Over Nostr, the carrier says whose key the frame came from.
+        let np = f["np"].as_str().filter(|_| carrier::is_nostr(ch));
         match d["t"].as_str() {
-            Some("pair") => self.on_pair(ch, d),
-            Some("hello") => self.on_hello(ch, d),
+            Some("pair") => self.on_pair(ch, d, np),
+            Some("hello") => self.on_hello(ch, d, np),
             Some("m") => self.on_message(ch, d),
             _ => {}
         }
@@ -973,20 +1121,38 @@ impl Phone {
 
     /// Open a pairing: a fresh one-use code for 5 minutes (any earlier code stops working).
     /// Returns the URL the QR code shows and when it expires.
-    pub fn pair_start(&self) -> Result<(String, u64), String> {
-        let page = self.page_url()?;
+    pub fn pair_start(&self, nostr: bool) -> Result<(String, u64), String> {
         let c = rand16();
         let expires = self.now() + PAIR_TTL_SECS;
-        let link = json!({"v": 1, "relay": self.relay_url(), "room": self.room, "d": self.d_pub, "c": crypto::b64u(&c)});
-        let url = format!("{page}/#pair={}", crypto::b64u(link.to_string().as_bytes()));
+        let url = self.pair_url(nostr, &c, expires, None)?;
         let mut p = self.pairing.lock().unwrap();
-        p.code = Some(Code { c, expires, state: CodeState::Live });
+        p.code = Some(Code { c, expires, state: CodeState::Live, nostr });
         // Requests for an earlier code are refused: that code stops working.
         let old: Vec<Ask> = p.asks.drain(..).collect();
         drop(p);
         self.refuse_asks(&old);
-        self.wake.notify_one();
+        self.wake_links();
         Ok((url, expires))
+    }
+
+    /// A pairing (or invite, with `h`) link: over the relay, v1 naming it and its room; over Nostr, v2 naming the
+    /// relays and this desktop's Nostr key, on the phone page's own address (PHONE_LINK_NOSTR.md §2).
+    fn pair_url(&self, nostr: bool, c: &[u8; 16], expires: u64, h: Option<Value>) -> Result<String, String> {
+        let (page, mut link) = if nostr {
+            let relays = self.nostr_relays();
+            if relays.is_empty() {
+                return Err("No Nostr relays are set: add one under Settings › Phone.".into());
+            }
+            let page = self.page();
+            webauthn::origin_for_page(&page).ok_or(format!("The phone page's address {page} isn't usable."))?;
+            (page, json!({"v": 2, "r": relays, "n": self.nkey.pubkey(), "d": self.d_pub, "c": crypto::b64u(c), "x": expires}))
+        } else {
+            (self.page_url()?, json!({"v": 1, "relay": self.relay_url(), "room": self.room, "d": self.d_pub, "c": crypto::b64u(c)}))
+        };
+        if let Some(h) = h {
+            link["h"] = h;
+        }
+        Ok(format!("{page}/#pair={}", crypto::b64u(link.to_string().as_bytes())))
     }
 
     /// The phone page's address: the relay's host, over https (http for a local ws:// relay).
@@ -1020,12 +1186,14 @@ impl Phone {
     #[cfg(test)]
     fn test_code(&self, c: [u8; 16]) {
         let mut p = self.pairing.lock().unwrap();
-        p.code = Some(Code { c, expires: self.now() + PAIR_TTL_SECS, state: CodeState::Live });
+        p.code = Some(Code { c, expires: self.now() + PAIR_TTL_SECS, state: CodeState::Live, nostr: false });
         p.asks.clear();
     }
 
-    fn on_pair(&self, ch: u64, d: &Value) {
+    fn on_pair(&self, ch: u64, d: &Value, np: Option<&str>) {
         let refuse = || self.send_clear(ch, json!({"t": "pair-refused"}));
+        // Over Nostr the request names the phone's Nostr key, and must come from it: its sessions will.
+        let np_ok = |pt: &Value| !carrier::is_nostr(ch) || (np.is_some_and(nostr::valid_pubkey) && pt["np"].as_str() == np);
         let open = |c: &[u8; 16]| -> Result<(p256::PublicKey, p256::PublicKey, String, bool), String> {
             let e = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
             let n: [u8; 12] = crypto::unb64u(d["n"].as_str().ok_or("n")?)?
@@ -1034,6 +1202,9 @@ impl Phone {
             let ct = crypto::unb64u(d["ct"].as_str().ok_or("ct")?)?;
             let k = crypto::pair_key(&self.d, &e, c);
             let pt: Value = serde_json::from_slice(&crypto::open(&k, &n, &ct)?).map_err(|_| "not JSON")?;
+            if !np_ok(&pt) {
+                return Err("not from the phone's own Nostr key".into());
+            }
             let phone = crypto::parse_pub(pt["p"].as_str().ok_or("p")?)?;
             Ok((e, phone, clean_name(pt["name"].as_str().unwrap_or("")), pt["hosted"] == true))
         };
@@ -1048,7 +1219,7 @@ impl Phone {
                 if hosted {
                     return refuse();
                 }
-                return self.owner_ask(ch, &e, &phone, name, c);
+                return self.owner_ask(ch, &e, &phone, name, c, np.map(String::from));
             }
         }
         for c in self.invite_codes() {
@@ -1056,14 +1227,14 @@ impl Phone {
                 if !hosted {
                     return refuse();
                 }
-                return self.hosted_ask(ch, &e, &phone, name, c);
+                return self.hosted_ask(ch, &e, &phone, name, c, np.map(String::from));
             }
         }
         refuse()
     }
 
     /// A pair request that opened with the pairing code: "Allow this phone?".
-    fn owner_ask(&self, ch: u64, e: &p256::PublicKey, phone: &p256::PublicKey, name: String, c: [u8; 16]) {
+    fn owner_ask(&self, ch: u64, e: &p256::PublicKey, phone: &p256::PublicKey, name: String, c: [u8; 16], np: Option<String>) {
         let refuse = || self.send_clear(ch, json!({"t": "pair-refused"}));
         let mut p = self.pairing.lock().unwrap();
         // A newer pairing code since: this request's is gone.
@@ -1082,6 +1253,7 @@ impl Phone {
         let ask = Ask {
             ch,
             p_pub: crypto::pub_b64u(phone),
+            np,
             id: hex::encode(&rand16()[..8]),
             device: Device::id_for(phone),
             name,
@@ -1089,6 +1261,10 @@ impl Phone {
         };
         p.asks.push(ask.clone());
         drop(p);
+        // Over Nostr nothing says the desktop is there, so the phone hears that its request arrived (v0.6.0).
+        if carrier::is_nostr(ch) {
+            self.send_clear(ch, json!({"t": "pair-seen"}));
+        }
         crate::activity::note("phone pairing: a phone asks to pair");
         self.events.emit(EV_PAIR, serde_json::to_value(&ask).unwrap());
     }
@@ -1132,6 +1308,7 @@ impl Phone {
             spent_day: 0,
             spent_sats: 0,
             passkey: None,
+            np: ask.np.clone(),
         });
         let saved = self.store.save_devices(&devs);
         drop(devs);
@@ -1144,6 +1321,8 @@ impl Phone {
         // The phone comes back on a new channel for its first session; this one should go.
         self.note_idle(ask.ch);
         self.events.emit(EV_CHANGED, json!({}));
+        // The code is used up: the link over Nostr stops opening strangers' events now, not at its next tick.
+        self.wake_links();
         Ok(())
     }
 
@@ -1162,10 +1341,12 @@ impl Phone {
     pub fn revoke(&self, id: &str) -> Result<(), String> {
         let mut devs = self.devices.lock().unwrap();
         let before = devs.devices.len();
+        let np = devs.devices.iter().find(|d| d.id == id).and_then(|d| d.np.clone());
         devs.devices.retain(|d| d.id != id);
         if devs.devices.len() == before {
             return Err("No such phone.".into());
         }
+        self.heard_while_gone(np);
         let none_left = devs.devices.is_empty();
         let saved = self.store.save_devices(&devs);
         drop(devs);
@@ -1201,7 +1382,7 @@ impl Phone {
             }
         }
         self.events.emit(EV_CHANGED, json!({}));
-        self.wake.notify_one();
+        self.wake_links();
         saved
     }
 
@@ -1234,15 +1415,61 @@ impl Phone {
         let r = self.store.save_config(&c);
         drop(c);
         // Sessions and pairings belong to the old relay's room.
-        self.wake.notify_one();
+        self.wake_links();
+        r
+    }
+
+    /// The Nostr relays (v0.6.0): `wss://` addresses (or `ws://` on this computer), at most five, one at least.
+    /// Phones paired over Nostr hear the new list in `status` and follow it.
+    pub fn set_nostr_relays(&self, relays: &[String]) -> Result<(), String> {
+        let mut list: Vec<String> = vec![];
+        for r in relays.iter().map(|r| r.trim().trim_end_matches('/').to_string()).filter(|r| !r.is_empty()) {
+            if !relays::usable(&r) {
+                return Err(format!("{r} isn't a relay address: they look like wss://relay.example.com."));
+            }
+            if !list.contains(&r) {
+                list.push(r);
+            }
+        }
+        if list.is_empty() {
+            return Err("Keep one relay at least.".into());
+        }
+        if list.len() > store::MAX_NOSTR_RELAYS {
+            return Err(format!("{} relays at most.", store::MAX_NOSTR_RELAYS));
+        }
+        let mut c = self.config.lock().unwrap();
+        if c.nostr_relays != list {
+            // The old relays are still listened to for a week, so phones on them hear the new list (M5). A second
+            // change within the week keeps the earlier old ones too, and the week starts over (re-review).
+            let mut prev = std::mem::take(&mut c.nostr_relays);
+            if self.now() < c.nostr_prev_until {
+                for r in std::mem::take(&mut c.nostr_relays_prev) {
+                    if !prev.contains(&r) {
+                        prev.push(r);
+                    }
+                }
+            }
+            prev.retain(|r| !list.contains(r));
+            c.nostr_relays_prev = prev;
+            c.nostr_prev_until = self.now() + NOSTR_PREV_SECS;
+        }
+        c.nostr_relays = list;
+        let r = self.store.save_config(&c);
+        drop(c);
+        self.wake_links();
         r
     }
 
     // ----- session handshake -----------------------------------------------------------------
 
-    fn on_hello(&self, ch: u64, d: &Value) {
+    fn on_hello(&self, ch: u64, d: &Value, np: Option<&str>) {
         let p_str = d["p"].as_str().unwrap_or("");
         let dev = self.devices.lock().unwrap().by_pub(p_str).map(|x| x.id.clone()).or_else(|| self.hosted_by_pub(p_str));
+        // A phone's sessions come over the link it paired on, and over Nostr only from its own Nostr key.
+        let dev = dev.filter(|id| {
+            let bound = self.np_of(id);
+            if carrier::is_nostr(ch) { bound.is_some() && bound.as_deref() == np } else { bound.is_none() }
+        });
         let keys = (|| -> Result<_, String> {
             let p = crypto::parse_pub(p_str)?;
             let ep = crypto::parse_pub(d["e"].as_str().ok_or("e")?)?;
@@ -1445,14 +1672,19 @@ impl Phone {
                 };
                 let left = self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).map(|d| d.left_on(self.today()));
                 let key = self.passkey_of(dev);
-                Ok(json!({
+                let mut st = json!({
                     "blocks": r["blocks"], "synced": synced, "limit_left": to_ecx(left.unwrap_or(0)),
                     "face_id": key.is_some(), "face_id_sends": key.is_some_and(|k| k.sends),
                     // v0.2.5: this desktop answers notes, houses and the note actions.
                     "credit": true,
                     // Turning Face ID on here waits for another phone's approval first (security review M2).
                     "add_asks": self.first_passkey_asks(dev),
-                }))
+                });
+                // Over Nostr (v0.6.0): the relays, so a phone follows a changed list.
+                if self.np_of(dev).is_some() {
+                    st["relays"] = json!(self.nostr_relays());
+                }
+                Ok(st)
             }
             "notes" => self.notes().await,
             // Hosted wallets (v0.2.8): this wallet's members-only houses, and an invite into one.
@@ -1501,6 +1733,24 @@ impl Phone {
     }
 
     // ----- Face ID: passkeys -----------------------------------------------------------------
+
+    /// A phone's Nostr key, if it paired over Nostr (owner's or hosted).
+    fn np_of(&self, dev: &str) -> Option<String> {
+        if let Some(hid) = hosted::hosted_id(dev) {
+            return self.hosted.lock().unwrap().phones.iter().find(|h| h.id == hid).and_then(|h| h.np.clone());
+        }
+        self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).and_then(|d| d.np.clone())
+    }
+
+    /// The origin and relying party a phone's Face ID belongs to: the page it paired on (over Nostr, the phone page's
+    /// address; over the relay, the relay's host).
+    fn origin_of(&self, dev: &str) -> Option<(String, String)> {
+        if self.np_of(dev).is_some() {
+            webauthn::origin_for_page(&self.page())
+        } else {
+            webauthn::origin_for(&self.relay_url())
+        }
+    }
 
     fn passkey_of(&self, dev: &str) -> Option<store::Passkey> {
         if let Some(hid) = hosted::hosted_id(dev) {
@@ -1626,7 +1876,7 @@ impl Phone {
         if self.now() > until {
             return Err(ERR_AUTH_FAILED.into());
         }
-        let (origin, rp_id) = webauthn::origin_for(&self.relay_url()).ok_or(ERR_AUTH_FAILED)?;
+        let (origin, rp_id) = self.origin_of(dev).ok_or(ERR_AUTH_FAILED)?;
         let part = |k: &str| crypto::unb64u(x[k].as_str().unwrap_or("")).map_err(|_| ERR_AUTH_FAILED.to_string());
         let (ad, cdj, sig) = (part("ad")?, part("cdj")?, part("sig")?);
         let check = |pk: &[u8], stored: u32| {
@@ -1640,7 +1890,7 @@ impl Phone {
 
     /// An assertion over `challenge` by `dev`'s stored passkey; its signature counter is kept.
     fn check_stored(&self, dev: &str, challenge: &[u8; 32], x: &Value) -> Result<u32, String> {
-        let (origin, rp_id) = webauthn::origin_for(&self.relay_url()).ok_or(ERR_AUTH_FAILED)?;
+        let (origin, rp_id) = self.origin_of(dev).ok_or(ERR_AUTH_FAILED)?;
         let part = |k: &str| crypto::unb64u(x[k].as_str().unwrap_or("")).map_err(|_| ERR_AUTH_FAILED.to_string());
         let (ad, cdj, sig) = (part("ad")?, part("cdj")?, part("sig")?);
         if let Some(hid) = hosted::hosted_id(dev) {

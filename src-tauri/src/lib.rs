@@ -402,6 +402,7 @@ pub fn run() {
             phone::commands::phone_confirm_send,
             phone::commands::phone_relay_status,
             phone::commands::phone_set_relay,
+            phone::commands::phone_set_nostr_relays,
             phone::commands::phone_recent_sends,
             phone::commands::phone_wallet,
             phone::commands::phone_send_on,

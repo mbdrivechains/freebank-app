@@ -66,8 +66,9 @@ Your wallet lives in your own `freebankd` node, and the app runs it for you.
 - **A passphrase and 24 recovery words** (v0.2.0). The words are standard BIP39 words. The node's wallet key comes
   from them by BIP85 (the HD-Seed WIF application, index 0), so a BIP85 tool can rebuild it without this app. The app
   keeps the words only encrypted with your passphrase, and never stores the passphrase.
-- **Your phone as a remote** (v0.2.0). Pair it in Settings > Phone. It reaches this computer through the relay at
-  app.ecxfreebank.com, end-to-end encrypted: the relay only passes sealed messages along. The phone has a daily
+- **Your phone as a remote** (v0.2.0). Pair it in Settings > Phone. From v0.6.0 it reaches this computer through
+  public Nostr relays, so nobody hosts the link (phones paired before keep the relay at app.ecxfreebank.com until they
+  pair again). Either way it is end-to-end encrypted: relays only pass sealed messages along. The phone has a daily
   sending limit, and bigger payments wait for you here. It shows your house notes and the houses, and sends, redeems
   or demands notes under the same limit (v0.2.5).
 - **Approve sends on my phone** (v0.2.5, opt in). Once this computer's payments in a day come to more than an amount

@@ -1,7 +1,8 @@
 //! What the phone relay keeps on disk, all under `<app data>/phone/`, each file mode 0600:
 //! - `desktop.key`: the desktop static key D (32-byte scalar, hex);
+//! - `nostr.key`: the desktop's Nostr key nD for the link over Nostr (v0.6.0; secp256k1, hex), never the user's own;
 //! - `devices.json`: allowed phones (name, P_pub, added, last seen, daily limit, today's spend);
-//! - `config.json`: the relay URL;
+//! - `config.json`: the relay URL, the Nostr relays and the phone page's address;
 //! - `held.json`: sends waiting for the desktop, and the notices owed to phones for held sends a
 //!   restart cancelled;
 //! - `sends.log`: one JSON line per phone send (sent, held, declined, failed, expired, cancelled).
@@ -17,6 +18,21 @@ use std::path::{Path, PathBuf};
 /// The public relay; it also serves the phone page at https://app.ecxfreebank.com/. Settings can
 /// point a desktop at another (ws:// only for local testing).
 pub const DEFAULT_RELAY: &str = "wss://app.ecxfreebank.com/ws";
+/// The phone page, for pairing links over Nostr and Face ID (`rp.id` is its host).
+pub const DEFAULT_PAGE: &str = "https://app.ecxfreebank.com";
+/// The public Nostr relays the link over Nostr uses unless Settings says otherwise (the Truthcoin app's). One working
+/// relay is enough.
+pub const DEFAULT_NOSTR_RELAYS: [&str; 3] = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"];
+/// At most this many relays (a pairing link carries the list).
+pub const MAX_NOSTR_RELAYS: usize = 5;
+
+fn default_nostr_relays() -> Vec<String> {
+    DEFAULT_NOSTR_RELAYS.iter().map(|r| r.to_string()).collect()
+}
+
+fn default_page() -> String {
+    DEFAULT_PAGE.into()
+}
 /// 0.1 sECX
 pub const DEFAULT_LIMIT_SATS: u64 = 10_000_000;
 pub const SATS: f64 = 100_000_000.0;
@@ -112,6 +128,9 @@ pub struct Device {
     /// Face ID: the phone's passkey, once it added one (PROTOCOL.md, "Face ID: passkeys").
     #[serde(default)]
     pub passkey: Option<Passkey>,
+    /// Paired over Nostr (v0.6.0): the phone's Nostr key, the only one its sessions may come from. None: the relay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub np: Option<String>,
 }
 
 /// A phone's passkey: its public key and credential id (b64u), whether each send asks for it too,
@@ -184,6 +203,17 @@ impl Devices {
 #[serde(default)]
 pub struct Config {
     pub relay_url: String,
+    /// The link over Nostr (v0.6.0): its relays, and the phone page's address.
+    #[serde(default = "default_nostr_relays")]
+    pub nostr_relays: Vec<String>,
+    /// The list before the last change, still listened to until `nostr_prev_until` (unix seconds): a phone still on
+    /// it hears the new list in `status` (security review of v0.6.0, M5).
+    #[serde(default)]
+    pub nostr_relays_prev: Vec<String>,
+    #[serde(default)]
+    pub nostr_prev_until: u64,
+    #[serde(default = "default_page")]
+    pub page_url: String,
     /// "Approve sends on my phone" (v0.2.5): once the desktop's payments in a day would come to more than this many
     /// sats, a phone's Face ID first. None: off.
     #[serde(default)]
@@ -205,7 +235,16 @@ pub struct Scheduled {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { relay_url: DEFAULT_RELAY.into(), approve_over: None, desk_spent: Vec::new(), scheduled: None }
+        Self {
+            relay_url: DEFAULT_RELAY.into(),
+            nostr_relays: default_nostr_relays(),
+            nostr_relays_prev: Vec::new(),
+            nostr_prev_until: 0,
+            page_url: default_page(),
+            approve_over: None,
+            desk_spent: Vec::new(),
+            scheduled: None,
+        }
     }
 }
 
@@ -277,6 +316,18 @@ impl Store {
         }
         let k = crypto::random_secret();
         self.write_private("desktop.key", hex::encode(k.to_bytes()).as_bytes())?;
+        Ok(k)
+    }
+
+    /// The desktop's Nostr key, made once (v0.6.0).
+    pub fn nostr_key(&self) -> Result<super::nostr::NostrKey, String> {
+        let path = self.dir.join("nostr.key");
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            let b = hex::decode(s.trim()).map_err(|_| format!("{} is damaged", path.display()))?;
+            return super::nostr::NostrKey::from_bytes(&b).map_err(|_| format!("{} is damaged", path.display()));
+        }
+        let k = super::nostr::NostrKey::random();
+        self.write_private("nostr.key", hex::encode(k.to_bytes()).as_bytes())?;
         Ok(k)
     }
 
@@ -368,6 +419,7 @@ mod tests {
                 spent_day: 0,
                 spent_sats: 0,
                 passkey: None,
+                np: None,
             }],
         }
     }

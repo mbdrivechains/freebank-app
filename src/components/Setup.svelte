@@ -765,8 +765,8 @@
                 <p class="hint">Over Tailscale: the link is encrypted.</p>
               {:else}
                 <p class="hint warn">
-                  {remote.address} isn't a Tailscale address, so what FreeBank and that computer say to each other crosses
-                  your network unencrypted, including the eCash login if you give FreeBank one.
+                  This computer doesn't reach {remote.address} over Tailscale, so what FreeBank and that computer say to
+                  each other crosses your network unencrypted, including the eCash login if you give FreeBank one.
                 </p>
               {/if}
               <div class="row-actions">
@@ -788,7 +788,7 @@
           {/if}
           <p class="hint">
             FreeBank's eCash wallet logs in to that node with a login you type under Settings, eCash. It then adds two
-            watch-only wallets of its own there (the node looks through beta's blocks once to fill them) and sends your
+            watch-only wallets of its own there (the node looks through {$network.l1}'s blocks once to fill them) and sends your
             payments through it. It never opens that node's other wallets.
           </p>
         </div>

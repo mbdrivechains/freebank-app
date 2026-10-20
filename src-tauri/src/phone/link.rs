@@ -157,7 +157,7 @@ async fn connect(phone: &Arc<Phone>, url: &str, out: &mut mpsc::UnboundedReceive
                 Some(Ok(Message::Close(c))) => return closed(c, true),
                 Some(Err(e)) => return fail(e, true),
                 Some(Ok(Message::Text(t))) => {
-                    if let Ok(v) = serde_json::from_str::<Value>(t.as_str()) {
+                    if let Some(v) = serde_json::from_str::<Value>(t.as_str()).ok().and_then(from_relay) {
                         phone.handle_frame(v);
                     }
                 }
@@ -191,6 +191,28 @@ async fn connect(phone: &Arc<Phone>, url: &str, out: &mut mpsc::UnboundedReceive
             }
         }
     }
+}
+
+/// A frame from the relay as `Phone` may take it: the relay reaches its own channels only, never those over Nostr, and
+/// can't say whose Nostr key a frame came from (security review of v0.6.0, M4).
+fn from_relay(mut v: Value) -> Option<Value> {
+    if v["ch"].as_u64().is_some_and(super::carrier::is_nostr) {
+        return None;
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.remove("np");
+    }
+    Some(v)
+}
+
+#[cfg(test)]
+#[test]
+fn the_relay_never_reaches_a_channel_over_nostr() {
+    use serde_json::json;
+    let n = super::carrier::CH_BASE + 3;
+    assert_eq!(from_relay(json!({"ch": n, "np": "ab", "d": {"t": "hello"}})), None);
+    assert_eq!(from_relay(json!({"t": "closed", "ch": n})), None);
+    assert_eq!(from_relay(json!({"ch": 7, "np": "ab", "d": {"t": "hello"}})), Some(json!({"ch": 7, "d": {"t": "hello"}})));
 }
 
 /// Wait for the link to report `state` (for tests and callers that need it up).

@@ -44,6 +44,20 @@ pub fn origin_for(relay_url: &str) -> Option<(String, String)> {
     Some((origin, host))
 }
 
+/// The same from the phone page's own address (v0.6.0, the link over Nostr): `https://host` anywhere, `http://` only
+/// on this computer (tests). A path is ignored; a page with a login in it isn't usable.
+pub fn origin_for_page(page: &str) -> Option<(String, String)> {
+    let u = url::Url::parse(page).ok()?;
+    let ws = match u.scheme() {
+        "https" => "wss",
+        "http" if matches!(u.host_str(), Some("localhost") | Some("127.0.0.1")) => "ws",
+        _ => return None,
+    };
+    let mut as_ws = u.clone();
+    as_ws.set_scheme(ws).ok()?;
+    origin_for(as_ws.as_str())
+}
+
 /// Check an assertion against the phone's key (`pk`, the 65-byte point) and the live challenge. The
 /// signature counter the phone then has, or why it was refused.
 pub fn verify(
@@ -121,6 +135,11 @@ mod tests {
         assert_eq!(origin_for("wss://App.EcxFreeBank.com:443/ws"), Some(("https://app.ecxfreebank.com".into(), "app.ecxfreebank.com".into())));
         assert_eq!(origin_for("wss://app.ecxfreebank.com:8443/ws"), Some(("https://app.ecxfreebank.com:8443".into(), "app.ecxfreebank.com".into())));
         assert_eq!(origin_for("https://app.ecxfreebank.com/ws"), None);
+        assert_eq!(origin_for_page("https://app.ecxfreebank.com"), Some(("https://app.ecxfreebank.com".into(), "app.ecxfreebank.com".into())));
+        assert_eq!(origin_for_page("https://App.EcxFreeBank.com:443/x"), Some(("https://app.ecxfreebank.com".into(), "app.ecxfreebank.com".into())));
+        assert_eq!(origin_for_page("http://localhost:5173"), Some(("http://localhost:5173".into(), "localhost".into())));
+        assert_eq!(origin_for_page("http://app.ecxfreebank.com"), None);
+        assert_eq!(origin_for_page("https://u:p@app.ecxfreebank.com"), None);
         assert_eq!(origin_for("wss://user@app.ecxfreebank.com/ws"), None);
         // As browsers read it: the extra slash is skipped, so the host is "ws".
         assert_eq!(origin_for("wss:///ws"), Some(("https://ws".into(), "ws".into())));
