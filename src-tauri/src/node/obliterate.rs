@@ -5,7 +5,10 @@
 //! only when the app created it and its mark is still there, because freebankd's default folder
 //! may hold a node run by hand; folders FreeBank moved aside (during setup or a restore) never are,
 //! and only the ones it recorded are called that. A folder a node is using (its lock is held) can't be ticked, whatever
-//! port that node answers on. The eCash node, the enforcer and BitWindow are never on the list.
+//! port that node answers on. An eCash node and enforcer FreeBank didn't install, and BitWindow, are never on the list.
+//! The ones the app installed and runs for its network are (v0.5.1): their folders a line of their own, with their size
+//! (beta's chain is about 890 GB), ticked when they carry the app's mark, so unticking keeps the chain. A node on another
+//! computer is never touched: the plan says so.
 //! What the running screen still uses (the app's folder on Linux, the caches) goes when the app exits.
 
 use super::{detect, lock, process, wallet_files, wallets_inside, NodeManager, DATADIR_MARK};
@@ -25,8 +28,9 @@ use std::sync::atomic::Ordering;
 const APP_FILES: &[&str] = &[
     "settings.json", "releases", "tools", "tmp", "logs", "wallet", "sends.json", ".sends.json.tmp", "phone",
     "backups.json", "node.pid", "node.pid.new",
-    // v0.5.0: the eCash node and enforcer the app installed and runs for this network, their data, the install's tmp.
-    "stack", "stack-data", "tmp-stack",
+    // v0.5.0: the eCash node and enforcer the app installed and runs for this network, the install's tmp. Their data
+    // (stack-data/) is a line of its own from v0.5.1 (`Places::stack`).
+    "stack", "tmp-stack",
 ];
 
 /// FreeBank's own files named by how they begin: a damaged send log moved aside
@@ -104,12 +108,27 @@ pub struct Places {
     /// The process ids of the node the app runs: its locks don't make a folder "in use", because
     /// Obliterate stops that node first.
     pub ours: Vec<u32>,
+    /// The folders of the eCash node and enforcer the app runs itself (v0.5.1): their data, their blocks when on a disk
+    /// of their own, and chains left from earlier installs.
+    pub stack: Vec<StackFolder>,
+    /// The eCash node is on another computer (v0.5.1): its address, for the plan's note.
+    pub elsewhere: Option<String>,
+}
+
+/// A folder of the app's own eCash node (v0.5.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackFolder {
+    pub path: PathBuf,
+    /// "chain" (the one in use), "blocks" (its blocks on a disk of their own), "earlier" (a chain left from before).
+    pub role: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     App,
+    /// A folder of the eCash node and enforcer the app runs itself (v0.5.1).
+    Stack,
     /// The node's data folder (the one the settings name).
     Node,
     /// Another node data folder the app created, before a switch to another folder under Advanced.
@@ -344,9 +363,8 @@ fn app_contents(app_dir: &Path) -> String {
         ("backups.json", "the list of wallet backups FreeBank made (the backups themselves stay)"),
         ("logs", "logs"),
         ("tmp", "an unfinished download"),
-        // v0.5.0: the eCash node and enforcer the app installed for its network.
-        ("stack", "the eCash node and enforcer FreeBank installed"),
-        ("stack-data", "their chain and data"),
+        // v0.5.0: the eCash node and enforcer the app installed for its network (their chain is a line of its own).
+        ("stack", "the eCash node and enforcer programs FreeBank installed"),
     ]
     .iter()
     .filter(|(name, _)| exists(&app_dir.join(name)) || (*name == "sends.json" && damaged_log))
@@ -406,6 +424,38 @@ pub fn plan_items(p: &Places) -> Vec<Item> {
         mark_in_use(&mut node, p);
         mark_holds_another(&mut node, p);
         items.push(node);
+    }
+    // The eCash node and enforcer the app runs itself (v0.5.1): their chain and data, then their blocks on a disk of their
+    // own. Ticked when they carry the app's mark.
+    for f in &p.stack {
+        let dir = &f.path;
+        if !exists(dir) || items.iter().any(|x: &Item| Path::new(&x.path) == dir.as_path()) {
+            continue;
+        }
+        // Inside the app's own stack-data/ (a real folder, not a link) it is the app's: v0.5.0 made no mark. Elsewhere
+        // only with the mark.
+        let marked = dir.join(crate::stack::MARK).exists() || crate::stack::in_own_data(&p.app_dir, dir);
+        let (label, note) = match (f.role, marked) {
+            (_, false) => (
+                "A folder of FreeBank's eCash node",
+                "It doesn't carry FreeBank's mark (.freebank-stack) any more, so another program may use it. It stays.",
+            ),
+            ("blocks", true) => ("Its blocks, on a disk of their own", "The eCash node's blocks. FreeBank made this folder for them."),
+            ("earlier", true) => (
+                "An earlier chain of FreeBank's eCash node",
+                "Left from an earlier install (or kept by an earlier Obliterate). It holds an eCash chain and the \
+                 watch-only eCash wallets FreeBank made in it: their keys come from your recovery words.",
+            ),
+            _ => (
+                "FreeBank's eCash node",
+                "The eCash chain, the enforcer's data and the watch-only eCash wallets FreeBank made in that node (their \
+                 keys come from your recovery words). Untick it to keep the chain for a later install.",
+            ),
+        };
+        let id = if f.role == "chain" { "stack".to_string() } else { format!("stack:{}", dir.display()) };
+        let mut item = entry(p, id, Kind::Stack, label, dir, marked, marked, note);
+        mark_in_use(&mut item, p);
+        items.push(item);
     }
     // Node folders the app created before a switch to another folder under Advanced.
     for dir in &p.created {
@@ -505,9 +555,18 @@ fn choose(p: &Places, ticks: &[Tick]) -> Result<(Vec<Item>, Vec<Item>), String> 
         .map(|i| PathBuf::from(&i.path))
         .chain(p.keep.iter().cloned())
         .collect();
+    // The eCash node's chain, unticked inside the app's folder (v0.5.1): the folder then stays, and only FreeBank's own
+    // files in it go (execute), so ticking the folder is fine.
+    let kept_stack: Vec<PathBuf> = plan
+        .iter()
+        .filter(|i| i.kind == Kind::Stack && !chosen.iter().any(|c| c.id == i.id))
+        .map(|i| PathBuf::from(&i.path))
+        .collect();
     for item in &chosen {
         let path = Path::new(&item.path);
         let full = check_deletable(path, &p.home)?;
+        let staying: Vec<&PathBuf> =
+            staying.iter().filter(|s| !(item.kind == Kind::App && kept_stack.contains(s) && s.starts_with(&p.app_dir))).collect();
         if matches!(item.kind, Kind::Node | Kind::Earlier) && !path.join(DATADIR_MARK).exists() {
             return Err(format!(
                 "{} wasn't set up by FreeBank, so nothing was removed.",
@@ -548,7 +607,7 @@ pub fn execute(p: &Places, ticks: &[Tick]) -> Result<Done, String> {
     let mut done = Done::default();
     let folders: Vec<&Item> = chosen
         .iter()
-        .filter(|i| matches!(i.kind, Kind::Node | Kind::Earlier | Kind::Aside))
+        .filter(|i| matches!(i.kind, Kind::Node | Kind::Earlier | Kind::Aside | Kind::Stack))
         .collect();
     for item in &folders {
         if let Some(u) = lock::in_use(Path::new(&item.path), &[]) {
@@ -577,8 +636,13 @@ pub fn execute(p: &Places, ticks: &[Tick]) -> Result<Done, String> {
         }
         done.removed.push(PathBuf::from(&item.path));
     }
+    // Something kept lies inside the app's folder (the eCash node's chain, unticked): the folder stays, and only
+    // FreeBank's own files in it go (v0.5.1).
+    let keeps_inside = plan
+        .iter()
+        .any(|i| i.kind != Kind::App && !chosen.iter().any(|c| c.id == i.id) && Path::new(&i.path).starts_with(&p.app_dir));
     if chosen.iter().any(|i| i.kind == Kind::App) {
-        if p.app_dir_shared {
+        if p.app_dir_shared || keeps_inside {
             // A developer's FREEBANK_APP_DIR: FreeBank's own files go, the folder and the rest stay.
             for path in app_files(&p.app_dir) {
                 if super::remove_inside(&p.app_dir, &path)? {
@@ -675,6 +739,8 @@ pub struct Plan {
     pub seed: Option<String>,
     /// Why Obliterate can't run right now.
     pub blocked: Option<String>,
+    /// The eCash node is on another computer (v0.5.1): nothing there is deleted, said in words.
+    pub elsewhere: Option<String>,
 }
 
 /// Why Obliterate must wait: an install or update under way, or a node another program started
@@ -696,7 +762,7 @@ async fn refusal(mgr: &NodeManager) -> Option<String> {
     }
     // v0.5.0: an eCash node being installed, or a wallet job, would write into the folders as they go.
     if crate::stack::installing() {
-        return Some("The eCash node is being installed. Let it finish first.".into());
+        return Some("The eCash node is being installed. Let it finish, or stop and delete it (Settings, Node & connection), first.".into());
     }
     if crate::recovery::job::progress().running {
         return Some("FreeBank is working on your wallet. Let it finish first.".into());
@@ -805,6 +871,13 @@ pub async fn plan(mgr: &NodeManager, places: Places) -> Result<Plan, String> {
         None => refusal(mgr).await,
     };
     let datadir = places.datadir.clone();
+    let elsewhere = places.elsewhere.clone().map(|host| {
+        format!(
+            "FreeBank uses the eCash node on {}, another computer, and deletes nothing there. The watch-only eCash \
+             wallets it made in that node, if any, stay (they hold no keys: those come from your recovery words).",
+            host
+        )
+    });
     let seed = places.app_dir.join(SEED_FILE);
     let seed = seed.is_file().then(|| seed.to_string_lossy().into_owned());
     let items = tokio::task::spawn_blocking(move || plan_items(&places))
@@ -836,6 +909,7 @@ pub async fn plan(mgr: &NodeManager, places: Places) -> Result<Plan, String> {
         backup_note,
         seed,
         blocked,
+        elsewhere,
     })
 }
 
@@ -1229,6 +1303,8 @@ mod tests {
             caches: Vec::new(),
             keep: Vec::new(),
             ours: Vec::new(),
+            stack: Vec::new(),
+            elsewhere: None,
         }
     }
 
@@ -1244,6 +1320,55 @@ mod tests {
         assert!(!node.allowed && !node.checked, "{node:?}");
         assert!(node.note.contains("easynet"));
         std::fs::remove_dir_all(&b).unwrap();
+    }
+
+    /// v0.5.1: the app's own eCash node, a line of its own. Ticked, its chain goes with the app's folder; unticked, the
+    /// app's folder stays with the chain in it and only FreeBank's other files go.
+    #[test]
+    fn the_own_ecash_node_is_its_own_line() {
+        for keep in [false, true] {
+            let b = base(if keep { "stack-keep" } else { "stack-go" });
+            let mut p = places(&b);
+            let chain = p.app_dir.join("stack-data/beta");
+            write(&chain.join("node/blocks/blk00000.dat"), &[3u8; 4000]);
+            write(&p.app_dir.join("stack/betanet-967000-1/bitcoind"), &[4u8; 100]);
+            // Blocks on a disk of their own, with the mark; and one that lost it.
+            let hdd = p.home.join("hdd/fb-blocks");
+            write(&hdd.join(crate::stack::MARK), b"");
+            write(&hdd.join("blocks/blk00001.dat"), &[5u8; 2000]);
+            let stray = p.home.join("hdd/someone-elses");
+            write(&stray.join("blocks/blk00000.dat"), b"x");
+            p.stack = vec![
+                StackFolder { path: chain.clone(), role: "chain" },
+                StackFolder { path: hdd.clone(), role: "blocks" },
+                StackFolder { path: stray.clone(), role: "earlier" },
+            ];
+            let items = plan_items(&p);
+            let own = find(&items, "stack");
+            assert!(own.checked && own.allowed && own.size >= 4000, "{own:?}");
+            assert!(own.note.contains("recovery words"), "{}", own.note);
+            let blocks = find(&items, &format!("stack:{}", hdd.display()));
+            assert!(blocks.checked && blocks.label.contains("blocks"), "{blocks:?}");
+            let other = find(&items, &format!("stack:{}", stray.display()));
+            assert!(!other.allowed && !other.checked && other.note.contains("mark"), "{other:?}");
+            // The app's folder line doesn't count the chain any more.
+            assert!(!find(&items, "app").note.contains("chain"), "{}", find(&items, "app").note);
+            let want: Vec<&str> = if keep { vec!["app", "node"] } else { vec!["app", "node", "stack"] };
+            let mut t = ticks(&p, &want);
+            t.extend(ticks(&p, &[&format!("stack:{}", hdd.display())]));
+            let done = execute(&p, &t).unwrap();
+            assert!(!hdd.exists(), "its blocks go with their own tick");
+            assert!(stray.join("blocks/blk00000.dat").exists(), "an unmarked folder stays");
+            if keep {
+                assert!(chain.join("node/blocks/blk00000.dat").exists(), "the chain kept");
+                assert!(p.app_dir.is_dir(), "so the app's folder stays");
+                assert!(!p.app_dir.join("settings.json").exists() && !p.app_dir.join("stack").exists() && !p.app_dir.join("releases").exists());
+                assert!(done.kept.contains(&chain));
+            } else {
+                assert!(!p.app_dir.exists(), "{done:?}");
+            }
+            std::fs::remove_dir_all(&b).unwrap();
+        }
     }
 
     /// Ticks as the screen sends them: each id with the path the list shows for it now (none for

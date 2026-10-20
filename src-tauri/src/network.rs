@@ -38,6 +38,23 @@ pub struct Download {
     pub mac: &'static str,
 }
 
+/// A UTXO snapshot the network's node can start from (v0.5.1): the node then reaches the tip in about an hour and checks
+/// the older history behind it in the background. The node itself refuses a file whose UTXO hash isn't the one compiled
+/// into it for that height; the sha256 here only spares a wasted load.
+#[derive(Debug)]
+pub struct Snapshot {
+    /// "ours", "l2l": what the screens and the settings call it.
+    pub id: &'static str,
+    /// Who publishes it, as the screens name it.
+    pub source: &'static str,
+    pub url: &'static str,
+    pub sha256: &'static str,
+    pub size: u64,
+    pub height: u64,
+    /// Its block, as `getchainstates` names a loaded snapshot.
+    pub blockhash: &'static str,
+}
+
 /// The eCash node and enforcer the app installs and runs for a network itself (v0.5.0), and their default ports.
 #[derive(Debug)]
 pub struct Stack {
@@ -48,8 +65,20 @@ pub struct Stack {
     pub chain: &'static str,
     pub node: Download,
     pub enforcer: Download,
-    /// The node's config section (`[easynet]`) and the network folder it keeps its data in.
+    /// The node's config section (`[easynet]`, `[main]`).
     pub section: &'static str,
+    /// The folder inside its data folder the node keeps this chain's files in: "easynet"; "" for main, whose files are
+    /// at the top.
+    pub folder: &'static str,
+    /// The transaction index (`txindex=1`). Not on beta: freebankd reads deposits from the block itself (v0.2.17), and
+    /// on beta's chain the index alone is about 70 GB.
+    pub txindex: bool,
+    /// Snapshots to start from, the first that answers first (v0.5.1). None: a sync from the start.
+    pub snapshots: &'static [Snapshot],
+    /// The whole chain on disk once the node has every block, in GB of 10^9 bytes (as a Mac's Finder counts), for the disk
+    /// check (a full beta node of ours, 2026-10-20: blocks 818 GiB and chainstate 11 GiB by `du -h`, so about 890 GB; no
+    /// txindex).
+    pub full_gb: u64,
     pub p2p: u16,
     pub rpc: u16,
     pub zmq: u16,
@@ -153,7 +182,64 @@ pub static BETA: Network = Network {
     bot: Some("freebank_beta_bot"),
     rest: "127.0.0.1:18302",
     enforcer: "127.0.0.1:50051",
-    stack: None,
+    stack: Some(&BETA_STACK),
+};
+
+/// easynet-3.1's enforcer: L2L's bip300301_enforcer at master 6e5f79f (2026-09-24) with mbdrivechains' fixes and the
+/// easynet preset. It has L2L's `betanet` preset too, and runs beta with it (tested to beta's tip, 2026-10-19).
+const ENFORCER_EASYNET_3_1: Download = Download {
+    url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-3.1/bip300301_enforcer-easynet-3.1-{platform}.tar.gz",
+    linux: "324e2eef90704ccb3d3da47f57772284960cd3708bb691176bc58d15501a9706",
+    mac: "f83640ad58f5eff94863afec7360705a649ef37826d0925618c19e0e16d01f34",
+};
+
+/// beta's own stack (v0.5.1): mbdrivechains' betanet-967000-1 node (eCash's betanet branch plus the 967,000 snapshot
+/// entry; github.com/mbdrivechains/bitcoin, its SHA256SUMS) and easynet-3.1's enforcer in its betanet preset. Its ports
+/// keep off BitWindow's beta node and enforcer, and off the eCash node's own defaults (8532, 8533).
+static BETA_STACK: Stack = Stack {
+    tag: "betanet-967000-1",
+    chain: "beta",
+    node: Download {
+        url: "https://github.com/mbdrivechains/bitcoin/releases/download/betanet-967000-1/bitcoin-betanet-967000-1-{platform}.tar.gz",
+        linux: "f586da22e3d13254a6ebe74422021b4bc17397e34ebf3d31e32fb9b877e4cf13",
+        mac: "713944c870e62ade08957d63ceb329441d2c4cc3c88c4f15d76388677a36e417",
+    },
+    enforcer: ENFORCER_EASYNET_3_1,
+    section: "main",
+    folder: "",
+    txindex: false,
+    snapshots: &[
+        // Ours: published with that node release, its entry checked against Bitcoin Core 31.1 validated from genesis.
+        Snapshot {
+            id: "ours",
+            source: "mbdrivechains",
+            url: "https://pub-77f0535533b1480dacd9d5992d0c1831.r2.dev/utxo-967000-betanet.dat",
+            sha256: "da1e9b5de3fd21f5883e136184e6f24f5ec5348b7e3f36db3242b676666eed3b",
+            size: 9_441_693_688,
+            height: 967_000,
+            blockhash: "00000000000000000000a6b2523780117f2257d82718a1f43d793d6a058fa294",
+        },
+        // LayerTwo Labs': the file BitWindow loads (its network catalog, for alphanet). Up to the fork, beta's chain is
+        // Bitcoin's, and 935,000 is one of Bitcoin Core 31.1's own entries.
+        Snapshot {
+            id: "l2l",
+            source: "LayerTwo Labs",
+            url: "https://data.drivechain.dev/alphanet/utxo-935000.dat",
+            sha256: "922ccc7ae0ebf23fbff674e12e295265c9958ecfb0a5da729341b50319ae73cc",
+            size: 9_387_990_306,
+            height: 935_000,
+            blockhash: "0000000000000000000147034958af1652b2b91bba607beacc5e72a56f0fb5ee",
+        },
+    ],
+    full_gb: 890,
+    p2p: 38533,
+    rpc: 38532,
+    zmq: 38535,
+    grpc: 38551,
+    erpc: 38552,
+    enforcer_args: &["--network-preset=betanet"],
+    // The node's own seeds find beta's peers (tested 2026-10-19).
+    seeds: &[],
 };
 
 /// easynet-3.1 (reset 3, 2026-10-14): github.com/mbdrivechains/bitcoin, its SHA256SUMS
@@ -167,19 +253,19 @@ static EASYNET_STACK: Stack = Stack {
         linux: "bec820f7edde1c22c38d100688fc26835ec3d49aaf007906e601fa27e433e842",
         mac: "f0d41e2c4b36d42e8e3b77c08a17be7bd5008877c9b97184cfb681382586cd78",
     },
-    enforcer: Download {
-        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-3.1/bip300301_enforcer-easynet-3.1-{platform}.tar.gz",
-        linux: "324e2eef90704ccb3d3da47f57772284960cd3708bb691176bc58d15501a9706",
-        mac: "f83640ad58f5eff94863afec7360705a649ef37826d0925618c19e0e16d01f34",
-    },
+    enforcer: ENFORCER_EASYNET_3_1,
     section: "easynet",
+    folder: "easynet",
+    txindex: true,
+    snapshots: &[],
+    full_gb: 2,
     p2p: 28533,
     rpc: 28532,
     zmq: 28535,
     grpc: 28551,
     erpc: 28552,
     enforcer_args: &["--network-preset=easynet"],
-    // easynet's public door (freebanktest, relayed to miner2): TRACKING.md.
+    // easynet's public door (freebanktest, relayed to our easynet node): TRACKING.md.
     seeds: &["163.47.9.132:28533"],
 };
 
@@ -436,7 +522,7 @@ pub fn busy_with(mgr: &crate::node::NodeManager) -> Option<&'static str> {
     } else if mgr.app_updating.load(std::sync::atomic::Ordering::SeqCst) {
         Some("The FreeBank app is updating itself. Let it finish first.")
     } else if crate::stack::installing() {
-        Some("The eCash node is being installed. Let it finish first.")
+        Some("The eCash node is being installed. Let it finish, or stop and delete it (Settings, Node & connection), first.")
     } else if crate::recovery::job::progress().running {
         Some("FreeBank is working on your wallet (its passphrase, words or a restore). Let it finish first.")
     } else {
@@ -519,11 +605,36 @@ mod tests {
 
     #[test]
     fn stacks_keep_off_bitwindows_ports() {
-        let s = EASYNET.stack.unwrap();
-        for p in [s.grpc, s.erpc, s.rpc, s.p2p, s.zmq] {
-            assert!(![50051, 8122, 18301, 18302, 18303, 8454, 8455].contains(&p), "{p}");
+        for n in [&BETA, &EASYNET] {
+            let s = n.stack.unwrap();
+            for p in [s.grpc, s.erpc, s.rpc, s.p2p, s.p2p + 1, s.zmq] {
+                // BitWindow's beta node and enforcer, FreeBank's own ports, the eCash node's defaults.
+                assert!(![50051, 8122, 18301, 18302, 18303, 8454, 8455, 8532, 8533, 8534].contains(&p), "{} {p}", n.id);
+            }
         }
+        let s = EASYNET.stack.unwrap();
         assert_eq!(EASYNET.enforcer, format!("127.0.0.1:{}", s.grpc));
         assert_eq!(EASYNET.rest, format!("127.0.0.1:{}", s.rpc));
+        // On beta, an eCash stack already running is still looked for where BitWindow's listens.
+        assert_eq!(BETA.rest, "127.0.0.1:18302");
+        assert_eq!(BETA.enforcer, "127.0.0.1:50051");
+        // The two stacks never share a port, so both may run at once.
+        let (b, e) = (BETA.stack.unwrap(), EASYNET.stack.unwrap());
+        let ports = |s: &Stack| vec![s.p2p, s.p2p + 1, s.rpc, s.zmq, s.grpc, s.erpc];
+        assert!(ports(b).iter().all(|p| !ports(e).contains(p)));
+    }
+
+    #[test]
+    fn betas_snapshots() {
+        let s = BETA.stack.unwrap();
+        assert_eq!(s.snapshots.iter().map(|x| x.id).collect::<Vec<_>>(), ["ours", "l2l"], "ours first, then L2L's");
+        for x in s.snapshots {
+            assert_eq!(x.sha256.len(), 64);
+            assert_eq!(x.blockhash.len(), 64);
+            assert!(x.height < BETA.pin_height, "a snapshot below FreeBank's pin block");
+            assert!(x.size > 9_000_000_000);
+        }
+        assert!(!s.txindex && s.folder.is_empty() && s.section == "main");
+        assert!(EASYNET.stack.unwrap().snapshots.is_empty());
     }
 }

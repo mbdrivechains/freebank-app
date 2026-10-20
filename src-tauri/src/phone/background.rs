@@ -369,12 +369,12 @@ impl Waker {
             }
             crate::activity::note("daemon: a phone asked; starting the node");
             let had = self.mgr.child.lock().await.is_some();
-            let stack_was_up = crate::stack::status(&self.mgr).await.node_up;
+            let stack_was_up = crate::stack::status(&self.mgr, false).await.node_up;
             crate::node::process::start(&self.mgr).await?;
             if !had && self.mgr.child.lock().await.is_some() {
                 self.st.lock().unwrap().spawned = true;
             }
-            if !stack_was_up && crate::stack::status(&self.mgr).await.node_up {
+            if !stack_was_up && crate::stack::status(&self.mgr, false).await.node_up {
                 self.st.lock().unwrap().stack_spawned = true;
             }
             let until = Instant::now() + Duration::from_secs(START_WAIT_SECS);

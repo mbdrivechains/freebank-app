@@ -336,7 +336,42 @@ async fn obliterate_places(app: &AppHandle, mgr: &NodeManager) -> obliterate::Pl
         caches: if crate::network::current().id == crate::network::BETA.id { screen_caches(app) } else { Vec::new() },
         keep,
         ours,
+        stack: stack_folders(mgr, &s),
+        elsewhere: elsewhere(&s),
     }
+}
+
+/// The folders of the app's own eCash node and enforcer (v0.5.1): the settings' stack (its chain and data, its blocks on
+/// a disk of their own), then any other chain left in stack-data/ (an earlier chain, or one an earlier Obliterate kept).
+fn stack_folders(mgr: &NodeManager, s: &super::Settings) -> Vec<obliterate::StackFolder> {
+    use obliterate::StackFolder;
+    let mut v: Vec<StackFolder> = Vec::new();
+    if let Some(st) = &s.stack {
+        v.push(StackFolder { path: PathBuf::from(&st.dir), role: "chain" });
+        v.extend(st.blocks.as_ref().map(|b| StackFolder { path: PathBuf::from(b), role: "blocks" }));
+    }
+    // Earlier chains: only folders that are a chain of the app's (its mark, or a chain's folder in a real stack-data/),
+    // so a stack-data/ linked to another disk never lists that disk's other folders (review H1).
+    let mut left: Vec<PathBuf> = std::fs::read_dir(mgr.app_dir.join("stack-data"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && !v.iter().any(|f| &f.path == p))
+        .filter(|p| p.join(crate::stack::MARK).exists() || crate::stack::in_own_data(&mgr.app_dir, p))
+        .collect();
+    left.sort();
+    v.extend(left.into_iter().map(|path| StackFolder { path, role: "earlier" }));
+    v
+}
+
+/// The eCash node's host when it is another computer's (the FreeBank node reads its REST there).
+fn elsewhere(s: &super::Settings) -> Option<String> {
+    if s.demo {
+        return None;
+    }
+    let host = crate::security::host_part(&s.rest).to_string();
+    (!host.is_empty() && !crate::security::is_loopback_host(&host)).then_some(host)
 }
 
 /// Beta's app folder holds another network's (networks/<id>/, v0.5.0).
@@ -584,5 +619,19 @@ mod network_tests {
         std::fs::write(d.join("networks/easynet/settings.json"), b"{}").unwrap();
         assert!(other_networks_inside(&d));
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Obliterate names an eCash node on another computer (v0.5.1), by name or address; never this computer's own, nor
+    /// in demo mode.
+    #[test]
+    fn another_computers_node_is_named() {
+        let with = |rest: &str, demo: bool| elsewhere(&super::super::Settings { rest: rest.into(), demo, ..Default::default() });
+        assert_eq!(with("nearby-box:18303", false).as_deref(), Some("nearby-box"));
+        assert_eq!(with("100.64.0.2:38532", false).as_deref(), Some("100.64.0.2"));
+        assert_eq!(with("[fd7a:115c:a1e0::2]:38532", false).as_deref(), Some("fd7a:115c:a1e0::2"));
+        assert_eq!(with("127.0.0.1:38532", false), None);
+        assert_eq!(with("localhost:18303", false), None);
+        assert_eq!(with("[::1]:18303", false), None);
+        assert_eq!(with("nearby-box:18303", true), None);
     }
 }

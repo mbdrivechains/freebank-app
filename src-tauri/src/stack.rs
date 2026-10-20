@@ -10,8 +10,12 @@
 //!   that program (`holder`).
 //! - Both run in sessions of their own, so "Keep running" can leave them up; otherwise they stop as the app closes.
 //!   A stack left running is used again at the next launch (its pid files, checked against the programs' paths).
+//! - Beta's (v0.5.1) is the whole chain, about 890 GB. It starts from a snapshot when one answers (network.rs
+//!   `Snapshot`: ours, else L2L's), else syncs from the start. Its blocks may go on another disk (`blocksdir=`). The
+//!   free space is shown before and while it runs; the node stops itself when under `LOW_DISK` is left; and "Stop and
+//!   delete" (`remove`) ends an install or a sync at any point and deletes what it wrote.
 
-use crate::network::{self, Stack};
+use crate::network::{self, Snapshot, Stack};
 use crate::node::{install, NodeManager, Settings};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -29,12 +33,19 @@ pub struct Ports {
 
 /// The app's own stack, in Settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StackSettings {
     /// The release installed, e.g. "easynet-3.1".
     pub tag: String,
     /// Its data folder (node/ and enforcer/ inside).
     pub dir: String,
     pub ports: Ports,
+    /// A folder of their own for the node's blocks (`blocksdir=`: a bigger disk), chosen at install (v0.5.1).
+    pub blocks: Option<String>,
+    /// The snapshot chosen and not loaded yet, by id (v0.5.1). The install carries on from it.
+    pub snapshot: Option<String>,
+    /// How the node started: a snapshot's id, or "full" for a sync from the start (v0.5.1; Settings says it).
+    pub start: Option<String>,
 }
 
 impl StackSettings {
@@ -47,9 +58,17 @@ impl StackSettings {
     pub fn node_dir(&self) -> PathBuf {
         Path::new(&self.dir).join("node")
     }
-    /// The folder the node keeps this network's files in (its cookie, debug.log, wallets).
+    /// The folder the node keeps this network's files in (its cookie, debug.log, wallets): on main, its data folder.
     pub fn node_files(&self, s: &Stack) -> PathBuf {
-        self.node_dir().join(s.section)
+        if s.folder.is_empty() {
+            self.node_dir()
+        } else {
+            self.node_dir().join(s.folder)
+        }
+    }
+    /// The disk its blocks fill: their own folder, or the node's.
+    pub fn blocks_at(&self, s: &Stack) -> PathBuf {
+        self.blocks.as_ref().map(PathBuf::from).unwrap_or_else(|| self.node_files(s))
     }
     pub fn enforcer_dir(&self) -> PathBuf {
         Path::new(&self.dir).join("enforcer")
@@ -58,7 +77,12 @@ impl StackSettings {
 
 /// Every port another stack on this computer may use by default: BitWindow's beta node and enforcer, FreeBank on beta
 /// and mainnet, easynet's installer (its node, ZMQ and enforcer). The app's own stacks keep off them.
-pub const WELL_KNOWN: &[u16] = &[8122, 8454, 8455, 18301, 18302, 18303, 28532, 28533, 28534, 28535, 28454, 28455, 50051];
+/// From v0.5.1 also the eCash node's own defaults (8532, 8533 and its Tor port) and the app's beta and easynet stacks,
+/// which may run at once.
+pub const WELL_KNOWN: &[u16] = &[
+    8122, 8454, 8455, 8532, 8533, 8534, 18301, 18302, 18303, 28532, 28533, 28534, 28535, 28454, 28455, 28551, 28552,
+    38532, 38533, 38534, 38535, 38551, 38552, 50051,
+];
 
 /// The ports the app's stack for `s` will use: its defaults, each moved to the next free port when `busy` says another
 /// program holds it (and never onto a well-known one, or one already taken by this plan). The node's P2P+1 is left
@@ -120,14 +144,18 @@ fn installed(mgr: &NodeManager, tag: &str) -> bool {
 }
 
 /// The node's config, written by the app: this network's section only, RPC and ZMQ on this computer only, REST on (the
-/// FreeBank node reads deposits from blocks over it), the transaction index (the enforcer's), no Tor listener.
-pub fn node_conf(s: &Stack, p: &Ports) -> String {
+/// FreeBank node reads deposits from blocks over it), the transaction index where the network has it, no Tor listener,
+/// and the blocks' own folder when one was chosen.
+pub fn node_conf(s: &Stack, st: &StackSettings) -> String {
+    let p = &st.ports;
     let seeds: String = s.seeds.iter().map(|a| format!("addnode={}\n", a)).collect();
+    let blocks = st.blocks.as_ref().map(|b| format!("blocksdir={}\n", b)).unwrap_or_default();
     format!(
         "# Written by the FreeBank app for its own {sec} node. Other eCash nodes on this computer keep their own files.\n\
-         [{sec}]\nserver=1\ntxindex=1\nrest=1\nlistenonion=0\nrpcbind=127.0.0.1\nrpcallowip=127.0.0.1\nrpcport={rpc}\n\
+         {blocks}[{sec}]\nserver=1\n{txindex}rest=1\nlistenonion=0\nrpcbind=127.0.0.1\nrpcallowip=127.0.0.1\nrpcport={rpc}\n\
          port={p2p}\nzmqpubsequence=tcp://127.0.0.1:{zmq}\nfallbackfee=0.00001\n{seeds}",
         sec = s.section,
+        txindex = if s.txindex { "txindex=1\n" } else { "" },
         rpc = p.rpc,
         p2p = p.p2p,
         zmq = p.zmq
@@ -268,13 +296,28 @@ fn enforcer_pid(st: &StackSettings) -> Option<u32> {
 
 /// A JSON-RPC call to the stack's node, with its cookie.
 async fn node_call(st: &StackSettings, s: &Stack, method: &str) -> Result<serde_json::Value, String> {
+    node_rpc(st, s, method, serde_json::json!([]), Some(Duration::from_secs(20))).await
+}
+
+/// `node_call` with parameters, and no time limit when `timeout` is None (loadtxoutset takes many minutes).
+async fn node_rpc(
+    st: &StackSettings,
+    s: &Stack,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Option<Duration>,
+) -> Result<serde_json::Value, String> {
     let cookie = std::fs::read_to_string(st.node_files(s).join(".cookie")).map_err(|_| "The eCash node isn't up yet.".to_string())?;
     let (user, pass) = cookie.trim().split_once(':').ok_or("The eCash node's cookie is damaged.")?;
-    let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let mut b = reqwest::Client::builder().no_proxy();
+    if let Some(t) = timeout {
+        b = b.timeout(t);
+    }
+    let http = b.build().map_err(|e| e.to_string())?;
     let r: serde_json::Value = http
         .post(format!("http://127.0.0.1:{}/", st.ports.rpc))
         .basic_auth(user, Some(pass))
-        .json(&serde_json::json!({"jsonrpc": "1.0", "id": "fb", "method": method, "params": []}))
+        .json(&serde_json::json!({"jsonrpc": "1.0", "id": "fb", "method": method, "params": params}))
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -303,12 +346,15 @@ async fn enforcer_tip(port: u16) -> Option<u64> {
     v["blockHeaderInfo"]["height"].as_u64()
 }
 
-/// Wait (at most `secs`) until the node has caught up with its peers and the enforcer has every block it has. A FreeBank
-/// node started earlier drops the first headers its peer sends when it can't yet check them against the eCash chain,
-/// and asks again only when the peer announces its next block (minutes on easynet). True once caught up.
-async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64) -> bool {
+/// Wait until the node has caught up with its peers and the enforcer has every block it has. A FreeBank node started
+/// earlier drops the first headers its peer sends when it can't yet check them against the eCash chain, and asks again
+/// only when the peer announces its next block (minutes on easynet). At most `secs`; with `while_moving` (an install
+/// from a snapshot) for as long as the node or the enforcer still moves on (23 minutes on beta in our test), and `secs`
+/// once neither does. A full sync takes days, so that install waits `secs` only. True once caught up.
+async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64, while_moving: bool) -> bool {
     let started = Instant::now();
-    let until = started + Duration::from_secs(secs);
+    let mut until = started + Duration::from_secs(secs);
+    let mut last: (u64, Option<u64>) = (0, None);
     loop {
         let info = node_call(st, s, "getblockchaininfo").await.ok();
         let peer_info = node_call(st, s, "getpeerinfo").await.ok();
@@ -334,6 +380,13 @@ async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64) -> bool {
         if peers > 0 && headers > 0 && blocks == headers && blocks >= peer_best && tip == Some(blocks) {
             return true;
         }
+        if while_moving && (blocks, tip) != last {
+            last = (blocks, tip);
+            until = Instant::now() + Duration::from_secs(secs);
+        }
+        if cancelled().is_some() {
+            return false;
+        }
         // No peer in 30 seconds: this computer is offline, or the network's seed is down. Waiting longer only holds the
         // FreeBank node back (review finding 7).
         if Instant::now() > until || (peers == 0 && started.elapsed() > Duration::from_secs(30)) {
@@ -356,11 +409,19 @@ fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::proce
     cmd.spawn()
 }
 
+/// What a plain start says while a chosen snapshot isn't loaded yet; the screens offer Continue on it.
+pub const SNAPSHOT_PENDING: &str = "FreeBank's eCash node hasn't loaded its snapshot yet. Press Continue to carry on (the \
+     download goes on from where it stopped), or Stop and delete.";
+
 /// One stack operation at a time: two starts at once could each spawn an enforcer (review finding 5).
 static OPS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Start the node and the enforcer if they aren't running; each one already up is left as it is.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
+    // The install starts them itself, and holds OPS until it is done (on beta, maybe an hour).
+    if installing() {
+        return Err("The eCash node is being installed: it starts when the install gets there.".into());
+    }
     let _one = OPS.lock().await;
     start_locked(mgr, false).await
 }
@@ -379,10 +440,21 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
     if !installed(mgr, &st.tag) {
         return Err("The app's eCash node isn't installed (or wasn't checked): install it again.".into());
     }
+    // A snapshot chosen and not loaded yet: the install carries on from it (setup's Continue), not a plain start, which
+    // would sync from the start meanwhile.
+    if st.snapshot.is_some() && !installing {
+        return Err(SNAPSHOT_PENDING.into());
+    }
     let node_bin = bitcoind(mgr, &st.tag);
     let enf_bin = enforcer_bin(mgr, &st.tag);
     let node_up = node_pid(&st, s).is_some_and(|p| runs_bin(p, &node_bin));
     let enf_up = enforcer_pid(&st).is_some_and(|p| runs_bin(p, &enf_bin));
+    if !node_up {
+        if let Some(why) = low_disk(&st, s) {
+            return Err(why);
+        }
+    }
+    *stopped_low().lock().unwrap() = None;
     // Another program took one of its ports since (BitWindow, easynet's installer…): with both of the app's own down,
     // its stack moves to free ports, as its install would have chosen, and the FreeBank node follows. Its config is
     // the app's own, so nothing else is changed.
@@ -397,7 +469,7 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
             crate::activity::note(&format!("stack: ports in use by other programs: {}; moved to {:?}", names.join(", "), moved));
             st.ports = moved;
             let mut settings = mgr.settings.lock().await.clone();
-            use_own(&mut settings, s, &st);
+            record_stack(&mut settings, s, &st, false);
             mgr.save_settings(settings).await?;
         }
     }
@@ -415,21 +487,29 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
             let conf = st.node_dir().join("ecash.conf");
             let _ = std::fs::remove_file(&conf);
             let mut f = install::private_file(&conf).map_err(|e| e.to_string())?;
-            f.write_all(node_conf(s, &st.ports).as_bytes()).map_err(|e| e.to_string())?;
+            f.write_all(node_conf(s, &st).as_bytes()).map_err(|e| e.to_string())?;
         }
         let mut c = std::process::Command::new(&node_bin);
         c.arg(format!("-datadir={}", st.node_dir().display())).arg(format!("-conf={}", st.node_dir().join("ecash.conf").display()));
+        // Stop and delete may have begun meanwhile: no node is started under a folder about to go (review L1).
+        check_cancel()?;
         spawn_detached(&mut c).map_err(|e| format!("Couldn't start the eCash node: {}", e))?;
         crate::activity::note("stack: eCash node started");
     }
-    // The enforcer needs the node's RPC.
-    let until = Instant::now() + Duration::from_secs(120);
+    // The enforcer needs the node's RPC. A node with a big chain takes minutes to load its block index.
+    let until = Instant::now() + Duration::from_secs(300);
     while node_call(&st, s, "getblockcount").await.is_err() {
+        check_cancel()?;
         if Instant::now() > until {
-            return Err(format!("The eCash node didn't answer within 2 minutes: see {}", st.node_files(s).join("debug.log").display()));
+            return Err(format!("The eCash node didn't answer within 5 minutes: see {}", st.node_files(s).join("debug.log").display()));
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    // A snapshot first (v0.5.1), then the enforcer, which starts from the snapshot's blocks on.
+    if let Some(x) = st.snapshot.clone().and_then(|id| snapshot_by_id(s, &id)) {
+        load_snapshot(mgr, &mut st, s, x).await?;
+    }
+    check_cancel()?;
     if !enforcer_pid(&st).is_some_and(|p| runs_bin(p, &enf_bin)) {
         for port in [st.ports.grpc, st.ports.erpc] {
             if let Some(h) = holder(port) {
@@ -439,6 +519,7 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
         std::fs::create_dir_all(st.enforcer_dir().join("logs")).map_err(|e| e.to_string())?;
         let mut c = std::process::Command::new(&enf_bin);
         c.args(enforcer_args(s, &st));
+        check_cancel()?;
         let child = spawn_detached(&mut c).map_err(|e| format!("Couldn't start the enforcer: {}", e))?;
         std::fs::write(st.enforcer_dir().join("enforcer.pid"), child.id().to_string()).map_err(|e| e.to_string())?;
         crate::activity::note("stack: enforcer started");
@@ -452,18 +533,39 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
             p.stage = "sync".into();
         }
     });
-    if !wait_synced(&st, s, if installing { 900 } else { 120 }).await {
+    let from_snapshot = st.start.as_deref().is_some_and(|x| x != "full");
+    if !wait_synced(&st, s, if installing { 900 } else { 120 }, installing && from_snapshot).await {
         crate::activity::note("stack: not caught up yet; FreeBank starts anyway");
     }
     Ok(())
 }
 
 /// Stop the enforcer, then the node (RPC `stop`, else SIGTERM), and wait for both. Only processes running the app's own
-/// programs are signalled.
+/// programs are signalled. During an install, that ends the install (`halt_install`): Continue carries on.
 pub async fn stop(mgr: &NodeManager) -> Result<(), String> {
+    if installing() {
+        return halt_install(mgr, "Stopped. Continue carries on from where it was.").await;
+    }
     let _one = OPS.lock().await;
     let Some(st) = mgr.settings.lock().await.stack.clone() else { return Ok(()) };
     stop_locked(mgr, &st).await
+}
+
+/// End an install under way, without waiting for OPS, which it holds: cancelled with `why`, its programs stopped (that
+/// ends a header wait or a snapshot load at once), then a little time for it to give up.
+async fn halt_install(mgr: &NodeManager, why: &str) -> Result<(), String> {
+    *cancel_slot().lock().unwrap() = Some(why.to_string());
+    let st = mgr.settings.lock().await.stack.clone();
+    let r = match &st {
+        Some(st) => stop_locked(mgr, st).await,
+        None => Ok(()),
+    };
+    let until = Instant::now() + Duration::from_secs(30);
+    while installing() && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    *cancel_slot().lock().unwrap() = None;
+    r
 }
 
 /// `stop` for the stack `st` describes (its own release's programs), under OPS. An error if either is still running.
@@ -509,12 +611,690 @@ async fn wait_gone(pid: u32, bin: &Path, secs: u64) {
     }
 }
 
-/// At the app's exit: the stack stops with it, unless "Keep running" keeps the FreeBank node (which needs it) up.
+/// At the app's exit: the stack stops with it, unless "Keep running" keeps the FreeBank node (which needs it) up. An install
+/// under way (on beta it can take an hour) holds OPS: it is cancelled and its programs stopped without waiting for it,
+/// whatever "Keep running" says, and the next launch offers Continue (a download goes on from where it stopped).
 pub async fn at_exit(mgr: &NodeManager) {
     let s = mgr.settings.lock().await.clone();
-    if s.stack.as_ref().is_some_and(|st| st.in_use(&s)) && !s.keep_running {
-        let _ = stop(mgr).await;
+    if installing() {
+        let _ = halt_install(mgr, "Stopped: the app closed. Continue carries on.").await;
+        crate::activity::note("stack: the install stopped with the app");
+        return;
     }
+    // "Keep running" keeps the FreeBank node up, which needs the stack; a stack it doesn't read from (the user went on to
+    // another computer's) has no reason to outlive the app (review M3).
+    if let Some(st) = &s.stack {
+        if !st.in_use(&s) || !s.keep_running {
+            let _ = stop(mgr).await;
+        }
+    }
+}
+
+// ---- Disk, snapshots, Stop and delete (v0.5.1)
+
+/// The node stops itself when less than this is free on the disk of its blocks or of its data: the user's disk is never
+/// filled to the brim. Beta's (an 890 GB chain); a small chain like easynet's (2 GB) keeps `LOW_DISK_SMALL` (review L4).
+pub const LOW_DISK: u64 = 20_000_000_000;
+pub const LOW_DISK_SMALL: u64 = 2_000_000_000;
+
+fn low_disk_floor(s: &Stack) -> u64 {
+    if s.full_gb >= 100 {
+        LOW_DISK
+    } else {
+        LOW_DISK_SMALL
+    }
+}
+
+/// `d` is a chain's folder directly inside the app's own stack-data/: both real folders, not links, and `d` holds a
+/// node's or an enforcer's folder. A v0.5.0 chain there carries no mark but is the app's. A stack-data/ that links to
+/// another disk is not trusted this way, as what is there may not be FreeBank's (review H1); only the mark counts there.
+pub fn in_own_data(app_dir: &Path, d: &Path) -> bool {
+    let own = app_dir.join("stack-data");
+    let real_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    d.parent() == Some(own.as_path())
+        && real_dir(&own)
+        && real_dir(d)
+        && (real_dir(&d.join("node")) || real_dir(&d.join("enforcer")))
+}
+
+/// The mark in every folder this app created for its stack. Stop and delete, and Obliterate, delete only a folder that
+/// carries it.
+pub const MARK: &str = ".freebank-stack";
+
+/// Free bytes for this user on the disk holding `path` (its nearest folder that exists).
+pub fn free_bytes(path: &Path) -> Option<u64> {
+    let mut p = path;
+    while !p.exists() {
+        p = p.parent()?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
+        let mut v: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c.as_ptr(), &mut v) } != 0 {
+            return None;
+        }
+        #[allow(clippy::unnecessary_cast)]
+        Some(v.f_bavail as u64 * v.f_frsize as u64)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// The bytes of the files under `p`, links not followed.
+pub fn tree_bytes(p: &Path) -> u64 {
+    let Ok(m) = std::fs::symlink_metadata(p) else { return 0 };
+    if m.is_dir() {
+        std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| tree_bytes(&e.path())).sum()
+    } else if m.is_file() {
+        m.len()
+    } else {
+        0
+    }
+}
+
+/// What the stack's folders take, measured at most once a minute (beta's are thousands of files).
+fn used_bytes(st: &StackSettings) -> u64 {
+    static USED: Mutex<Option<(Instant, String, u64)>> = Mutex::new(None);
+    let key = format!("{}|{}", st.dir, st.blocks.as_deref().unwrap_or(""));
+    if let Some((at, k, n)) = USED.lock().unwrap().clone() {
+        if k == key && at.elapsed() < Duration::from_secs(60) {
+            return n;
+        }
+    }
+    let n = tree_bytes(Path::new(&st.dir)) + st.blocks.as_ref().map_or(0, |b| tree_bytes(Path::new(b)));
+    *USED.lock().unwrap() = Some((Instant::now(), key, n));
+    n
+}
+
+fn gb(n: u64) -> String {
+    if n < 1_000_000_000 {
+        return format!("{} MB", (n + 500_000) / 1_000_000);
+    }
+    format!("{} GB", (n + 500_000_000) / 1_000_000_000)
+}
+
+/// Why the node must not run now: under LOW_DISK free where its blocks or its data are. None while there is room.
+fn low_disk(st: &StackSettings, s: &Stack) -> Option<String> {
+    let mut at = vec![st.blocks_at(s)];
+    if st.blocks.is_some() {
+        at.push(PathBuf::from(&st.dir));
+    }
+    at.into_iter().find_map(|p| {
+        let free = free_bytes(&p)?;
+        let floor = low_disk_floor(s);
+        (free < floor).then(|| {
+            format!(
+                "Only {} is free on the disk with {}. FreeBank keeps {} free, so its eCash node is stopped: free some \
+                 space, or Stop and delete it.",
+                gb(free),
+                p.display(),
+                gb(floor)
+            )
+        })
+    })
+}
+
+/// Why the node was stopped for want of disk space (the watch), until it starts again.
+fn stopped_low() -> &'static Mutex<Option<String>> {
+    static L: Mutex<Option<String>> = Mutex::new(None);
+    &L
+}
+
+/// Cancel what the install is doing (Stop and delete, or the disk watch), with the reason it gives.
+fn cancel_slot() -> &'static Mutex<Option<String>> {
+    static C: Mutex<Option<String>> = Mutex::new(None);
+    &C
+}
+fn cancelled() -> Option<String> {
+    cancel_slot().lock().unwrap().clone()
+}
+fn check_cancel() -> Result<(), String> {
+    cancelled().map_or(Ok(()), Err)
+}
+
+/// A snapshot as the setup screen offers it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Offer {
+    pub id: &'static str,
+    pub source: &'static str,
+    pub height: u64,
+    pub size: u64,
+    /// It answered just now, with its size: the screen offers only those.
+    pub available: bool,
+}
+
+/// The network's snapshots, each asked (HEAD) whether it is there with its size, at most every ten minutes. A snapshot
+/// is looked for first: the first available is the one setup picks.
+async fn offers(http: &reqwest::Client, s: &Stack) -> Vec<Offer> {
+    static SEEN: Mutex<Option<(Instant, Vec<Offer>)>> = Mutex::new(None);
+    if s.snapshots.is_empty() {
+        return Vec::new();
+    }
+    if let Some((at, v)) = SEEN.lock().unwrap().clone() {
+        if at.elapsed() < Duration::from_secs(600) && v.len() == s.snapshots.len() && v.iter().zip(s.snapshots).all(|(a, b)| a.id == b.id) {
+            return v;
+        }
+    }
+    let mut out = Vec::new();
+    for x in s.snapshots {
+        let r = http.head(x.url).timeout(Duration::from_secs(10)).send().await;
+        // The header itself: a HEAD answer has no body, so reqwest's content_length() says 0.
+        let size = |r: &reqwest::Response| {
+            r.headers().get(reqwest::header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok())
+        };
+        let available = r.is_ok_and(|r| r.status().is_success() && size(&r) == Some(x.size));
+        out.push(Offer { id: x.id, source: x.source, height: x.height, size: x.size, available });
+    }
+    *SEEN.lock().unwrap() = Some((Instant::now(), out.clone()));
+    out
+}
+
+fn snapshot_by_id(s: &Stack, id: &str) -> Option<&'static Snapshot> {
+    s.snapshots.iter().find(|x| x.id == id)
+}
+
+/// Where a snapshot is downloaded to: beside the blocks (the big disk), deleted once loaded.
+fn snapshot_file(st: &StackSettings, s: &Stack, x: &Snapshot) -> PathBuf {
+    st.blocks_at(s).join(format!("utxo-{}-{}.dat", x.height, x.id))
+}
+
+/// Download snapshot `x` to `dest`, carrying on from what is there (Range), retrying an interrupted read a few times.
+async fn fetch_snapshot(x: &Snapshot, dest: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).build().map_err(|e| e.to_string())?;
+    let mut tries = 0;
+    loop {
+        check_cancel()?;
+        let have = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        set(|p| {
+            p.bytes = have.min(x.size);
+            p.total = Some(x.size);
+        });
+        if have == x.size {
+            return Ok(());
+        }
+        let mut req = http.get(x.url);
+        if have > 0 && have < x.size {
+            req = req.header(reqwest::header::RANGE, format!("bytes={}-", have));
+        }
+        let result: Result<(), String> = async {
+            let mut resp = req.send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("The snapshot's download failed: {}", e))?;
+            let mut f = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                std::fs::OpenOptions::new().append(true).open(dest).map_err(|e| e.to_string())?
+            } else {
+                std::fs::File::create(dest).map_err(|e| e.to_string())?
+            };
+            let mut got = if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT { have } else { 0 };
+            loop {
+                check_cancel()?;
+                let chunk = tokio::time::timeout(Duration::from_secs(120), resp.chunk())
+                    .await
+                    .map_err(|_| "The snapshot's download stalled.".to_string())?
+                    .map_err(|e| format!("The snapshot's download was interrupted: {}", e))?;
+                let Some(chunk) = chunk else { break };
+                f.write_all(&chunk).map_err(|e| e.to_string())?;
+                got += chunk.len() as u64;
+                if got > x.size {
+                    return Err("The snapshot is bigger than it should be.".into());
+                }
+                set(|p| p.bytes = got);
+            }
+            f.sync_all().map_err(|e| e.to_string())
+        }
+        .await;
+        match result {
+            Ok(()) => {}
+            Err(e) if cancelled().is_some() => return Err(cancelled().unwrap_or(e)),
+            Err(e) if tries < 5 && !e.contains("bigger") => {
+                tries += 1;
+                crate::activity::note(&format!("stack: {} (try {} of 5 more)", e, tries));
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            Err(e) => {
+                if e.contains("bigger") {
+                    let _ = std::fs::remove_file(dest);
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// Until the node knows the snapshot's block header (loadtxoutset needs it), with the headers count as progress.
+async fn wait_header(st: &StackSettings, s: &Stack, x: &Snapshot, downloaded: &std::sync::atomic::AtomicBool) -> Result<(), String> {
+    let mut alone_since: Option<Instant> = None;
+    loop {
+        check_cancel()?;
+        if node_rpc(st, s, "getblockheader", serde_json::json!([x.blockhash]), Some(Duration::from_secs(20))).await.is_ok() {
+            // The count stops here, so it goes rather than stay frozen beside a download still running.
+            set(|p| p.headers = None);
+            return Ok(());
+        }
+        let headers = node_call(st, s, "getblockchaininfo").await.ok().and_then(|i| i["headers"].as_u64());
+        set(|p| p.headers = headers);
+        let peers = node_call(st, s, "getconnectioncount").await.ok().and_then(|v| v.as_u64()).unwrap_or(0);
+        // No peers counts only once the download is done: a network that lets HTTP through but not the node's own
+        // connections shouldn't cut the download short (re-review 2).
+        if peers == 0 && downloaded.load(std::sync::atomic::Ordering::Relaxed) {
+            let t = *alone_since.get_or_insert_with(Instant::now);
+            if t.elapsed() > Duration::from_secs(600) {
+                return Err("The eCash node found no peers in ten minutes: is this computer online?".into());
+            }
+        } else {
+            alone_since = None;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// The node's chainstates (getchainstates): a snapshot it already loaded, by its block.
+async fn loaded_snapshot(st: &StackSettings, s: &Stack) -> Option<String> {
+    let v = node_call(st, s, "getchainstates").await.ok()?;
+    v["chainstates"].as_array()?.iter().find_map(|c| c["snapshot_blockhash"].as_str().map(String::from))
+}
+
+/// Start the node from snapshot `x`: download it (while the node gets the headers), check it, load it with the network
+/// paused (the node would otherwise go on fetching blocks from the start), and delete the file. The node itself checks
+/// the file's UTXO hash against the one compiled into it, and refuses a wrong one.
+async fn load_snapshot(mgr: &NodeManager, st: &mut StackSettings, s: &Stack, x: &'static Snapshot) -> Result<(), String> {
+    let done = |st: &mut StackSettings| {
+        st.snapshot = None;
+        st.start = Some(x.id.to_string());
+    };
+    if loaded_snapshot(st, s).await.as_deref() == Some(x.blockhash) {
+        done(st);
+        return Ok(());
+    }
+    // Already past it (a sync that ran on): a snapshot below the tip can't be loaded, nor is it needed.
+    if node_call(st, s, "getblockcount").await.ok().and_then(|v| v.as_u64()).is_some_and(|b| b >= x.height) {
+        st.snapshot = None;
+        st.start = Some("full".into());
+        return Ok(());
+    }
+    let file = snapshot_file(st, s, x);
+    if let Some(d) = file.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    set(|p| {
+        p.stage = "download-snapshot".into();
+        p.snapshot = Some(x.id.to_string());
+    });
+    // The first error ends both: a failed download doesn't wait for the headers (review L3).
+    let downloaded = std::sync::atomic::AtomicBool::new(false);
+    tokio::try_join!(
+        async {
+            fetch_snapshot(x, &file).await?;
+            downloaded.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok::<(), String>(())
+        },
+        wait_header(st, s, x, &downloaded),
+    )?;
+    set(|p| p.stage = "check-snapshot".into());
+    let f2 = file.clone();
+    let sum = tokio::task::spawn_blocking(move || install::sha256_file(&f2)).await.map_err(|e| e.to_string())??;
+    if sum != x.sha256 {
+        let _ = std::fs::remove_file(&file);
+        return Err(format!(
+            "The snapshot from {} didn't match the hash FreeBank expects, so it was deleted and not loaded. Try again, or \
+             choose another way to start.",
+            x.source
+        ));
+    }
+    check_cancel()?;
+    set(|p| p.stage = "load-snapshot".into());
+    crate::activity::note(&format!("stack: loading the {} snapshot at {}", x.id, x.height));
+    let _ = node_rpc(st, s, "setnetworkactive", serde_json::json!([false]), Some(Duration::from_secs(20))).await;
+    let loaded = node_rpc(st, s, "loadtxoutset", serde_json::json!([file.to_string_lossy()]), None).await;
+    let _ = node_rpc(st, s, "setnetworkactive", serde_json::json!([true]), Some(Duration::from_secs(20))).await;
+    if let Err(e) = loaded {
+        // The call can end before the node does (a dropped connection): what counts is whether it loaded.
+        if loaded_snapshot(st, s).await.as_deref() != Some(x.blockhash) {
+            check_cancel()?;
+            return Err(format!("The eCash node didn't load the snapshot: {}", e));
+        }
+    }
+    let _ = std::fs::remove_file(&file);
+    done(st);
+    let mut settings = mgr.settings.lock().await.clone();
+    settings.stack = Some(st.clone());
+    mgr.save_settings(settings).await?;
+    crate::activity::note(&format!("stack: the {} snapshot is loaded", x.id));
+    Ok(())
+}
+
+/// The folder for the blocks on a disk of their own: FreeBank's own, `freebank-<chain>-blocks`, inside the one chosen, so
+/// Stop and delete takes nothing else from that disk (review M1). The one chosen must exist and be a full path without
+/// `..`; it is resolved through any links first, so the mark can't land in another folder (review H2).
+fn blocks_folder(mgr: &NodeManager, settings: &Settings, s: &Stack, chosen: &Path) -> Result<PathBuf, String> {
+    if !chosen.is_absolute() || chosen.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err("Give the blocks folder as a full path, without \"..\".".into());
+    }
+    let real = chosen.canonicalize().map_err(|_| {
+        format!("{} isn't there. Choose a folder that exists (on the bigger disk): FreeBank makes its own inside it.", chosen.display())
+    })?;
+    if !real.is_dir() {
+        return Err(format!("{} isn't a folder.", chosen.display()));
+    }
+    let b = real.join(format!("freebank-{}-blocks", s.chain));
+    check_blocks_folder(mgr, settings, &b)?;
+    Ok(b)
+}
+
+/// FreeBank's blocks folder: a full path, new, empty or one this app made, and not holding (or inside) a FreeBank node's
+/// data.
+fn check_blocks_folder(mgr: &NodeManager, settings: &Settings, b: &Path) -> Result<(), String> {
+    if !b.is_absolute() {
+        return Err("Give the blocks folder as a full path.".into());
+    }
+    if b.is_dir() && !b.join(MARK).exists() && std::fs::read_dir(b).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err(format!("{} is there already and isn't FreeBank's. Move it, or choose another folder.", b.display()));
+    }
+    if b.is_file() {
+        return Err(format!("{} is a file.", b.display()));
+    }
+    let top = network::top_of(&mgr.app_dir);
+    let mut others: Vec<PathBuf> = network::other_datadirs(&top, network::current()).into_iter().map(|(_, d)| d).collect();
+    others.push(PathBuf::from(&settings.datadir));
+    if let Some(d) = others.iter().find(|d| network::nested(b, d)) {
+        return Err(format!("That folder holds, or is inside, a FreeBank node's data ({}). Choose another.", d.display()));
+    }
+    Ok(())
+}
+
+/// Put the mark in a folder this app made for its stack.
+fn mark(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(MARK), "FreeBank made this folder for its own eCash node. Stop and delete removes it.\n")
+        .map_err(|e| e.to_string())
+}
+
+/// What Stop and delete did.
+#[derive(Debug, Clone, Serialize)]
+pub struct Removed {
+    /// The folders deleted, and the bytes freed.
+    pub deleted: Vec<String>,
+    pub freed: u64,
+    /// Folders left because they don't carry FreeBank's mark.
+    pub kept: Vec<String>,
+    /// It was the eCash node the app used: the app goes back to setup for another.
+    pub in_use: bool,
+}
+
+/// Stop and delete: at any point (an install, a snapshot loading, a sync, or a node at the tip), stop the FreeBank node
+/// if it reads from this stack, then the enforcer and the eCash node, and delete their folders: the chain, the
+/// enforcer's data and the eCash wallets FreeBank made in that node (watch-only: their keys come from the words). The
+/// programs stay, so setting it up again downloads only the chain. Only folders with FreeBank's mark are deleted.
+pub async fn remove(mgr: &Arc<NodeManager>) -> Result<Removed, String> {
+    network::current().stack.ok_or("This network has no eCash node the app installs.")?;
+    // A first install still fetching its programs has no folder yet: it stops, and what it fetched goes (review M4). If
+    // it reached its config stage meanwhile, its folder goes too, below.
+    if mgr.settings.lock().await.stack.is_none() {
+        if !installing() {
+            return Err("FreeBank hasn't set up an eCash node of its own here.".into());
+        }
+        halt_install(mgr, "Stopped: Stop and delete.").await?;
+        if mgr.settings.lock().await.stack.is_none() {
+            let tmp = mgr.app_dir.join("tmp-stack");
+            let freed = tree_bytes(&tmp);
+            let _ = std::fs::remove_dir_all(&tmp);
+            if !installing() {
+                *progress().lock().unwrap() = Progress::default();
+            }
+            crate::activity::note(&format!("stack: the install stopped and its downloads deleted ({} freed)", gb(freed)));
+            return Ok(Removed { deleted: Vec::new(), freed, kept: Vec::new(), in_use: false });
+        }
+    }
+    let Some(st) = mgr.settings.lock().await.stack.clone() else {
+        return Err("FreeBank hasn't set up an eCash node of its own here.".into());
+    };
+    let settings = mgr.settings.lock().await.clone();
+    if st.in_use(&settings) {
+        crate::node::process::stop(mgr).await.map_err(|e| format!("The FreeBank node didn't stop, so nothing was deleted: {}", e))?;
+    }
+    *cancel_slot().lock().unwrap() = Some("Stopped: Stop and delete.".into());
+    let r = remove_locked(mgr, &st).await;
+    *cancel_slot().lock().unwrap() = None;
+    r
+}
+
+async fn remove_locked(mgr: &Arc<NodeManager>, st: &StackSettings) -> Result<Removed, String> {
+    // Down first, without waiting for the install: that ends a download, a header wait or a snapshot load at once.
+    stop_locked(mgr, st).await?;
+    let _one = OPS.lock().await;
+    stop_locked(mgr, st).await?;
+    // The install's last word lands before the slate is cleaned.
+    let until = Instant::now() + Duration::from_secs(30);
+    while installing() && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let home = crate::node::home();
+    let mut out = Removed { deleted: Vec::new(), freed: 0, kept: Vec::new(), in_use: false };
+    let mut dirs = vec![PathBuf::from(&st.dir)];
+    dirs.extend(st.blocks.as_ref().map(PathBuf::from));
+    for d in dirs {
+        if !d.exists() {
+            continue;
+        }
+        let ours = d.join(MARK).exists() || in_own_data(&mgr.app_dir, &d);
+        let ok = ours && crate::node::obliterate::check_deletable(&d, &home).is_ok();
+        if !ok {
+            out.kept.push(d.display().to_string());
+            continue;
+        }
+        let n = tree_bytes(&d);
+        let d2 = d.clone();
+        tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&d2)).await.map_err(|e| e.to_string())?.map_err(|e| {
+            format!("Couldn't delete {}: {}", d.display(), e)
+        })?;
+        out.freed += n;
+        out.deleted.push(d.display().to_string());
+    }
+    let mut settings = mgr.settings.lock().await.clone();
+    if st.in_use(&settings) {
+        out.in_use = true;
+        // The app goes back to setup: no typed login waits there for whatever computer comes next (re-review 1).
+        crate::ecash::conn::save_password(&mgr.app_dir, None)?;
+        let n = network::current();
+        settings.rest = n.rest.into();
+        settings.enforcer = n.enforcer.into();
+        settings.l1_rpc = None;
+        settings.l1_datadir = None;
+        settings.l1_user = None;
+    }
+    settings.stack = None;
+    mgr.save_settings(settings).await?;
+    *progress().lock().unwrap() = Progress::default();
+    *stopped_low().lock().unwrap() = None;
+    crate::activity::note(&format!("stack: stopped and deleted ({} freed)", gb(out.freed)));
+    Ok(out)
+}
+
+/// While the app runs: every minute, an own node with less than LOW_DISK free where it writes is stopped (and an install
+/// in progress ends), before the disk fills. It says why in its status until it starts again.
+pub fn spawn_watch(mgr: Arc<NodeManager>) {
+    let Some(s) = network::current().stack else { return };
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Some(st) = mgr.settings.lock().await.stack.clone() else { continue };
+            let up = node_pid(&st, s).is_some_and(|p| runs_bin(p, &bitcoind(&mgr, &st.tag)));
+            if !up {
+                continue;
+            }
+            if let Some(why) = low_disk(&st, s) {
+                crate::activity::note(&format!("stack: {}", why));
+                *stopped_low().lock().unwrap() = Some(why.clone());
+                if installing() {
+                    *cancel_slot().lock().unwrap() = Some(why.clone());
+                }
+                let _ = stop_locked(&mgr, &st).await;
+                let until = Instant::now() + Duration::from_secs(60);
+                while installing() && Instant::now() < until {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                *cancel_slot().lock().unwrap() = None;
+            }
+        }
+    });
+}
+
+// ---- Another computer (v0.5.1)
+
+/// What setup found at another computer's address: its eCash node and enforcer, on the ports they usually answer on.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Remote {
+    /// The node's REST and RPC address (one port), and the enforcer's, that answered.
+    pub rest: Option<String>,
+    pub enforcer: Option<String>,
+    /// The node is on this network (FreeBank's pin block is in its chain).
+    pub on_network: bool,
+    pub l1_blocks: Option<u64>,
+    /// The address it reached, and whether that is a Tailscale one (the link is then encrypted).
+    pub address: Option<String>,
+    pub tailscale: bool,
+    /// What FreeBank tried, and what is missing in plain words (empty when both answered).
+    pub tried: Vec<String>,
+    pub detail: String,
+}
+
+/// A Tailscale address: 100.64.0.0/10, or fd7a:115c:a1e0::/48.
+pub fn is_tailscale(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v) => v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64,
+        std::net::IpAddr::V6(v) => v.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
+/// "nearby-box", "100.64.0.2", "box.tail1234.ts.net:18303", "[fd7a::1]": the host, and a port if one was given.
+fn split_host(input: &str) -> (String, Option<u16>) {
+    let t = crate::node::detect::normalize_endpoint(input);
+    if let Some(rest) = t.strip_prefix('[') {
+        let (h, after) = rest.split_once(']').unwrap_or((rest, ""));
+        return (h.to_string(), after.strip_prefix(':').and_then(|p| p.parse().ok()));
+    }
+    match t.matches(':').count() {
+        1 => {
+            let (h, p) = t.split_once(':').unwrap_or((&t, ""));
+            (h.to_string(), p.parse().ok())
+        }
+        _ => (t, None),
+    }
+}
+
+fn join_host(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
+}
+
+/// Look for this network's eCash node and enforcer at `input`: an IP or a name (a Tailscale name works with MagicDNS),
+/// with the node's port or without (then the ports they usually use: BitWindow's, the eCash node's own, this app's).
+pub async fn find_remote(http: &reqwest::Client, input: &str) -> Remote {
+    let n = network::current();
+    let (host, port) = split_host(input);
+    let mut out = Remote::default();
+    if host.is_empty() {
+        out.detail = "Type the other computer's IP address or Tailscale name.".into();
+        return out;
+    }
+    let port_of = |a: &str| a.rsplit(':').next().and_then(|p| p.parse::<u16>().ok());
+    let own = n.stack;
+    let mut node_ports: Vec<u16> = match port {
+        Some(p) => vec![p],
+        None => [port_of(n.rest), Some(18303), Some(8532), own.map(|s| s.rpc)].into_iter().flatten().collect(),
+    };
+    node_ports.dedup();
+    let mut enf_ports: Vec<u16> = [port_of(n.enforcer), own.map(|s| s.grpc)].into_iter().flatten().collect();
+    enf_ports.dedup();
+    // The name first: a name that doesn't resolve is the likeliest mistake.
+    let addr = tokio::time::timeout(Duration::from_secs(8), tokio::net::lookup_host((host.as_str(), node_ports[0]))).await;
+    let ip = match addr {
+        Ok(Ok(mut a)) => a.next().map(|a| a.ip()),
+        _ => None,
+    };
+    let Some(ip) = ip else {
+        out.detail = format!(
+            "FreeBank couldn't find \u{201c}{}\u{201d}. Check the name (a Tailscale name works when Tailscale's MagicDNS is \
+             on), or type its IP address.",
+            host
+        );
+        return out;
+    };
+    out.address = Some(ip.to_string());
+    out.tailscale = is_tailscale(ip) || host.ends_with(".ts.net");
+    for p in &node_ports {
+        let a = join_host(&host, *p);
+        out.tried.push(a.clone());
+        if let Some(b) = crate::node::detect::l1_blocks(http, &a).await {
+            out.rest = Some(a);
+            out.l1_blocks = Some(b);
+            break;
+        }
+    }
+    for p in &enf_ports {
+        let a = join_host(&host, *p);
+        out.tried.push(a.clone());
+        let up = matches!(tokio::time::timeout(Duration::from_secs(4), tokio::net::TcpStream::connect(&a)).await, Ok(Ok(_)));
+        if up && crate::node::detect::enforcer_tip(&a).await.is_ok() {
+            out.enforcer = Some(a);
+            break;
+        }
+    }
+    if let (Some(r), Some(e)) = (&out.rest, &out.enforcer) {
+        let c = crate::node::detect::check_stack(http, r, e).await;
+        out.on_network = c.on_beta;
+        out.detail = c.detail;
+    } else {
+        out.detail = match (&out.rest, &out.enforcer) {
+            (None, None) => format!("Neither an eCash node nor an enforcer answered at {}.", host),
+            (None, Some(_)) => format!("The enforcer answered at {}, but no eCash node did.", host),
+            _ => format!("The eCash node answered at {}, but no enforcer did.", host),
+        };
+    }
+    out
+}
+
+/// Use the eCash node and enforcer on another computer: the FreeBank node and the app's eCash wallet read from them. The
+/// wallet logs in with the login typed under Settings, eCash (that node's cookie stays on that computer). The app's own
+/// stack, if it has one, stays as it is.
+pub async fn use_remote(mgr: &NodeManager, rest: &str, enforcer: &str) -> Result<Settings, String> {
+    let mut s = mgr.settings.lock().await.clone();
+    // A login typed for one computer is never sent to another (review M2): another host forgets it, the password on disk
+    // too, even with no user name beside it (re-review 1).
+    let was = crate::security::host_part(s.l1_rpc.as_deref().unwrap_or(&s.rest)).to_ascii_lowercase();
+    let now = crate::security::host_part(&crate::node::detect::normalize_endpoint(rest)).to_ascii_lowercase();
+    if was != now {
+        let had = s.l1_user.is_some() || crate::ecash::conn::password_path(&mgr.app_dir).exists();
+        s.l1_user = None;
+        crate::ecash::conn::save_password(&mgr.app_dir, None)?;
+        if had {
+            crate::activity::note("stack: the eCash login was for another computer, so it is forgotten");
+        }
+    }
+    s.rest = crate::node::detect::normalize_endpoint(rest);
+    s.enforcer = crate::node::detect::normalize_endpoint(enforcer);
+    s.l1_rpc = None;
+    s.l1_datadir = None;
+    mgr.save_settings(s.clone()).await?;
+    crate::activity::note(&format!("stack: using the eCash node at {} and the enforcer at {}", s.rest, s.enforcer));
+    Ok(s)
+}
+
+#[tauri::command]
+pub async fn stack_find_remote(mgr: tauri::State<'_, Arc<NodeManager>>, host: String) -> Result<Remote, String> {
+    Ok(find_remote(&mgr.http, &host).await)
+}
+
+#[tauri::command]
+pub async fn stack_use_remote(mgr: tauri::State<'_, Arc<NodeManager>>, rest: String, enforcer: String) -> Result<Settings, String> {
+    mgr.still_here()?;
+    use_remote(&mgr, &rest, &enforcer).await
 }
 
 // ---- Install
@@ -524,14 +1304,18 @@ pub async fn at_exit(mgr: &NodeManager) {
 pub struct Progress {
     pub running: bool,
     pub done: bool,
-    /// download-node, download-enforcer, check, unpack, config, start
+    /// download-node, download-enforcer, check, unpack, config, start; with a snapshot download-snapshot,
+    /// check-snapshot, load-snapshot; then sync
     pub stage: String,
     pub bytes: u64,
     pub total: Option<u64>,
-    /// While it catches up (stage "sync"): the node's blocks and the headers it knows.
+    /// While it catches up (stage "sync"): the node's blocks and the headers it knows. While a snapshot downloads, the
+    /// headers it has so far.
     pub blocks: Option<u64>,
     pub headers: Option<u64>,
     pub error: Option<String>,
+    /// The snapshot this install starts from, by id (v0.5.1): the screen shows its stages.
+    pub snapshot: Option<String>,
 }
 
 fn progress() -> &'static Arc<Mutex<Progress>> {
@@ -583,7 +1367,21 @@ fn find(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-async fn install_stack(mgr: &Arc<NodeManager>) -> Result<(), String> {
+/// How the person chose to set it up (v0.5.1; the setup screen's beta card).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Choice {
+    /// A snapshot's id, "full" for a sync from the start, or none: the first snapshot that answers.
+    pub snapshot: Option<String>,
+    /// A folder of their own for the blocks: a bigger disk. None or empty: with the node's data.
+    pub blocks: Option<String>,
+    /// Setup's install: the app then uses this node. Settings' Continue and Update leave a user who went on to another
+    /// computer's node there (review M3).
+    #[serde(default)]
+    pub take: bool,
+}
+
+async fn install_stack(mgr: &Arc<NodeManager>, choice: Choice) -> Result<(), String> {
     let _one = OPS.lock().await;
     mgr.still_here()?;
     let s = network::current().stack.ok_or("This network has no eCash node the app installs.")?;
@@ -596,8 +1394,8 @@ async fn install_stack(mgr: &Arc<NodeManager>) -> Result<(), String> {
         let tmp = mgr.app_dir.join("tmp-stack");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-        let node = fetch(mgr, &s.node, "download-node", &tmp).await?;
-        let enf = fetch(mgr, &s.enforcer, "download-enforcer", &tmp).await?;
+        let node = cancellable(fetch(mgr, &s.node, "download-node", &tmp)).await?;
+        let enf = cancellable(fetch(mgr, &s.enforcer, "download-enforcer", &tmp)).await?;
         set(|p| p.stage = "unpack".into());
         let x = tmp.join("x");
         install::untar_gz(&node, &x)?;
@@ -622,15 +1420,58 @@ async fn install_stack(mgr: &Arc<NodeManager>) -> Result<(), String> {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    check_cancel()?;
     set(|p| p.stage = "config".into());
     let mut settings = mgr.settings.lock().await.clone();
     let old = settings.stack.clone();
+    let take = choice.take || old.is_none();
     let ports = plan(s, |p| crate::node::detect::port_busy(p), old.as_ref().map(|o| &o.ports));
     // A folder per chain: a new release on the same chain keeps its data; a reset starts afresh, as its node would refuse
     // the old chain's (review finding 2).
     let dir = mgr.app_dir.join("stack-data").join(s.chain).to_string_lossy().into_owned();
-    let st = StackSettings { tag: s.tag.into(), dir, ports };
-    use_own(&mut settings, s, &st);
+    let (st, fresh_blocks) = match old.filter(|o| o.dir == dir) {
+        // The same chain (an update, or Continue after a restart): its blocks folder and its start stay. A snapshot not
+        // loaded yet may be swapped for another.
+        Some(o) => (
+            StackSettings {
+                tag: s.tag.into(),
+                dir,
+                ports,
+                blocks: o.blocks,
+                snapshot: o.snapshot.clone().map(|was| choice.snapshot.clone().filter(|c| snapshot_by_id(s, c).is_some()).unwrap_or(was)),
+                start: o.start,
+            },
+            false,
+        ),
+        None => {
+            let blocks = match choice.blocks.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+                Some(b) => Some(blocks_folder(mgr, &settings, s, Path::new(b))?),
+                None => None,
+            };
+            // A snapshot first: the one chosen, else the first that answers; else a sync from the start.
+            let snapshot = match choice.snapshot.as_deref() {
+                Some("full") => None,
+                Some(id) => Some(snapshot_by_id(s, id).ok_or_else(|| format!("FreeBank knows no snapshot \"{}\".", id))?.id.to_string()),
+                None => offers(&mgr.http, s).await.into_iter().find(|o| o.available).map(|o| o.id.to_string()),
+            };
+            let start = (snapshot.is_none() && !s.snapshots.is_empty()).then(|| "full".to_string());
+            (StackSettings { tag: s.tag.into(), dir, ports, blocks: blocks.map(|b| b.to_string_lossy().into_owned()), snapshot, start }, true)
+        }
+    };
+    mark(Path::new(&st.dir))?;
+    if let Some(b) = &st.blocks {
+        // A blocks folder that has gone (its disk not plugged in) isn't made again on this one (review L8).
+        if !fresh_blocks && !Path::new(b).is_dir() {
+            return Err(format!("The eCash node's blocks folder {} isn't there: is its disk plugged in?", b));
+        }
+        mark(Path::new(b))?;
+    }
+    set(|p| p.snapshot = st.snapshot.clone());
+    record_stack(&mut settings, s, &st, take);
+    if st.in_use(&settings) {
+        // Its own node logs in by its cookie: a login typed for another computer goes (re-review 1).
+        crate::ecash::conn::save_password(&mgr.app_dir, None)?;
+    }
     mgr.save_settings(settings).await?;
 
     set(|p| p.stage = "start".into());
@@ -640,6 +1481,28 @@ async fn install_stack(mgr: &Arc<NodeManager>) -> Result<(), String> {
 /// A stack install is under way (the network switch and Obliterate wait for it).
 pub fn installing() -> bool {
     progress().lock().unwrap().running
+}
+
+/// Keep `st` as the app's stack, and point the app at it when `take` (setup's install) or when the stack it replaces was
+/// the one in use; a user who went on to another computer's node stays there (review M3).
+fn record_stack(settings: &mut Settings, s: &Stack, st: &StackSettings, take: bool) {
+    if take || settings.stack.as_ref().is_some_and(|o| o.in_use(settings)) {
+        use_own(settings, s, st);
+    } else {
+        settings.stack = Some(st.clone());
+    }
+}
+
+/// Run `f`, ending it at once when the install is cancelled (Stop and delete, the app closing): a program download
+/// otherwise runs to its end first (review M4).
+async fn cancellable<T>(f: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::pin!(f);
+    loop {
+        tokio::select! {
+            r = &mut f => return r,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => check_cancel()?,
+        }
+    }
 }
 
 /// Point the FreeBank node and the app's eCash wallet at the app's own stack.
@@ -671,17 +1534,60 @@ pub struct Status {
     pub ports: Option<Ports>,
     /// Before an install: the default ports other programs hold, and by whom.
     pub clashes: Vec<Holder>,
+    // ---- v0.5.1
+    /// The whole chain on disk, in GB, once the node has every block.
+    pub full_gb: u64,
+    /// The network's snapshots and whether each answers (before an install, or while one waits to load).
+    pub offers: Vec<Offer>,
+    /// Where its blocks go (or would go, by default), and the free bytes there; the free bytes where its other data is,
+    /// when the blocks have a disk of their own.
+    pub blocks_at: Option<String>,
+    pub blocks_free: Option<u64>,
+    pub data_free: Option<u64>,
+    /// What its folders take now.
+    pub used: Option<u64>,
+    /// A snapshot chosen and not loaded yet: setup offers Continue.
+    pub snapshot_pending: Option<String>,
+    /// How it started: a snapshot's id, or "full".
+    pub start: Option<String>,
+    /// While the node checks the history behind its snapshot: the block it has checked up to, and the snapshot's.
+    pub checked_to: Option<u64>,
+    pub checked_of: Option<u64>,
+    /// Stopped by the disk watch: why.
+    pub stopped_low: Option<String>,
 }
 
-pub async fn status(mgr: &NodeManager) -> Status {
+/// The stack's status. `with_offers`: also ask the snapshots' servers which answer (setup only: Settings never contacts
+/// them).
+pub async fn status(mgr: &NodeManager, with_offers: bool) -> Status {
     let Some(s) = network::current().stack else { return Status::default() };
     let st = mgr.settings.lock().await.stack.clone();
-    let mut out = Status { offered: true, ..Default::default() };
+    let mut out = Status { offered: true, full_gb: s.full_gb, ..Default::default() };
+    out.stopped_low = stopped_low().lock().unwrap().clone();
     match st {
         None => {
             out.clashes = [s.p2p, s.rpc, s.zmq, s.grpc, s.erpc].into_iter().filter_map(holder).collect();
+            if with_offers {
+                out.offers = offers(&mgr.http, s).await;
+            }
+            let at = mgr.app_dir.join("stack-data").join(s.chain);
+            out.blocks_free = free_bytes(&at);
+            out.blocks_at = Some(at.display().to_string());
         }
         Some(st) => {
+            out.snapshot_pending = st.snapshot.clone();
+            out.start = st.start.clone();
+            if st.snapshot.is_some() && with_offers {
+                out.offers = offers(&mgr.http, s).await;
+            }
+            let at = st.blocks_at(s);
+            out.blocks_free = free_bytes(&at);
+            out.blocks_at = Some(at.display().to_string());
+            if st.blocks.is_some() {
+                out.data_free = free_bytes(Path::new(&st.dir));
+            }
+            let st2 = st.clone();
+            out.used = tokio::task::spawn_blocking(move || used_bytes(&st2)).await.ok();
             out.installed = installed(mgr, &st.tag).then(|| st.tag.clone());
             out.update = (st.tag != s.tag).then(|| s.tag.to_string());
             if let Ok(i) = node_call(&st, s, "getblockchaininfo").await {
@@ -691,6 +1597,15 @@ pub async fn status(mgr: &NodeManager) -> Status {
             }
             if out.node_up {
                 out.peers = node_call(&st, s, "getconnectioncount").await.ok().and_then(|v| v.as_u64());
+                // Two chainstates: the snapshot's, and the one checking the history behind it.
+                if let Ok(c) = node_call(&st, s, "getchainstates").await {
+                    let all = c["chainstates"].as_array().cloned().unwrap_or_default();
+                    if all.len() > 1 {
+                        let snap = all.iter().find_map(|x| x["snapshot_blockhash"].as_str().map(String::from));
+                        out.checked_of = snap.and_then(|h| s.snapshots.iter().find(|x| x.blockhash == h)).map(|x| x.height);
+                        out.checked_to = all.iter().find(|x| x["snapshot_blockhash"].is_null()).and_then(|x| x["blocks"].as_u64());
+                    }
+                }
             }
             out.enforcer_up = enforcer_pid(&st).is_some_and(|p| runs_bin(p, &enforcer_bin(mgr, &st.tag)))
                 && crate::node::detect::port_busy(st.ports.grpc);
@@ -704,12 +1619,12 @@ pub async fn status(mgr: &NodeManager) -> Status {
 }
 
 #[tauri::command]
-pub async fn stack_status(mgr: tauri::State<'_, Arc<NodeManager>>) -> Result<Status, String> {
-    Ok(status(&mgr).await)
+pub async fn stack_status(mgr: tauri::State<'_, Arc<NodeManager>>, offers: Option<bool>) -> Result<Status, String> {
+    Ok(status(&mgr, offers.unwrap_or(false)).await)
 }
 
 #[tauri::command]
-pub async fn stack_install(mgr: tauri::State<'_, Arc<NodeManager>>) -> Result<(), String> {
+pub async fn stack_install(mgr: tauri::State<'_, Arc<NodeManager>>, choice: Option<Choice>) -> Result<(), String> {
     {
         let mut p = progress().lock().unwrap();
         if p.running {
@@ -717,9 +1632,18 @@ pub async fn stack_install(mgr: tauri::State<'_, Arc<NodeManager>>) -> Result<()
         }
         *p = Progress { running: true, ..Default::default() };
     }
+    // A blocks folder that won't do is said now, not after the programs' download (re-review 6).
+    if let (Some(s), Some(b)) = (network::current().stack, choice.as_ref().and_then(|c| c.blocks.as_deref()).map(str::trim).filter(|b| !b.is_empty())) {
+        let settings = mgr.settings.lock().await.clone();
+        if let Err(e) = blocks_folder(&mgr, &settings, s, Path::new(b)) {
+            progress().lock().unwrap().running = false;
+            return Err(e);
+        }
+    }
+    *cancel_slot().lock().unwrap() = None;
     let m = mgr.inner().clone();
     tauri::async_runtime::spawn(async move {
-        let r = install_stack(&m).await;
+        let r = install_stack(&m, choice.unwrap_or_default()).await;
         set(|p| {
             p.running = false;
             match r {
@@ -746,6 +1670,20 @@ pub async fn stack_stop(mgr: tauri::State<'_, Arc<NodeManager>>) -> Result<(), S
     stop(&mgr).await
 }
 
+/// The free bytes where a folder typed on the setup screen is (or would be made), for its disk line (v0.5.1).
+#[tauri::command]
+pub fn stack_free(path: String) -> Option<u64> {
+    let p = PathBuf::from(path.trim());
+    // A folder that isn't there has no free space to show: setup says so instead (re-review 6).
+    (p.is_absolute() && p.is_dir()).then(|| free_bytes(&p)).flatten()
+}
+
+/// Stop and delete (v0.5.1).
+#[tauri::command]
+pub async fn stack_remove(mgr: tauri::State<'_, Arc<NodeManager>>) -> Result<Removed, String> {
+    remove(mgr.inner()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,9 +1703,12 @@ mod tests {
         // easynet's installer runs on this computer: its node holds 28532-28535.
         let held = [28532u16, 28533, 28534, 28535];
         let p = plan(easy(), |q| held.contains(&q), None);
-        for q in [p.p2p, p.p2p + 1, p.rpc, p.zmq, p.grpc, p.erpc] {
-            assert!(!held.contains(&q) && !WELL_KNOWN.contains(&q), "{q} in {p:?}");
+        let s = easy();
+        for (q, own) in [(p.p2p, s.p2p), (p.p2p + 1, s.p2p + 1), (p.rpc, s.rpc), (p.zmq, s.zmq), (p.grpc, s.grpc), (p.erpc, s.erpc)] {
+            // A port that moved never lands on a well-known one; one that kept its default may be its own well-known one.
+            assert!(!held.contains(&q) && (q == own || !WELL_KNOWN.contains(&q)), "{q} in {p:?}");
         }
+        assert_eq!((p.grpc, p.erpc), (s.grpc, s.erpc), "the enforcer's ports were free");
         let all = [p.p2p, p.p2p + 1, p.rpc, p.zmq, p.grpc, p.erpc];
         let mut d = all.to_vec();
         d.sort();
@@ -784,17 +1725,371 @@ mod tests {
 
     #[test]
     fn the_node_config() {
-        let c = node_conf(easy(), &Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 });
+        let ports = Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 };
+        let st = StackSettings { tag: "t".into(), dir: "/d".into(), ports: ports.clone(), ..Default::default() };
+        let c = node_conf(easy(), &st);
         assert!(c.contains("\n[easynet]\n"));
         for l in ["rpcbind=127.0.0.1", "rpcallowip=127.0.0.1", "rpcport=2", "port=1", "zmqpubsequence=tcp://127.0.0.1:3", "rest=1", "txindex=1", "listenonion=0", "addnode=163.47.9.132:28533"] {
             assert!(c.lines().any(|x| x == l), "{l}");
         }
-        assert!(!c.contains("rpcpassword") && !c.contains("0.0.0.0"));
+        assert!(!c.contains("rpcpassword") && !c.contains("0.0.0.0") && !c.contains("blocksdir"));
+        // Beta's (v0.5.1): main's section, no transaction index, the blocks on a disk of their own, ahead of the section.
+        let st = StackSettings { blocks: Some("/big/blocks".into()), ..st };
+        let c = node_conf(beta(), &st);
+        assert!(c.contains("\nblocksdir=/big/blocks\n[main]\n"), "{c}");
+        assert!(!c.lines().any(|x| x.starts_with("txindex") || x.starts_with("addnode")), "{c}");
+        for l in ["rpcbind=127.0.0.1", "rpcallowip=127.0.0.1", "rest=1", "listenonion=0"] {
+            assert!(c.lines().any(|x| x == l), "{l}");
+        }
+    }
+
+    fn beta() -> &'static Stack {
+        network::BETA.stack.unwrap()
+    }
+
+    #[test]
+    fn betas_folders_and_ports() {
+        let st = StackSettings { tag: "t".into(), dir: "/d/stack-data/beta".into(), ..Default::default() };
+        assert_eq!(st.node_files(beta()), Path::new("/d/stack-data/beta/node"), "main's files are at the top of the node's folder");
+        assert_eq!(st.node_files(easy()), Path::new("/d/stack-data/beta/node/easynet"));
+        assert_eq!(st.blocks_at(beta()), st.node_files(beta()));
+        let elsewhere = StackSettings { blocks: Some("/big/b".into()), ..st.clone() };
+        assert_eq!(elsewhere.blocks_at(beta()), Path::new("/big/b"));
+        let a = enforcer_args(beta(), &st);
+        assert!(a.contains(&"--network-preset=betanet".to_string()));
+        assert!(a.contains(&"--node-rpc-cookie-path=/d/stack-data/beta/node/.cookie".to_string()), "{a:?}");
+        let p = plan(beta(), |_| false, None);
+        assert_eq!(p, Ports { p2p: 38533, rpc: 38532, zmq: 38535, grpc: 38551, erpc: 38552 });
+        // BitWindow's beta node on this computer, and easynet's own stack running: beta's keeps its defaults.
+        let held = [18301u16, 18302, 18303, 50051, 8122, 8532, 8533, 28532, 28533, 28535, 28551, 28552];
+        assert_eq!(plan(beta(), |q| held.contains(&q), None), p);
+    }
+
+    #[test]
+    fn the_disk_is_measured() {
+        let d = std::env::temp_dir().join(format!("fbdisk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(free_bytes(&d.join("not/yet")).is_some_and(|n| n > 0), "a folder not made yet: its disk");
+        std::fs::create_dir_all(d.join("a/b")).unwrap();
+        std::fs::write(d.join("a/one"), [0u8; 1000]).unwrap();
+        std::fs::write(d.join("a/b/two"), [0u8; 234]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/usr", d.join("a/link")).unwrap();
+        assert_eq!(tree_bytes(&d), 1234, "links aren't followed");
+        assert_eq!(gb(LOW_DISK), "20 GB");
+        assert_eq!(gb(829_600_000_000), "830 GB");
+        assert_eq!(gb(160_700_000), "161 MB", "under a GB, in MB (as the screens' gigabytes())");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_blocks_folder_must_be_empty_or_ours() {
+        let d = std::env::temp_dir().join(format!("fbblocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mgr = NodeManager::new(d.join("app"));
+        let settings = Settings { datadir: d.join("fb").to_string_lossy().into_owned(), ..Settings::default() };
+        assert!(check_blocks_folder(&mgr, &settings, Path::new("relative/b")).is_err());
+        assert!(check_blocks_folder(&mgr, &settings, &d.join("new")).is_ok(), "a folder FreeBank creates");
+        std::fs::create_dir_all(d.join("full")).unwrap();
+        std::fs::write(d.join("full/blk00000.dat"), b"x").unwrap();
+        assert!(check_blocks_folder(&mgr, &settings, &d.join("full")).unwrap_err().contains("isn't FreeBank's"));
+        mark(&d.join("ours")).unwrap();
+        std::fs::write(d.join("ours/blk00000.dat"), b"x").unwrap();
+        assert!(check_blocks_folder(&mgr, &settings, &d.join("ours")).is_ok(), "one FreeBank made");
+        assert!(check_blocks_folder(&mgr, &settings, &d.join("fb/blocks")).unwrap_err().contains("FreeBank node"));
+        assert!(check_blocks_folder(&mgr, &settings, &d).unwrap_err().contains("isn't FreeBank's"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The blocks go in FreeBank's own folder inside the one chosen, which must exist; `..` and links can't steer the mark
+    /// into another folder (review H2, M1).
+    #[test]
+    fn the_blocks_folder_is_freebanks_own() {
+        let d = std::env::temp_dir().join(format!("fbblocks2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("disk/Documents")).unwrap();
+        std::fs::write(d.join("disk/Documents/letter.txt"), b"x").unwrap();
+        let mgr = NodeManager::new(d.join("app"));
+        let settings = Settings { datadir: d.join("fb").to_string_lossy().into_owned(), ..Settings::default() };
+        let s = beta();
+        let b = blocks_folder(&mgr, &settings, s, &d.join("disk")).unwrap();
+        assert_eq!(b, d.join("disk").canonicalize().unwrap().join(format!("freebank-{}-blocks", s.chain)));
+        assert!(blocks_folder(&mgr, &settings, s, &d.join("disk/new/../Documents")).unwrap_err().contains(".."));
+        assert!(blocks_folder(&mgr, &settings, s, &d.join("missing")).unwrap_err().contains("isn't there"));
+        assert!(blocks_folder(&mgr, &settings, s, Path::new("disk")).is_err(), "a full path only");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.join("disk"), d.join("link")).unwrap();
+            assert_eq!(blocks_folder(&mgr, &settings, s, &d.join("link")).unwrap(), b, "a link is resolved first");
+        }
+        // A folder of that name that isn't FreeBank's is refused; none of this created or marked anything.
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(b.join("photo.jpg"), b"x").unwrap();
+        assert!(blocks_folder(&mgr, &settings, s, &d.join("disk")).unwrap_err().contains("isn't FreeBank's"));
+        assert!(!d.join("disk/new").exists() && !d.join("disk/Documents").join(MARK).exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A chain counts as the app's without the mark only as a chain's folder directly inside a real stack-data/
+    /// (review H1).
+    #[test]
+    fn a_linked_stack_data_is_not_trusted() {
+        let d = std::env::temp_dir().join(format!("fbowndata-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let app = d.join("app");
+        std::fs::create_dir_all(app.join("stack-data/beta/node")).unwrap();
+        std::fs::create_dir_all(app.join("stack-data/notes")).unwrap();
+        assert!(in_own_data(&app, &app.join("stack-data/beta")));
+        assert!(!in_own_data(&app, &app.join("stack-data/notes")), "no node or enforcer in it");
+        assert!(!in_own_data(&app, &app.join("stack-data")));
+        assert!(!in_own_data(&app, &app.join("stack-data/beta/node")), "only a chain's own folder");
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(d.join("big/Photos/node")).unwrap();
+            let app2 = d.join("app2");
+            std::fs::create_dir_all(&app2).unwrap();
+            std::os::unix::fs::symlink(d.join("big"), app2.join("stack-data")).unwrap();
+            assert!(!in_own_data(&app2, &app2.join("stack-data/Photos")), "stack-data links to another disk");
+            std::os::unix::fs::symlink(d.join("big/Photos"), app.join("stack-data/linked")).unwrap();
+            assert!(!in_own_data(&app, &app.join("stack-data/linked")), "the chain's folder is a link");
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Setup's install takes the app to its own node; Settings' Continue, Update or a port move leave a user who went on
+    /// to another computer's node there (review M3).
+    #[test]
+    fn a_user_on_another_computer_stays_there() {
+        let st = StackSettings {
+            tag: "t".into(),
+            dir: "/x/stack-data/beta".into(),
+            ports: Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 },
+            blocks: None,
+            snapshot: None,
+            start: None,
+        };
+        let remote = Settings {
+            rest: "nearby-box:18303".into(),
+            enforcer: "nearby-box:50051".into(),
+            l1_user: Some("u".into()),
+            stack: Some(st.clone()),
+            ..Settings::default()
+        };
+        let mut moved = st.clone();
+        moved.ports.rpc = 12;
+        let mut s = remote.clone();
+        record_stack(&mut s, beta(), &moved, false);
+        assert_eq!((s.rest.as_str(), s.l1_user.as_deref()), ("nearby-box:18303", Some("u")), "still on the other computer");
+        assert_eq!(s.stack.as_ref().unwrap().ports.rpc, 12);
+        let mut s = remote.clone();
+        record_stack(&mut s, beta(), &moved, true);
+        assert_eq!(s.rest, "127.0.0.1:12", "setup's install takes it");
+        // In use before: it follows the move.
+        let mut s = Settings::default();
+        use_own(&mut s, beta(), &st);
+        record_stack(&mut s, beta(), &moved, false);
+        assert_eq!(s.rest, "127.0.0.1:12");
+    }
+
+    /// A login typed for one computer goes nowhere else: "Use them" with another host forgets it (review M2).
+    #[tokio::test]
+    async fn a_login_stays_with_its_computer() {
+        let d = std::env::temp_dir().join(format!("fblogin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mgr = NodeManager::new(d.join("app"));
+        let mut s = mgr.settings.lock().await.clone();
+        s.rest = "box-a:18303".into();
+        s.l1_user = Some("u".into());
+        mgr.save_settings(s).await.unwrap();
+        crate::ecash::conn::save_password(&mgr.app_dir, Some("pw")).unwrap();
+        let s = use_remote(&mgr, "box-a:38532", "box-a:38551").await.unwrap();
+        assert_eq!(s.l1_user.as_deref(), Some("u"), "the same computer keeps it");
+        assert!(crate::ecash::conn::password_path(&mgr.app_dir).exists());
+        let s = use_remote(&mgr, "box-b:18303", "box-b:50051").await.unwrap();
+        assert!(s.l1_user.is_none() && !crate::ecash::conn::password_path(&mgr.app_dir).exists(), "another forgets it");
+        // A password on disk with no user name beside it (left by the app's own node) goes too (re-review 1).
+        crate::ecash::conn::save_password(&mgr.app_dir, Some("pw")).unwrap();
+        use_remote(&mgr, "box-c:18303", "box-c:50051").await.unwrap();
+        assert!(!crate::ecash::conn::password_path(&mgr.app_dir).exists());
+        assert_eq!(stack_free(d.join("nowhere").to_string_lossy().into_owned()), None, "a folder that isn't there");
+        assert!(stack_free(d.to_string_lossy().into_owned()).is_some());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_small_chain_keeps_a_small_floor() {
+        assert_eq!(low_disk_floor(beta()), LOW_DISK);
+        assert_eq!(low_disk_floor(network::EASYNET.stack.unwrap()), LOW_DISK_SMALL);
+    }
+
+    /// A small HTTP server for one file, honouring `Range: bytes=N-`, that cuts the first answer short after `cut` bytes.
+    async fn serve(body: Vec<u8>, cut: usize) -> (String, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/snap.dat", l.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let Ok((mut c, _)) = l.accept().await else { return };
+                let mut buf = vec![0u8; 4096];
+                let n = c.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let from = req
+                    .lines()
+                    .find_map(|x| x.to_ascii_lowercase().strip_prefix("range: bytes=").map(|r| r.trim_end_matches('-').parse::<usize>().unwrap_or(0)));
+                seen2.lock().unwrap().push(from.map_or("whole".into(), |f| format!("from {f}")));
+                let part = &body[from.unwrap_or(0)..];
+                let head = match from {
+                    Some(f) => format!("HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n", part.len(), f, body.len() - 1, body.len()),
+                    None => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", part.len()),
+                };
+                let _ = c.write_all(head.as_bytes()).await;
+                let send = if first { &part[..cut.min(part.len())] } else { part };
+                first = false;
+                let _ = c.write_all(send).await;
+                let _ = c.shutdown().await;
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_download_carries_on_where_it_stopped() {
+        let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let (url, seen) = serve(body.clone(), 100_000).await;
+        let x: &'static Snapshot = Box::leak(Box::new(Snapshot {
+            id: "t",
+            source: "test",
+            url: Box::leak(url.into_boxed_str()),
+            sha256: "",
+            size: body.len() as u64,
+            height: 1,
+            blockhash: "",
+        }));
+        let d = std::env::temp_dir().join(format!("fbsnap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("snap.dat");
+        fetch_snapshot(x, &f).await.unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), body, "whole, after one interruption");
+        assert_eq!(*seen.lock().unwrap(), vec!["whole".to_string(), "from 100000".to_string()]);
+        // A file already whole isn't fetched again; a part-file left by a stopped app carries on.
+        fetch_snapshot(x, &f).await.unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        std::fs::write(&f, &body[..250_000]).unwrap();
+        fetch_snapshot(x, &f).await.unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), body);
+        assert_eq!(seen.lock().unwrap().last().unwrap(), "from 250000");
+        // Stop and delete ends it at once.
+        std::fs::remove_file(&f).unwrap();
+        *cancel_slot().lock().unwrap() = Some("Stopped: Stop and delete.".into());
+        assert_eq!(fetch_snapshot(x, &f).await.unwrap_err(), "Stopped: Stop and delete.");
+        *cancel_slot().lock().unwrap() = None;
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// v0.5.1, found in the walk: an install holds OPS for as long as it runs (on beta, an hour), so Start refuses, and
+    /// Stop and the app's exit end it instead of waiting for it.
+    #[tokio::test]
+    async fn an_install_under_way_is_never_waited_for() {
+        network::set(&network::BETA);
+        let d = std::env::temp_dir().join(format!("fbhalt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mgr = Arc::new(NodeManager::new(d.join("app")));
+        *progress().lock().unwrap() = Progress { running: true, stage: "download-snapshot".into(), ..Default::default() };
+        let held = OPS.lock().await; // the install's
+        assert!(start(&mgr).await.unwrap_err().contains("being installed"));
+        // Stop: the install is told to give up (it would see the reason at its next check); here nothing ends it, so
+        // Stop returns after its wait, without OPS.
+        let m = mgr.clone();
+        let stopping = tokio::spawn(async move { stop(&m).await });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(cancelled().is_some_and(|w| w.contains("Continue")), "{:?}", cancelled());
+        progress().lock().unwrap().running = false; // the install gives up
+        tokio::time::timeout(Duration::from_secs(5), stopping).await.expect("Stop never waits for OPS").unwrap().unwrap();
+        assert!(cancelled().is_none());
+        drop(held);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_is_found_by_its_size() {
+        let body: Vec<u8> = vec![7u8; 1234];
+        let (url, _) = serve(body, usize::MAX).await;
+        let url: &'static str = Box::leak(url.into_boxed_str());
+        let mk = |id: &'static str, size: u64| Snapshot { id, source: "t", url, sha256: "", size, height: 1, blockhash: "" };
+        let s: &'static Stack = Box::leak(Box::new(Stack {
+            snapshots: Box::leak(vec![mk("right", 1234), mk("wrong", 999)].into_boxed_slice()),
+            ..clone_stack(beta())
+        }));
+        let got = offers(&reqwest::Client::new(), s).await;
+        assert_eq!(got.iter().map(|o| (o.id, o.available)).collect::<Vec<_>>(), [("right", true), ("wrong", false)]);
+    }
+
+    /// A copy of a stack's facts, to change one in a test.
+    fn clone_stack(s: &'static Stack) -> Stack {
+        Stack {
+            tag: s.tag,
+            chain: s.chain,
+            node: network::Download { url: s.node.url, linux: s.node.linux, mac: s.node.mac },
+            enforcer: network::Download { url: s.enforcer.url, linux: s.enforcer.linux, mac: s.enforcer.mac },
+            section: s.section,
+            folder: s.folder,
+            txindex: s.txindex,
+            snapshots: s.snapshots,
+            full_gb: s.full_gb,
+            p2p: s.p2p,
+            rpc: s.rpc,
+            zmq: s.zmq,
+            grpc: s.grpc,
+            erpc: s.erpc,
+            enforcer_args: s.enforcer_args,
+            seeds: s.seeds,
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_and_delete_takes_only_its_own_folders() {
+        let d = std::env::temp_dir().join(format!("fbremove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mgr = Arc::new(NodeManager::new(d.join("app")));
+        let dir = mgr.app_dir.join("stack-data").join("beta");
+        std::fs::create_dir_all(dir.join("node/chainstate")).unwrap();
+        std::fs::write(dir.join("node/chainstate/000001.ldb"), [1u8; 5000]).unwrap();
+        mark(&dir).unwrap();
+        // A blocks folder that lost its mark (someone else's now): it stays.
+        let blocks = d.join("hdd/blocks");
+        std::fs::create_dir_all(&blocks).unwrap();
+        std::fs::write(blocks.join("blk00000.dat"), [2u8; 7000]).unwrap();
+        let st = StackSettings {
+            tag: network::BETA.stack.unwrap().tag.into(),
+            dir: dir.to_string_lossy().into_owned(),
+            ports: Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 },
+            blocks: Some(blocks.to_string_lossy().into_owned()),
+            snapshot: Some("ours".into()),
+            start: None,
+        };
+        let mut s = mgr.settings.lock().await.clone();
+        use_own(&mut s, beta(), &st);
+        mgr.save_settings(s).await.unwrap();
+        let r = remove_locked(&mgr, &st).await.unwrap();
+        assert_eq!(r.deleted, vec![dir.display().to_string()]);
+        assert!(r.freed >= 5000, "{r:?}");
+        assert_eq!(r.kept, vec![blocks.display().to_string()]);
+        assert!(r.in_use, "it was the app's eCash node: the app goes back to setup");
+        assert!(!dir.exists() && blocks.join("blk00000.dat").exists());
+        let s = mgr.settings.lock().await.clone();
+        assert!(s.stack.is_none());
+        assert_eq!((s.rest.as_str(), s.enforcer.as_str()), (network::BETA.rest, network::BETA.enforcer), "back to looking for BitWindow's");
+        assert!(s.l1_rpc.is_none() && s.l1_datadir.is_none());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
     fn the_enforcer_listens_on_this_computer_only() {
-        let st = StackSettings { tag: "t".into(), dir: "/d".into(), ports: Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 } };
+        let st = StackSettings { tag: "t".into(), dir: "/d".into(), ports: Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 }, ..Default::default() };
         let a = enforcer_args(easy(), &st);
         assert!(a.contains(&"--serve-grpc-addr=127.0.0.1:4".to_string()));
         assert!(a.contains(&"--serve-rpc-addr=127.0.0.1:5".to_string()));
@@ -830,7 +2125,7 @@ mod tests {
         let dir = PathBuf::from(std::env::var("FB_STACK_DIR").expect("FB_STACK_DIR"));
         let mgr = Arc::new(NodeManager::new(dir.join("app")));
         let t0 = Instant::now();
-        install_stack(&mgr).await.expect("install");
+        install_stack(&mgr, Choice::default()).await.expect("install");
         let st = mgr.settings.lock().await.stack.clone().unwrap();
         println!("installed {} in {:?}, ports {:?}", st.tag, t0.elapsed(), st.ports);
         let s = mgr.settings.lock().await.clone();
@@ -838,7 +2133,7 @@ mod tests {
         assert_eq!(s.enforcer, format!("127.0.0.1:{}", st.ports.grpc));
         let until = Instant::now() + Duration::from_secs(1200);
         loop {
-            let x = status(&mgr).await;
+            let x = status(&mgr, false).await;
             println!("node {} enforcer {} blocks {:?} headers {:?} peers {:?}", x.node_up, x.enforcer_up, x.blocks, x.headers, x.peers);
             if x.node_up && x.enforcer_up && x.blocks.is_some_and(|b| b > 2000) && x.blocks == x.headers {
                 break;
@@ -856,7 +2151,7 @@ mod tests {
         start(&mgr).await.unwrap();
         assert_eq!(pids, (node_pid(&st, network::EASYNET.stack.unwrap()), enforcer_pid(&st)));
         stop(&mgr).await.unwrap();
-        let x = status(&mgr).await;
+        let x = status(&mgr, false).await;
         assert!(!x.node_up && !x.enforcer_up, "{x:?}");
         println!("stopped; whole run {:?}", t0.elapsed());
     }
@@ -878,10 +2173,41 @@ mod tests {
         assert_ne!(after.ports.rpc, before.ports.rpc);
         assert_eq!(s.rest, format!("127.0.0.1:{}", after.ports.rpc));
         assert_eq!(s.l1_rpc.as_deref(), Some(format!("127.0.0.1:{}", after.ports.rpc).as_str()));
-        let x = status(&mgr).await;
+        let x = status(&mgr, false).await;
         assert!(x.node_up && x.enforcer_up, "{x:?}");
         stop(&mgr).await.unwrap();
         drop(squatter);
+    }
+
+    #[test]
+    fn another_computers_address() {
+        assert_eq!(split_host("nearby-box"), ("nearby-box".into(), None));
+        assert_eq!(split_host(" 100.64.0.2:18303 "), ("100.64.0.2".into(), Some(18303)));
+        assert_eq!(split_host("http://box.tail1.ts.net:8532/"), ("box.tail1.ts.net".into(), Some(8532)));
+        assert_eq!(split_host("[fd7a:115c:a1e0::5]:50051"), ("fd7a:115c:a1e0::5".into(), Some(50051)));
+        assert_eq!(split_host("fd7a:115c:a1e0::5"), ("fd7a:115c:a1e0::5".into(), None));
+        assert_eq!(join_host("fd7a::5", 1), "[fd7a::5]:1");
+        assert!(is_tailscale("100.64.0.2".parse().unwrap()));
+        assert!(is_tailscale(std::net::Ipv4Addr::new(100, 127, 0, 1).into()));
+        assert!(!is_tailscale("100.128.0.1".parse().unwrap()));
+        assert!(!is_tailscale("192.168.1.20".parse().unwrap()));
+        assert!(is_tailscale("fd7a:115c:a1e0::5".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn another_computer_that_isnt_there() {
+        let http = reqwest::Client::new();
+        let r = find_remote(&http, "no-such-host.invalid").await;
+        assert!(r.rest.is_none() && r.detail.contains("couldn't find"), "{r:?}");
+        // This computer, where nothing listens on those ports (a free port as the node's).
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let free = l.local_addr().unwrap().port();
+        drop(l);
+        let r = find_remote(&http, &format!("127.0.0.1:{free}")).await;
+        assert_eq!(r.address.as_deref(), Some("127.0.0.1"));
+        assert!(!r.tailscale);
+        assert_eq!(r.tried[0], format!("127.0.0.1:{free}"));
+        assert!(r.rest.is_none(), "{r:?}");
     }
 
     #[test]

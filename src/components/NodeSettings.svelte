@@ -263,14 +263,14 @@
     busy = false;
   }
 
-  // 1536 -> "1.5 KB"
+  // 1500 -> "1.5 KB": units of 1000, as a Mac's Finder and the Network card count (v0.5.1).
   function size(n: number): string {
-    if (n < 1024) return `${n} bytes`;
+    if (n < 1000) return `${n} bytes`;
     const units = ["KB", "MB", "GB", "TB"];
-    let v = n / 1024;
+    let v = n / 1000;
     let u = 0;
-    while (v >= 1024 && u < units.length - 1) {
-      v /= 1024;
+    while (v >= 1000 && u < units.length - 1) {
+      v /= 1000;
       u++;
     }
     return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[u]}`;
@@ -283,7 +283,7 @@
 
 {#if info && st}
   {#if part !== "startover"}
-  <NetworkCard />
+  <NetworkCard on:stackRemoved />
   <KeepRunning keepRunning={info.settings.keep_running} />
 
   <div class="card">
@@ -406,7 +406,8 @@
           {#if info.settings.stack}
             <p>
               This stops your node, and the {$network.l1} node and enforcer FreeBank runs for you, and deletes everything
-              ticked below, for good. Those two go with FreeBank's folder, with their data. BitWindow isn't touched.
+              ticked below, for good. Their chain is a line of its own: untick it to keep it for a later install. BitWindow
+              isn't touched.
             </p>
           {:else}
             <p>
@@ -415,6 +416,7 @@
               the bidding key goes with FreeBank's folder).
             </p>
           {/if}
+          {#if plan.elsewhere}<p class="hint" data-testid="obliterate-elsewhere">{plan.elsewhere}</p>{/if}
           <ul class="wipe-list">
             {#each plan.items as item (item.id)}
               <li>

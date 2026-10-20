@@ -99,7 +99,32 @@ macOS.
   the enforcer listen on 127.0.0.1 only. The node's RPC logs in by its cookie (readable by your user only); the
   enforcer has no login, so it stays on this computer. Before starting them the app looks at which programs hold their
   ports (Linux `/proc`, Mac `lsof`) and takes free ones; it never changes another program's settings. Their data:
-  `<app data>/networks/<id>/stack-data/<chain>/`.
+  `<app data>/networks/<id>/stack-data/<chain>/` (on beta `<app data>/stack-data/beta/`).
+- **Beta's own eCash node** (v0.5.1, same file): mbdrivechains' `betanet-967000-1` node and easynet-3.1's enforcer in
+  its `betanet` preset, without the transaction index (the FreeBank node reads deposits from the block itself). The
+  whole chain is about 890 GB. It starts from a UTXO snapshot when one answers: mbdrivechains' at 967,000, else
+  LayerTwo Labs' at 935,000, else it syncs from the start. A snapshot file is checked against the sha256 in
+  `network.rs`, then the node checks its UTXO hash against the one compiled into it for that height and refuses any
+  other, so a swapped file can't be loaded. The file is deleted once loaded. Its blocks may go on another disk
+  (`blocksdir=`): always in a folder the app makes itself, `freebank-<chain>-blocks`, inside an existing folder given
+  as a full path without `..` and resolved through links first (`blocks_folder`). Every folder the app makes for it
+  carries a mark (`.freebank-stack`); "Stop and delete" stops the FreeBank node, the eCash node and the enforcer and
+  deletes only marked folders, or a chain's folder directly inside the app's own `stack-data/` when neither is a link
+  (`in_own_data`: v0.5.0 made no mark). The node is stopped when less than 20 GB is free where it writes (`LOW_DISK`;
+  2 GB for easynet's small chain). The node's RPC listens on 127.0.0.1 only. Obliterate lists those folders as a line
+  of their own; untick it to keep the chain. A reinstall or a port move from Settings leaves a user who chose another
+  computer's node on it (`record_stack`).
+- **Another computer's eCash node** (v0.5.1, `find_remote` in `stack.rs`): setup can look for an eCash node and
+  enforcer at an IP address or Tailscale name, on their usual ports (18302, 18303, 8532 and 38532 for the node's REST,
+  50051 and 38551 for the enforcer, or the port typed), and use them. It reads `/rest/chaininfo.json`, the pinned block
+  and the enforcer's tip there, and changes nothing on that computer while it looks. Once it is used, the app's eCash
+  wallet (given a login under Settings, eCash) adds its two watch-only wallets to that node (`createwallet`, then
+  `importdescriptors` with a rescan from beta's pinned block) and sends the user's own payments and bids through it, as
+  with any eCash node; it opens no other wallet there and deletes nothing. A typed login is forgotten when "Use them"
+  picks another host (`use_remote`), so it is never sent to a computer it wasn't typed for. It says when the address
+  isn't a Tailscale one
+  (100.64.0.0/10, `fd7a:115c:a1e0::/48`): REST and the enforcer have no login and nothing on that link is encrypted.
+  Obliterate deletes nothing on another computer, and says so.
 - **Copying the words to the clipboard** (`src-tauri/src/clipboard.rs`, `copy_words`; v0.4.10, the Truthcoin app's
   reviewed version): after a warning on the screen, the app puts the words on the clipboard as a numbered table and as
   plain words. The command takes only 24 recovery words (the ones the screen shows); the grid on screen can't be
@@ -153,7 +178,12 @@ macOS.
     `github.com/mbdrivechains/freebank-app/releases/download/v<version>/` only when you press Update and restart;
   - on easynet (v0.5.0): its eCash node and enforcer from `github.com/mbdrivechains/bitcoin/releases/download/<tag>/`,
     when you press Install or Update, checked as above; FreeBank's easynet node (`freebank-easynet-<version>-...`) from
-    the same FreeBank releases, with the same signature check.
+    the same FreeBank releases, with the same signature check;
+  - on beta (v0.5.1), only while setup offers FreeBank's own eCash node, or one waits to load its snapshot: a `HEAD`
+    request to each snapshot's address (`pub-77f0535533b1480dacd9d5992d0c1831.r2.dev`, `data.drivechain.dev`), at
+    most every ten minutes, to see which answers with its size. When you press Install: the node and enforcer from
+    `github.com/mbdrivechains/bitcoin/releases/download/<tag>/`, and the snapshot you chose from its address (resumed
+    with `Range` after an interruption).
 - **explorer.ecxfreebank.com:** the chain's tip height, for Setup's sync progress and the Node tab
   (`src-tauri/src/node/process.rs`, `mod.rs`). On easynet there is no explorer: the tip comes from the headers the
   node has checked.
@@ -173,7 +203,8 @@ macOS.
   wallets (v0.2.6) reach the eCash node's JSON-RPC with BitWindow's login or the one typed in Settings > Node &
   connection: plain HTTP only (`https://` is refused), no proxy, host and port only (`src-tauri/src/ecash/conn.rs`).
   On easynet the eCash node the app runs talks to easynet's other nodes (P2P, its network port), starting from the
-  seed in `network.rs`.
+  seed in `network.rs`; on beta (v0.5.1) to beta's other nodes, from the node's own seeds. With another computer's
+  node (v0.5.1), the FreeBank node and the eCash wallet reach it at the address typed at setup.
 - **This computer's own addresses:** Settings > Security tries a few TCP connections to them, to see which of the
   node's ports other computers could reach (`src-tauri/src/security.rs`). They stay on this computer.
 - **Links** (the explorer, GitHub, BitWindow's site) open in your browser, not in the app. The allowed ones are
@@ -325,8 +356,11 @@ The `.deb`'s hash must be the one in the release's `SHA256SUMS`, and the program
 - **The relay's own binary** at app.ecxfreebank.com can't be checked yet; the page it serves can (above). The relay
   only passes sealed messages along, and the desktop decides everything a phone may do (its daily limit, your
   approval, Face ID).
-- **The eCash node and enforcer the app installs on easynet** are mbdrivechains' builds of eCash's node and LayerTwo
-  Labs' enforcer. The app checks they are the files this release names, not how they were built: easynet's release
-  notes at `github.com/mbdrivechains/bitcoin/releases` say how each was built.
+- **The eCash node and enforcer the app installs on easynet and on beta** are mbdrivechains' builds of eCash's node and
+  LayerTwo Labs' enforcer. The app checks they are the files this release names, not how they were built: their
+  release notes at `github.com/mbdrivechains/bitcoin/releases` say how each was built (betanet-967000-1's Linux build is
+  a Guix build, rebuilt twice to the same sha256). The snapshots' UTXO hashes are compiled into that node: the
+  967,000 entry is mbdrivechains' (checked against Bitcoin Core 31.1 validated from genesis, per that release), the
+  935,000 one Bitcoin Core's own.
 - **Other software you run with FreeBank** (on beta, the eCash node and enforcer you run, BitWindow) is not covered
   here.

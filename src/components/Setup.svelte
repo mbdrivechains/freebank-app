@@ -26,7 +26,18 @@
     type SetupInfo,
     type StackCheck,
   } from "../lib/node";
-  import { network, stack as ownStack, switchNetwork, STACK_STAGES, type StackProgress, type StackStatus } from "../lib/network";
+  import {
+    gigabytes,
+    network,
+    snapshotWords,
+    stack as ownStack,
+    stackStages,
+    switchNetwork,
+    SNAPSHOT_PENDING_START,
+    type Remote,
+    type StackProgress,
+    type StackStatus,
+  } from "../lib/network";
 
   const dispatch = createEventDispatcher<{ ready: void; manual: void }>();
 
@@ -167,17 +178,37 @@
         return;
       }
       stack = await node.stackCheck();
-      // The app's own eCash node and enforcer (v0.5.0), stopped: start them, then look again.
+      // The app's own eCash node and enforcer (v0.5.0), stopped: start them, then look again. Not while they are being
+      // installed (this screen was left and opened again): the install starts them itself.
       const ownStack_ = info.settings.stack;
-      if (!stack.found && ownStack_ && info.settings.rest === `127.0.0.1:${ownStack_.ports.rpc}` && !info.settings.demo) {
+      const ownInstalling = !stack.found && $network.stack ? await ownStack.progress().catch(() => null) : null;
+      if (
+        !stack.found &&
+        ownStack_ &&
+        !ownInstalling?.running &&
+        info.settings.rest === `127.0.0.1:${ownStack_.ports.rpc}` &&
+        !info.settings.demo
+      ) {
         try {
           await ownStack.start();
           stack = await node.stackCheck();
         } catch (e) {
-          startError = String(e);
+          // A snapshot waiting to load: its card offers Continue (v0.5.1).
+          if (!String(e).startsWith(SNAPSHOT_PENDING_START)) startError = String(e);
         }
       }
-      if (!stack.found && $network.stack) own = await ownStack.status().catch(() => null);
+      if (!stack.found && $network.stack) {
+        own = await ownStack.status(true).catch(() => null);
+        // An install under way (this screen was left and opened again): its progress again.
+        const p = ownInstalling;
+        if (p?.running) {
+          ownProg = p;
+          watchOwn();
+        } else if (own?.installed && !own.snapshot_pending && own.node_up) {
+          // Installed and catching up (a full sync takes days): look again every few seconds, and go on once it's there.
+          watchSyncingOwn();
+        }
+      }
       if (!stack.found || !auto) {
         screen = "stack";
       } else {
@@ -206,22 +237,112 @@
   let ownProg: StackProgress | null = null;
   // On beta, easynet is offered too (it needs no BitWindow).
   $: easynetOffered = $network.id === "beta" && $network.all.some(([id, , offered]) => id === "easynet" && offered);
-  $: ownStage = ownProg ? STACK_STAGES.findIndex(([id]) => id === ownProg!.stage) : -1;
-  async function installOwn() {
+  $: ownStages = stackStages(ownProg?.snapshot);
+  $: ownStage = ownProg ? ownStages.findIndex(([id]) => id === ownProg!.stage) : -1;
+  // Beta's (v0.5.1): the whole chain (about 890 GB), from a snapshot when one answers (looked for first),
+  // its blocks on a disk of their own if the person likes.
+  $: bigChain = (own?.full_gb ?? 0) >= 100;
+  $: available = (own?.offers ?? []).filter((o) => o.available);
+  let startFrom: string | null = null;
+  $: if (own && startFrom === null) startFrom = available[0]?.id ?? "full";
+  let blocksElsewhere = false;
+  let blocksDir = "";
+  let blocksFree: number | null = null;
+  // An install refused before it starts (a blocks folder that won't do, one already running): said in the card, by its
+  // button, not at the foot of the page.
+  let ownError = "";
+  let blocksMissing = false;
+  async function checkBlocksDir() {
+    ownError = "";
+    const d = blocksDir.trim();
+    blocksFree = d ? await ownStack.free(blocksDir).catch(() => null) : null;
+    blocksMissing = !!d && blocksFree == null;
+  }
+  $: diskFree = blocksElsewhere ? (blocksDir.trim() ? blocksFree : null) : (own?.blocks_free ?? null);
+  $: diskShort = bigChain && diskFree != null && diskFree < (own?.full_gb ?? 0) * 1e9;
+
+  async function installOwn(resume = false) {
     startError = "";
+    ownError = "";
     try {
-      await ownStack.install();
+      await ownStack.install(
+        bigChain && !resume
+          ? { snapshot: startFrom, blocks: blocksElsewhere ? blocksDir.trim() || null : null, take: true }
+          : { take: true },
+      );
     } catch (e) {
-      startError = String(e);
+      ownError = String(e);
       return;
     }
+    watchOwn();
+  }
+  function watchOwn() {
     poll(async () => {
       ownProg = await ownStack.progress().catch(() => ownProg);
       if (ownProg && !ownProg.running) {
         stopPolling();
         if (ownProg.done) check();
+        else own = await ownStack.status(true).catch(() => own);
       }
     }, 700);
+  }
+  function watchSyncingOwn() {
+    poll(async () => {
+      own = await ownStack.status(true).catch(() => own);
+      const c = await node.stackCheck().catch(() => null);
+      if (c?.found) {
+        stopPolling();
+        check();
+      }
+    }, 10000);
+  }
+
+  // Stop and delete (v0.5.1): the install, the snapshot or the sync stops at once, and what it wrote goes.
+  let removing = false;
+  async function removeOwn() {
+    removing = true;
+    startError = "";
+    try {
+      await ownStack.remove();
+      ownProg = null;
+    } catch (e) {
+      startError = String(e);
+    }
+    removing = false;
+    stopPolling();
+    await check(false);
+  }
+
+  async function startOwn() {
+    await goOn(async () => {
+      await ownStack.start();
+    });
+    await check();
+  }
+
+  // Another computer's eCash node and enforcer (v0.5.1): found by its IP or Tailscale name, used as they are.
+  let remoteHost = "";
+  let remote: Remote | null = null;
+  let finding = false;
+  async function findRemote() {
+    if (!remoteHost.trim()) return;
+    finding = true;
+    remote = null;
+    try {
+      remote = await ownStack.findRemote(remoteHost);
+    } catch (e) {
+      startError = String(e);
+    }
+    finding = false;
+  }
+  async function useRemote() {
+    const r = remote;
+    if (!r?.rest || !r.enforcer) return;
+    await goOn(async () => {
+      await ownStack.useRemote(r.rest!, r.enforcer!);
+    });
+    remote = null;
+    await check();
   }
 
   async function showInstall() {
@@ -410,7 +531,14 @@
 <div class="setup">
   {#if settingsOpen}
     <button class="link-btn back-link" on:click={() => (settingsOpen = false)}>← Back to setup</button>
-    <NodeSettings on:removed on:obliterated />
+    <NodeSettings
+      on:removed
+      on:obliterated
+      on:stackRemoved={() => {
+        settingsOpen = false;
+        check();
+      }}
+    />
 
   {:else if screen === "checking"}
     <div class="hero">
@@ -496,11 +624,18 @@
       {/if}
       {#if $network.stack}
         <div class="card steps" data-testid="own-stack">
-          <h3>Let FreeBank set it up</h3>
-          <p>
-            FreeBank downloads {$network.l1}'s node and enforcer (about 105 MB), checks them against the hashes it
-            knows, and runs them for you. The chain is small: it syncs in a few minutes.
-          </p>
+          <h3>{bigChain ? `Let FreeBank run ${$network.l1}'s node` : "Let FreeBank set it up"}</h3>
+          {#if bigChain}
+            <p>
+              FreeBank downloads {$network.l1}'s node and enforcer (about 105 MB), checks them against the hashes it
+              knows, and runs them for you. The whole chain comes to about {own?.full_gb} GB.
+            </p>
+          {:else}
+            <p>
+              FreeBank downloads {$network.l1}'s node and enforcer (about 105 MB), checks them against the hashes it
+              knows, and runs them for you. The chain is small: it syncs in a few minutes.
+            </p>
+          {/if}
           {#if own?.clashes?.length}
             <p class="hint">
               {#each own.clashes as c}Port {c.port} is in use by {c.name}. {/each}FreeBank's own node will use free ports
@@ -509,18 +644,153 @@
           {/if}
           {#if ownProg?.running}
             <ol class="stack-stages">
-              {#each STACK_STAGES as [id, label], i}
+              {#each ownStages as [id, label], i}
                 <li class:done={i < ownStage} class:now={i === ownStage}>
-                  {label}{#if i === ownStage && id.startsWith("download")}: {megabytes(ownProg.bytes, ownProg.total)}{:else if i === ownStage && id === "sync" && ownProg.headers}: block {(ownProg.blocks ?? 0).toLocaleString()} of {ownProg.headers.toLocaleString()}{/if}
+                  {label}{#if i === ownStage && id === "download-snapshot"}: {gigabytes(ownProg.bytes)} of {gigabytes(ownProg.total)}{#if ownProg.headers}; headers {ownProg.headers.toLocaleString()}{/if}{:else if i === ownStage && id.startsWith("download")}: {megabytes(ownProg.bytes, ownProg.total)}{:else if i === ownStage && id === "sync" && ownProg.headers}: block {(ownProg.blocks ?? 0).toLocaleString()} of {ownProg.headers.toLocaleString()}{/if}
                 </li>
               {/each}
             </ol>
-          {:else}
+            {#if bigChain}
+              <div class="row-actions">
+                <button class="secondary danger-text" on:click={removeOwn} disabled={removing} data-testid="own-stack-remove">
+                  {removing ? "Stopping…" : "Stop and delete"}
+                </button>
+              </div>
+              <p class="hint">Stop and delete stops it at once and deletes what it has written so far.</p>
+            {/if}
+          {:else if own?.snapshot_pending}
+            <p>
+              FreeBank's {$network.l1} node hasn't loaded its snapshot yet. Continue carries on: a download goes on from
+              where it stopped.
+            </p>
             <div class="row-actions">
-              <button on:click={installOwn} disabled={checking} data-testid="own-stack-install">Install the {$network.l1} node</button>
+              <button on:click={() => installOwn(true)} disabled={checking} data-testid="own-stack-continue">Continue</button>
+              <button class="secondary danger-text" on:click={removeOwn} disabled={removing || checking}>{removing ? "Stopping…" : "Stop and delete"}</button>
+            </div>
+          {:else if own?.installed}
+            {#if own.stopped_low}<p class="soft-error">{own.stopped_low}</p>{/if}
+            <p data-testid="own-stack-syncing">
+              {#if own.node_up}
+                FreeBank's {$network.l1} node is catching up: block {(own.blocks ?? 0).toLocaleString()}{own.headers ? ` of ${own.headers.toLocaleString()}` : ""}.
+                FreeBank goes on by itself once it is far enough.
+              {:else}
+                FreeBank's {$network.l1} node is stopped.
+              {/if}
+              {#if own.used != null}It takes {gigabytes(own.used)}{own.blocks_free != null ? `, with ${gigabytes(own.blocks_free)} free there` : ""}.{/if}
+            </p>
+            <div class="row-actions">
+              {#if !own.node_up}<button on:click={startOwn} disabled={checking}>Start it</button>{/if}
+              <button class="secondary danger-text" on:click={removeOwn} disabled={removing || checking}>{removing ? "Stopping…" : "Stop and delete"}</button>
+            </div>
+          {:else}
+            {#if bigChain}
+              <fieldset class="start-from" data-testid="own-start-from">
+                <legend>Start from</legend>
+                {#each available as o (o.id)}
+                  <label><input type="radio" bind:group={startFrom} value={o.id} /> <span>{snapshotWords(o)}</span></label>
+                {/each}
+                <label><input type="radio" bind:group={startFrom} value="full" /> <span>A full sync from the start: days, with nothing to download first.</span></label>
+              </fieldset>
+              {#if !available.length}
+                <p class="hint">No snapshot answered just now, so the node syncs from the start. Check again later for a faster start.</p>
+              {/if}
+              <p class="hint">
+                A snapshot gets the node to the chain's tip in hours, not days: most of it is the download (about 9.4 GB). It
+                then checks the older blocks behind it, so the disk fills either way: a snapshot saves time, not space.
+              </p>
+              <p class="disk" data-testid="own-disk">
+                Its blocks go in <code>{blocksElsewhere ? blocksDir.trim() || "the folder below" : own?.blocks_at}</code>{diskFree != null ? `: ${gigabytes(diskFree)} free there` : ""}.
+              </p>
+              <label class="check">
+                <input type="checkbox" bind:checked={blocksElsewhere} />
+                Put the blocks on a disk of their own (a bigger one). FreeBank makes its own folder in the one you give,
+                and Stop and delete removes only that. The rest, about 15 GB, stays with FreeBank.
+              </label>
+              {#if blocksElsewhere}
+                <input
+                  type="text"
+                  bind:value={blocksDir}
+                  on:change={checkBlocksDir}
+                  on:blur={checkBlocksDir}
+                  placeholder="/media/you/big-disk"
+                  spellcheck="false"
+                  data-testid="own-blocks-dir"
+                />
+                {#if blocksMissing}
+                  <p class="soft-error">That folder isn't there. Give one that exists, as a full path: FreeBank makes its own folder inside it.</p>
+                {/if}
+              {/if}
+              {#if diskShort}
+                <p class="hint warn" data-testid="own-disk-short">
+                  That disk has {gigabytes(diskFree)} free; the whole chain needs about {own?.full_gb} GB. FreeBank stops the
+                  node when under 20 GB is left, and you can stop and delete it at any point.
+                </p>
+              {:else}
+                <p class="hint">You can stop and delete it at any point, and FreeBank stops the node itself if under 20 GB is left.</p>
+              {/if}
+            {/if}
+            <div class="row-actions">
+              <button on:click={() => installOwn()} disabled={checking || (blocksElsewhere && !blocksDir.trim())} data-testid="own-stack-install">Install the {$network.l1} node</button>
             </div>
           {/if}
           {#if ownProg?.error}<p class="soft-error">{ownProg.error}</p>{/if}
+          {#if ownError}<p class="soft-error" data-testid="own-error">{ownError}</p>{/if}
+        </div>
+      {/if}
+      {#if !info?.settings.demo}
+        <div class="card steps" data-testid="remote-stack">
+          <h3>Or use another computer's</h3>
+          <p>
+            If a computer near you runs {$network.l1}'s node and enforcer (in BitWindow, or set up by hand), FreeBank can
+            use them. Nothing is downloaded here, and FreeBank deletes nothing on that computer.
+          </p>
+          <div class="row-inline">
+            <input
+              type="text"
+              bind:value={remoteHost}
+              placeholder="IP address or Tailscale name"
+              spellcheck="false"
+              data-testid="remote-host"
+              on:keydown={(e) => e.key === "Enter" && findRemote()}
+            />
+            <button class="secondary" on:click={findRemote} disabled={finding || !remoteHost.trim()} data-testid="remote-find">{finding ? "Looking…" : "Find it"}</button>
+          </div>
+          {#if remote}
+            {#if remote.rest && remote.enforcer && remote.on_network}
+              <p class="hint" data-testid="remote-found">
+                Found its eCash node at <code>{remote.rest}</code>{remote.l1_blocks != null ? ` (block ${remote.l1_blocks.toLocaleString()})` : ""}
+                and its enforcer at <code>{remote.enforcer}</code>.
+              </p>
+              {#if remote.tailscale}
+                <p class="hint">Over Tailscale: the link is encrypted.</p>
+              {:else}
+                <p class="hint warn">
+                  {remote.address} isn't a Tailscale address, so what FreeBank and that computer say to each other crosses
+                  your network unencrypted, including the eCash login if you give FreeBank one.
+                </p>
+              {/if}
+              <div class="row-actions">
+                <button on:click={useRemote} disabled={checking || !!ownProg?.running} data-testid="remote-use">Use them</button>
+              </div>
+              {#if ownProg?.running}
+                <p class="hint">FreeBank is installing its own node above: stop and delete it, or let it finish, first.</p>
+              {/if}
+            {:else}
+              <p class="soft-error" data-testid="remote-missing">{remote.detail}</p>
+              {#if remote.address && !(remote.rest && remote.enforcer)}
+                <p class="hint">
+                  For FreeBank to reach them, that computer's eCash node needs <code>rest=1</code>, <code>rpcbind=</code> its
+                  own address and <code>rpcallowip=</code> this computer's; its enforcer needs <code>--serve-grpc-addr=</code>
+                  its address and port 50051. FreeBank tried {remote.tried.join(", ")}.
+                </p>
+              {/if}
+            {/if}
+          {/if}
+          <p class="hint">
+            FreeBank's eCash wallet logs in to that node with a login you type under Settings, eCash. It then adds two
+            watch-only wallets of its own there (the node looks through beta's blocks once to fill them) and sends your
+            payments through it. It never opens that node's other wallets.
+          </p>
         </div>
       {/if}
       {#if easynetOffered}
@@ -831,6 +1101,58 @@
 </div>
 
 <style>
+  /* v0.5.1: beta's own node and another computer's. */
+  .start-from {
+    border: 0;
+    margin: 0.5rem 0 0;
+    padding: 0;
+  }
+  .start-from legend {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  .start-from label,
+  label.check {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    margin-top: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+  .start-from legend,
+  p.disk {
+    font-size: 14px;
+  }
+  p.disk {
+    color: var(--text-secondary);
+  }
+  .start-from label:has(input:checked) {
+    color: var(--text-color);
+  }
+  .start-from input,
+  label.check input {
+    margin-top: 3px;
+    accent-color: var(--accent-color);
+    flex: none;
+  }
+  p.disk {
+    margin: 0.75rem 0 0;
+    overflow-wrap: anywhere;
+  }
+  .row-inline {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .row-inline input {
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+  .hint.warn {
+    color: var(--warn-color, #b7791f);
+  }
   .stack-stages {
     margin: 0.25rem 0 0;
     padding-left: 1.2rem;

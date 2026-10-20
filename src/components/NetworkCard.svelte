@@ -1,9 +1,10 @@
 <script lang="ts">
   // Settings › Node & connection (v0.5.0): which network FreeBank runs on, the switch to another (the app restarts on
   // it; each network keeps its own wallet, settings and node), and the eCash node and enforcer the app runs itself for
-  // this network, with Start and Stop.
-  import { onDestroy, onMount } from "svelte";
-  import { network, stack, switchNetwork, type StackStatus } from "../lib/network";
+  // this network, with Start and Stop. v0.5.1: how it started (a snapshot or a full sync), the older blocks it is
+  // still checking, what it takes on disk and what is free, and Stop and delete.
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { gigabytes, network, stack, startWords, switchNetwork, type Removed, type StackStatus } from "../lib/network";
 
   let asking: string | null = null;
   let busy = false;
@@ -47,6 +48,26 @@
     await load();
     busy = false;
   }
+
+  // Stop and delete (v0.5.1): asked once, then the node and the install stop at once and the chain goes. When it was
+  // the eCash node the app used, the app goes back to setup to choose another (App.svelte).
+  const dispatch = createEventDispatcher<{ stackRemoved: Removed }>();
+  let deleting = false;
+  let removed: Removed | null = null;
+  async function removeIt() {
+    busy = true;
+    error = "";
+    try {
+      removed = await stack.remove();
+      deleting = false;
+      own = null;
+      if (removed.in_use) dispatch("stackRemoved", removed);
+    } catch (e) {
+      error = String(e);
+    }
+    await load();
+    busy = false;
+  }
 </script>
 
 <div class="card" data-testid="network-card">
@@ -82,7 +103,28 @@
         <div><dt>Ports</dt><dd class="ports">network&nbsp;{own.ports.p2p} · RPC&nbsp;{own.ports.rpc} · enforcer&nbsp;{own.ports.grpc}</dd></div>
       {/if}
       <div><dt>Release</dt><dd class="mono">{own.installed}</dd></div>
+      {#if startWords(own.start)}
+        <div><dt>Started</dt><dd>{startWords(own.start)}</dd></div>
+      {/if}
+      {#if own.checked_to != null && own.checked_of}
+        <div><dt>Older blocks</dt><dd>checked up to {own.checked_to.toLocaleString()} of {own.checked_of.toLocaleString()}</dd></div>
+      {/if}
+      {#if own.used != null}
+        <div>
+          <dt>On disk</dt>
+          <dd data-testid="stack-disk">
+            {gigabytes(own.used)} of about {own.full_gb} GB{#if own.blocks_free != null}; {gigabytes(own.blocks_free)} free there{/if}{#if own.data_free != null}, {gigabytes(own.data_free)} where its other data is{/if}
+          </dd>
+        </div>
+      {/if}
     </dl>
+    {#if own.stopped_low}<p class="soft-error">{own.stopped_low}</p>{/if}
+    {#if own.snapshot_pending}
+      <p class="small">Its snapshot isn't loaded yet. Continue carries on: a download goes on from where it stopped.</p>
+      <div class="row-actions">
+        <button on:click={() => run(() => stack.install())} disabled={busy}>Continue</button>
+      </div>
+    {/if}
     {#if own.update}
       <p class="small">FreeBank has a newer {$network.l1} node, {own.update}. Updating stops these, puts it in place and starts it.</p>
       <div class="row-actions">
@@ -92,11 +134,31 @@
     <div class="row-actions">
       {#if own.node_up || own.enforcer_up}
         <button class="secondary" on:click={() => run(stack.stop)} disabled={busy}>Stop them</button>
-      {:else}
+      {:else if !own.snapshot_pending}
         <button class="secondary" on:click={() => run(stack.start)} disabled={busy}>Start them</button>
       {/if}
+      <button class="secondary danger-text" on:click={() => (deleting = true)} disabled={busy || deleting} data-testid="stack-remove">Stop and delete…</button>
     </div>
+    {#if deleting}
+      <div class="confirm-box">
+        <p>
+          This stops the FreeBank node, then this {$network.l1} node and its enforcer, and deletes their chain and data
+          ({gigabytes(own.used)}). The watch-only eCash wallets FreeBank made in that node go with it: their keys come
+          from your recovery words. FreeBank's own node and wallet stay, and so do the programs, so setting it
+          up again downloads only the chain.
+        </p>
+        <div class="row-actions">
+          <button class="danger" on:click={removeIt} disabled={busy} data-testid="stack-remove-go">{busy ? "Deleting…" : "Stop and delete"}</button>
+          <button class="secondary" on:click={() => (deleting = false)} disabled={busy}>Cancel</button>
+        </div>
+      </div>
+    {/if}
     <p class="hint">The FreeBank node needs both: stop it first (Node tab), or it stops when they do.</p>
+  {/if}
+  {#if removed}
+    <p class="small" data-testid="stack-removed">
+      FreeBank's {$network.l1} node is stopped and deleted{removed.deleted.length > 1 ? ` (${removed.deleted.length} folders)` : ""}: {gigabytes(removed.freed)} freed.{#if removed.kept.length} Left {removed.kept.join(", ")}: it doesn't carry FreeBank's mark.{/if}
+    </p>
   {/if}
   {#if error}<p class="soft-error">{error}</p>{/if}
 </div>
@@ -111,6 +173,9 @@
   .ports {
     word-break: keep-all;
     font-variant-numeric: tabular-nums;
+  }
+  .facts {
+    margin-bottom: 14px;
   }
   .facts div {
     display: flex;

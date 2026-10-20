@@ -98,6 +98,11 @@ welcome screen or in Settings › Node & connection, and FreeBank downloads easy
 them against the hashes it knows, runs them and syncs in a few minutes. Each network keeps its own wallet, settings
 and node; switching restarts the app.
 
+On beta without BitWindow (v0.5.1), setup offers to **run eCash beta's node and enforcer itself**: it looks for a snapshot
+first (ours at block 967,000, else LayerTwo Labs' at 935,000), shows the free space against the whole chain (about
+890 GB), and can put the blocks on a bigger disk. "Stop and delete" stops it and deletes its chain at any point. Or it
+can use **another computer's** eCash node and enforcer, found by IP address or Tailscale name.
+
 ## Features
 
 Four tabs: **Home** (balance, Send, Receive, Deposit, Withdraw), **Credit** (notes, houses, pools, bills), **eCash** (wallet,

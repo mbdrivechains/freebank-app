@@ -217,6 +217,8 @@ export interface ObliteratePlan {
   seed: string | null;
   /** Why it can't run right now. */
   blocked: string | null;
+  /** The eCash node is on another computer (v0.5.1): nothing there is deleted, in words. */
+  elsewhere: string | null;
 }
 
 /** How to remove the app itself: "deb" (sudo apt remove freebank), "appimage" (delete the file at

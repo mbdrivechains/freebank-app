@@ -78,6 +78,65 @@ export interface StackStatus {
   ports: Ports | null;
   /** Before an install: default ports other programs hold. The app's own node takes free ones instead. */
   clashes: Holder[];
+  // v0.5.1
+  /** The whole chain on disk, in GB, once the node has every block. */
+  full_gb: number;
+  /** The network's snapshots, and whether each answers now (before an install, or while one waits to load). */
+  offers: Offer[];
+  /** Where its blocks go (or would go), and the free bytes there; where its other data is, when the blocks have a disk
+   * of their own. */
+  blocks_at: string | null;
+  blocks_free: number | null;
+  data_free: number | null;
+  /** What its folders take now. */
+  used: number | null;
+  /** A snapshot chosen and not loaded yet: Continue carries on. */
+  snapshot_pending: string | null;
+  /** How it started: a snapshot's id, or "full". */
+  start: string | null;
+  /** While the node checks the history behind its snapshot: the block reached, of the snapshot's. */
+  checked_to: number | null;
+  checked_of: number | null;
+  /** Stopped for want of disk space: why. */
+  stopped_low: string | null;
+}
+
+/** A snapshot the node can start from. */
+export interface Offer {
+  id: string;
+  source: string;
+  height: number;
+  size: number;
+  available: boolean;
+}
+
+/** How to set it up: a snapshot's id or "full" (none: the first snapshot that answers), and a folder for the blocks. */
+export interface StackChoice {
+  snapshot?: string | null;
+  blocks?: string | null;
+  /** Setup's install: the app then uses this node. Settings' Continue and Update leave it where it is. */
+  take?: boolean;
+}
+
+/** What Stop and delete did. */
+export interface Removed {
+  deleted: string[];
+  freed: number;
+  kept: string[];
+  /** It was the eCash node the app used: the app goes back to setup. */
+  in_use: boolean;
+}
+
+/** What setup found on another computer. */
+export interface Remote {
+  rest: string | null;
+  enforcer: string | null;
+  on_network: boolean;
+  l1_blocks: number | null;
+  address: string | null;
+  tailscale: boolean;
+  tried: string[];
+  detail: string;
 }
 
 export interface StackProgress {
@@ -90,15 +149,55 @@ export interface StackProgress {
   blocks: number | null;
   headers: number | null;
   error: string | null;
+  /** The snapshot this install starts from (v0.5.1): its stages show. */
+  snapshot: string | null;
 }
 
 export const stack = {
-  status: () => tauriInvoke("stack_status") as Promise<StackStatus>,
-  install: () => tauriInvoke("stack_install") as Promise<void>,
+  /** offers: also ask the snapshots' servers which answer (setup only). */
+  status: (offers = false) => tauriInvoke("stack_status", { offers }) as Promise<StackStatus>,
+  install: (choice?: StackChoice) => tauriInvoke("stack_install", { choice: choice ?? null }) as Promise<void>,
   progress: () => tauriInvoke("stack_install_progress") as Promise<StackProgress>,
   start: () => tauriInvoke("stack_start") as Promise<void>,
   stop: () => tauriInvoke("stack_stop") as Promise<void>,
+  /** Stop and delete: the install or the node stops at once, and its chain is deleted. */
+  remove: () => tauriInvoke("stack_remove") as Promise<Removed>,
+  /** Free bytes where a typed folder is (or would be made). */
+  free: (path: string) => tauriInvoke("stack_free", { path }) as Promise<number | null>,
+  findRemote: (host: string) => tauriInvoke("stack_find_remote", { host }) as Promise<Remote>,
+  useRemote: (rest: string, enforcer: string) => tauriInvoke("stack_use_remote", { rest, enforcer }) as Promise<unknown>,
 };
+
+/** What a plain start says while a chosen snapshot waits to load (stack.rs SNAPSHOT_PENDING). */
+export const SNAPSHOT_PENDING_START = "FreeBank's eCash node hasn't loaded its snapshot yet.";
+
+/** "830 GB", "9.4 GB", "327 MB". */
+export function gigabytes(n: number | null | undefined): string {
+  if (n == null) return "…";
+  if (n < 1e9) return `${Math.round(n / 1e6)} MB`;
+  const g = n / 1e9;
+  return `${g >= 100 ? Math.round(g) : g >= 10 ? g.toFixed(0) : g.toFixed(1)} GB`;
+}
+
+/** Who made a snapshot, and how far it takes the node, in words. */
+export function snapshotWords(o: Offer): string {
+  return o.id === "ours"
+    ? `Our snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}), published by mbdrivechains with its eCash beta node build: not an L2L or eCash release. The node checks it against the hash compiled into it.`
+    : o.id === "l2l"
+      ? `LayerTwo Labs' snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}), the one BitWindow uses. The node checks it against Bitcoin Core's own hash for that block.`
+      : `${o.source}'s snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}).`;
+}
+
+/** How the node started, for Settings. */
+export function startWords(start: string | null | undefined): string {
+  return start === "ours"
+    ? "from mbdrivechains' snapshot (967,000)"
+    : start === "l2l"
+      ? "from LayerTwo Labs' snapshot (935,000)"
+      : start === "full"
+        ? "a full sync from the start"
+        : "";
+}
 
 /** What each install stage is called on screen. */
 export const STACK_STAGES: [string, string][] = [
@@ -110,3 +209,17 @@ export const STACK_STAGES: [string, string][] = [
   ["start", "Start them"],
   ["sync", "Catch up with the chain"],
 ];
+
+/** With a snapshot (v0.5.1): its stages, between starting the node and catching up. */
+export const SNAPSHOT_STAGES: [string, string][] = [
+  ["download-snapshot", "Download the snapshot, while the node gets the chain's headers"],
+  ["check-snapshot", "Check the snapshot against its hash"],
+  ["load-snapshot", "Load it into the node (many minutes; the node checks it too)"],
+];
+
+/** The stages an install goes through: with a snapshot's in the middle when it starts from one. */
+export function stackStages(snapshot: string | null | undefined): [string, string][] {
+  if (!snapshot) return STACK_STAGES;
+  const i = STACK_STAGES.findIndex(([id]) => id === "sync");
+  return [...STACK_STAGES.slice(0, i), ...SNAPSHOT_STAGES, ...STACK_STAGES.slice(i)];
+}

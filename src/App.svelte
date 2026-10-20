@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { loadNetwork, network } from "./lib/network";
+  import { gigabytes, loadNetwork, network, type Removed as StackRemoved } from "./lib/network";
   import { api, getSavedConfig, type Transaction, type BlockchainInfo } from "./lib/api";
   import {
     APP_NAME,
@@ -66,6 +66,8 @@
   let balance = 0;
   let transactions: Transaction[] = [];
   let blockchainInfo: BlockchainInfo | null = null;
+  // Back on setup (Stop and delete, Remove FreeBank), the header's block would be the stopped node's last one.
+  $: if (!connected) blockchainInfo = null;
   // v0.2.6 (the UX walk-through): four tabs, Home · Credit · eCash · Node, and Settings behind the gear. Send, Receive
   // and Deposit open in place on Home, as on the phone page.
   let currentView: "home" | "credit" | "ecash" | "node" | "settings" = "home";
@@ -127,7 +129,7 @@
   let localNode = false;
   // The gear works during setup too: Settings (and Obliterate) for someone stuck there.
   let setupSettings = false;
-  $: onSetup = !connected && !isPWA && !manualConnect && !gone && !removed;
+  $: onSetup = !connected && !isPWA && !manualConnect && !gone && !removed && !stackGone;
 
   async function onSetupReady() {
     demoMode.set(await node.setupInfo().then((i) => !!i.settings.demo).catch(() => false));
@@ -149,6 +151,16 @@
     clearReceipts();
     update.set(null);
     versions.update((v) => (v ? { ...v, node: null, commit: null } : v));
+  }
+
+  // After Stop and delete of the eCash node the app used (v0.5.1): say so, then back to setup to choose another.
+  let stackGone: StackRemoved | null = null;
+  function onStackRemoved(e: CustomEvent<StackRemoved>) {
+    stackGone = e.detail;
+    connected = false;
+    localNode = false;
+    clearReceipts();
+    update.set(null);
   }
 
   // After "Obliterate": say it's done and how to remove the app itself, then close.
@@ -441,6 +453,16 @@
       <p class="hint">Install FreeBank again whenever you like, and it picks up the same wallet. The app itself stays installed; remove it like any other app if you wish.</p>
       <button class="wide" on:click={() => (removed = null)}>Done</button>
     </div>
+  {:else if stackGone}
+    <div class="card removed" data-testid="stack-gone">
+      <h2>FreeBank's {$network.l1} node is deleted</h2>
+      <p>It is stopped and its chain deleted: {gigabytes(stackGone.freed)} freed. Your FreeBank node and wallet stay.</p>
+      <p class="hint">
+        FreeBank needs an {$network.l1} node to run. Setup offers its own again (the programs are kept, so only the chain
+        downloads), another computer's, or BitWindow's.
+      </p>
+      <button class="wide" on:click={() => (stackGone = null)}>Done</button>
+    </div>
   {:else if !connected && !isPWA && !manualConnect}
     <Setup
       bind:settingsOpen={setupSettings}
@@ -595,7 +617,7 @@
         {#if !isPWA}<PhoneSettings />{/if}
       {:else if settingsPart === "node"}
         {#if localNode}
-          <NodeSettings part="connection" on:removed={onRemoved} on:obliterated={onObliterated} />
+          <NodeSettings part="connection" on:removed={onRemoved} on:obliterated={onObliterated} on:stackRemoved={onStackRemoved} />
           {#if !demo}<EcashLogin />{/if}
           <ChangerSettings />
         {:else}

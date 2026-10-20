@@ -201,6 +201,8 @@ pub fn run() {
             }
             // Bidding for FreeBank blocks (v0.2.6): does nothing until it is turned on in the eCash tab.
             ecash::bmm::spawn(mgr.clone());
+            // The app's own eCash node stops itself before its disk fills (v0.5.1).
+            stack::spawn_watch(mgr.clone());
             let updater = Arc::new(app_update::AppUpdater::new(mgr.http.clone()));
             // Automatic updates (v0.4.2): nothing happens unless Settings > App updates turns them on.
             app_update::spawn_auto(updater.clone(), mgr.clone());
@@ -257,6 +259,10 @@ pub fn run() {
             stack::stack_install_progress,
             stack::stack_start,
             stack::stack_stop,
+            stack::stack_remove,
+            stack::stack_free,
+            stack::stack_find_remote,
+            stack::stack_use_remote,
             commands::get_balance,
             commands::get_new_address,
             commands::get_transactions,
