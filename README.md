@@ -97,7 +97,12 @@ the app just connects to it.
 **easynet** (v0.5.0), a small public test network on eCash's rules with no value, needs none of that: choose it on the
 welcome screen or in Settings › Node & connection, and FreeBank downloads easynet's eCash node and enforcer, checks
 them against the hashes it knows, runs them and syncs in a few minutes. Each network keeps its own wallet, settings
-and node; switching restarts the app.
+and node; switching restarts the app. On easynet, Receive's **Get easynet coins** (v0.6.1) asks the easynet faucet
+(https://faucet.ecxfreebank.com) for test coins, and payments link to FreeBank's easynet explorer,
+https://fbeasy.ecxfreebank.com.
+
+Where FreeBank runs the eCash node and enforcer itself (v0.6.1), it watches them while the app is open: one that stops
+on its own is noted with what its log said and started again, once an hour at most, and Home says so.
 
 On beta without BitWindow (v0.5.1), setup offers to **run eCash beta's node and enforcer itself**: it looks for a snapshot
 first (ours at block 967,000, else LayerTwo Labs' at 935,000), shows the free space against the whole chain (about

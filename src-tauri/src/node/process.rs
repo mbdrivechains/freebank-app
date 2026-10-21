@@ -101,7 +101,7 @@ fn file_len(p: &Path) -> u64 {
 }
 
 /// Bytes of a file from `from` (capped to its last `max`), or None if it is shorter than `from` (rewritten since).
-fn read_since(p: &Path, from: u64, max: u64) -> Option<String> {
+pub(crate) fn read_since(p: &Path, from: u64, max: u64) -> Option<String> {
     let mut f = std::fs::File::open(p).ok()?;
     let len = f.metadata().ok()?.len();
     if len < from {

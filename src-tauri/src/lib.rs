@@ -6,6 +6,7 @@ mod changer;
 mod clipboard;
 mod commands;
 mod ecash;
+mod faucet;
 mod feedback;
 mod house;
 mod house_watch;
@@ -253,6 +254,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             network::network_info,
+            faucet::faucet_ask,
             network::network_switch,
             stack::stack_status,
             stack::stack_install,

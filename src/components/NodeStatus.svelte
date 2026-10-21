@@ -64,6 +64,16 @@
   $: pct = st && tip ? Math.min(100, (st.blocks / tip) * 100) : 0;
   $: outbound = st ? st.peers.filter((p) => !p.inbound).length : 0;
   $: inbound = st ? st.peers.length - outbound : 0;
+  // No peers for minutes (v0.6.1): on a Mac's first easynet run the only node to sync from was down, and the Node tab
+  // looked frozen at block 0. Counted from when this tab first saw none; re-read on each refresh of `st`.
+  const LONELY_MS = 5 * 60_000;
+  let lonelySince: number | null = null;
+  let lonelyFor = 0;
+  $: if (st) {
+    if (up && st.peers.length === 0) lonelySince ??= Date.now();
+    else lonelySince = null;
+    lonelyFor = lonelySince === null ? 0 : Date.now() - lonelySince;
+  }
   $: external = !!st && !st.managed && st.state !== "down" && st.state !== "busy";
   $: pill = !st
     ? ""
@@ -411,7 +421,14 @@
         <span class="muted small">{outbound} out · {inbound} in</span>
       </div>
       {#if st.peers.length === 0}
-        <p class="muted">No peers yet. Your node is looking for them.</p>
+        {#if lonelyFor >= LONELY_MS}
+          <p class="soft-error" data-testid="no-peers-long">
+            No peers for {Math.floor(lonelyFor / 60_000)} minutes. New nodes find their first peer through FreeBank's seed
+            (seed.ecxfreebank.com), which may be down; your node keeps trying. If this goes on, report it.
+          </p>
+        {:else}
+          <p class="muted">No peers yet. Your node is looking for them.</p>
+        {/if}
       {:else}
         <ul class="peers">
           {#each st.peers as p}

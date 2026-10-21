@@ -6,6 +6,8 @@
   // - the bidding wallet, with no passphrase, so bids can go out unattended: only what is moved in, and Move back.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import QrCode from "./QrCode.svelte";
+  import FaucetAsk from "./FaucetAsk.svelte";
+  import { network } from "../lib/network";
   import { L1_TICKER } from "../lib/brand";
   import { ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import {
@@ -345,7 +347,11 @@
       {#if st.main.pending}<p class="muted small">{coins(st.main.pending)} on its way</p>{/if}
       {#if st.main.trusted + st.main.pending === 0 && st.bids.trusted === 0}
         <p class="small" data-testid="ecash-start">
-          Start by receiving ECX: Receive gives your address, and BitWindow or any eCash wallet can send to it.
+          {#if $network.faucet}
+            Start by receiving ECX: Receive gives your address and has Get {$network.name} coins.
+          {:else}
+            Start by receiving ECX: Receive gives your address, and BitWindow or any eCash wallet can send to it.
+          {/if}
         </p>
       {/if}
       {#if sent}
@@ -369,6 +375,7 @@
           <p class="mono small ec-addr">{address}</p>
           <button class="link-btn" on:click={() => copy(address)}>{copied === address ? "Copied" : "Copy"}</button>
         </div>
+        {#if $network.faucet}<FaucetAsk {address} coin="ECX" />{/if}
       {/if}
 
       {#if mode}

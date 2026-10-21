@@ -771,6 +771,13 @@ fn opener_scope_matches_the_frontend() {
     assert!(scope.starts_with("https://("));
     assert!(scope.ends_with("|t\\.me/freebank_beta_bot(\\?start=fund_[A-Za-z0-9]{25,59})?)"), "{scope}");
     assert!(!scope.contains("http?") && !scope.contains(".*") && !scope.contains("\\w+"));
+    // Every network's explorer opens (v0.6.1's easynet links did nothing until fbeasy was added here).
+    for n in crate::network::ALL {
+        if let Some(e) = n.explorer {
+            let host = e.strip_prefix("https://").expect("an https explorer").replace('.', "\\.");
+            assert!(scope.contains(&format!("({host}|")) || scope.contains(&format!("|{host}|")), "{e}");
+        }
+    }
     let perms = include_str!("../../capabilities/default.json");
     assert!(perms.contains("\"shell:allow-open\"") && !perms.contains("shell:allow-execute") && !perms.contains("shell:allow-spawn"));
 }

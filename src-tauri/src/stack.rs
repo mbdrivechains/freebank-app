@@ -423,11 +423,61 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
         return Err("The eCash node is being installed: it starts when the install gets there.".into());
     }
     let _one = OPS.lock().await;
-    start_locked(mgr, false).await
+    start_locked(mgr, Why::Hand).await
 }
 
-/// `start`, under OPS. `installing`: the install's own start, which may wait the whole first sync.
-async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String> {
+/// Who starts the stack.
+#[derive(Clone, Copy, PartialEq)]
+enum Why {
+    /// A start by hand, or the FreeBank node's.
+    Hand,
+    /// The install's own start (Update, Continue), which may wait the whole first sync.
+    Install,
+    /// The watch's restart (`check_gone`): it doesn't wait for a sync, and gives up when a stop is asked meanwhile.
+    Watch,
+}
+
+/// `start`, under OPS. Once both run, the watch expects them to (`check_gone`). A start that isn't the watch's clears
+/// what the watch found before: it no longer applies (v0.6.1 review 4).
+async fn start_locked(mgr: &NodeManager, why: Why) -> Result<(), String> {
+    let r = start_inner(mgr, why).await;
+    if r.is_ok() {
+        let mut k = kept().lock().unwrap();
+        k.want = true;
+        if why != Why::Watch {
+            k.stopped = None;
+            k.restarted = [None, None];
+        }
+    }
+    r
+}
+
+/// The watch's restart gives up once a stop was asked: `stop` clears `want` before it waits for OPS, which the restart
+/// holds (v0.6.1 review 2: Stop, Stop and delete and quitting waited up to five minutes behind it).
+fn check_watch(why: Why) -> Result<(), String> {
+    if why == Why::Watch && !kept().lock().unwrap().want {
+        return Err(STOP_ASKED.into());
+    }
+    Ok(())
+}
+const STOP_ASKED: &str = "A stop was asked meanwhile.";
+
+/// Stops asked (by hand, at quit, by Stop and delete): the watch's restart compares it before and after, so one asked
+/// meanwhile isn't followed by a "started it again" (v0.6.1 re-review 3).
+static STOPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A stop is asked, before it waits for OPS: the watch, if it is starting them again, gives up (`check_watch`), and what
+/// it found no longer applies (the user knows they are down).
+fn stop_asked() {
+    STOPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut k = kept().lock().unwrap();
+    k.want = false;
+    k.stopped = None;
+    k.restarted = [None, None];
+}
+
+async fn start_inner(mgr: &NodeManager, why: Why) -> Result<(), String> {
+    let installing = why == Why::Install;
     let s = network::current().stack.ok_or("This network has no eCash node the app installs.")?;
     let mut st = mgr.settings.lock().await.stack.clone().ok_or("The app hasn't installed its eCash node.")?;
     if st.tag != s.tag {
@@ -473,6 +523,7 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
             mgr.save_settings(settings).await?;
         }
     }
+    let mut node_child: Option<std::process::Child> = None;
     if !node_up {
         for port in [st.ports.p2p, st.ports.rpc, st.ports.zmq] {
             if let Some(h) = holder(port) {
@@ -493,13 +544,32 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
         c.arg(format!("-datadir={}", st.node_dir().display())).arg(format!("-conf={}", st.node_dir().join("ecash.conf").display()));
         // Stop and delete may have begun meanwhile: no node is started under a folder about to go (review L1).
         check_cancel()?;
-        spawn_detached(&mut c).map_err(|e| format!("Couldn't start the eCash node: {}", e))?;
+        check_watch(why)?;
+        node_child = Some(spawn_detached(&mut c).map_err(|e| format!("Couldn't start the eCash node: {}", e))?);
         crate::activity::note("stack: eCash node started");
     }
     // The enforcer needs the node's RPC. A node with a big chain takes minutes to load its block index.
     let until = Instant::now() + Duration::from_secs(300);
     while node_call(&st, s, "getblockcount").await.is_err() {
         check_cancel()?;
+        if let Err(e) = check_watch(why) {
+            // The node it just started may not have written its pid file yet, so the stop could miss it: it goes here
+            // (v0.6.1 re-review 2).
+            if let Some(mut c) = node_child.take() {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(c.id() as libc::pid_t, libc::SIGTERM);
+                }
+                wait_gone(c.id(), &node_bin, 180).await;
+                let _ = c.try_wait();
+            }
+            return Err(e);
+        }
+        // One that ends at its start (bad data, a bad config) says so now, not after five minutes (v0.6.1 review 2).
+        if let Some(Ok(Some(status))) = node_child.as_mut().map(|c| c.try_wait()) {
+            let words = last_words(&st.node_files(s).join("debug.log")).map(|w| format!(" {}", w)).unwrap_or_default();
+            return Err(format!("The eCash node stopped as it started ({}).{}", status, words));
+        }
         if Instant::now() > until {
             return Err(format!("The eCash node didn't answer within 5 minutes: see {}", st.node_files(s).join("debug.log").display()));
         }
@@ -520,12 +590,14 @@ async fn start_locked(mgr: &NodeManager, installing: bool) -> Result<(), String>
         let mut c = std::process::Command::new(&enf_bin);
         c.args(enforcer_args(s, &st));
         check_cancel()?;
+        check_watch(why)?;
         let child = spawn_detached(&mut c).map_err(|e| format!("Couldn't start the enforcer: {}", e))?;
         std::fs::write(st.enforcer_dir().join("enforcer.pid"), child.id().to_string()).map_err(|e| e.to_string())?;
         crate::activity::note("stack: enforcer started");
     }
-    // Both were up already: nothing to wait for (review finding 7).
-    if node_up && enf_up {
+    // Both were up already: nothing to wait for (review finding 7). Nor for the watch's restart: the FreeBank node runs
+    // and catches up as they do.
+    if (node_up && enf_up) || why == Why::Watch {
         return Ok(());
     }
     set(|p| {
@@ -546,6 +618,7 @@ pub async fn stop(mgr: &NodeManager) -> Result<(), String> {
     if installing() {
         return halt_install(mgr, "Stopped. Continue carries on from where it was.").await;
     }
+    stop_asked();
     let _one = OPS.lock().await;
     let Some(st) = mgr.settings.lock().await.stack.clone() else { return Ok(()) };
     stop_locked(mgr, &st).await
@@ -569,6 +642,8 @@ async fn halt_install(mgr: &NodeManager, why: &str) -> Result<(), String> {
 
 /// `stop` for the stack `st` describes (its own release's programs), under OPS. An error if either is still running.
 async fn stop_locked(mgr: &NodeManager, st: &StackSettings) -> Result<(), String> {
+    // Every stop is meant: the watch no longer expects them up.
+    kept().lock().unwrap().want = false;
     let Some(s) = network::current().stack else { return Ok(()) };
     let st = st.clone();
     let enf_bin = enforcer_bin(mgr, &st.tag);
@@ -749,6 +824,179 @@ fn low_disk(st: &StackSettings, s: &Stack) -> Option<String> {
 fn stopped_low() -> &'static Mutex<Option<String>> {
     static L: Mutex<Option<String>> = Mutex::new(None);
     &L
+}
+
+/// What stopped on its own (v0.6.1): the watch found the app's own eCash node or enforcer gone while the app meant them
+/// to run. On a Mac's first easynet run the eCash node stopped with the app open, and nothing said so or why.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct StoppedOwn {
+    /// "node", "enforcer" or "both".
+    pub what: String,
+    /// When the watch found it (Unix seconds).
+    pub at: u64,
+    /// The last error in its log before it stopped, else how its log ends.
+    pub line: Option<String>,
+    /// The watch started it again: it does that once an hour at most.
+    pub restarted: bool,
+    /// Why starting it again failed.
+    pub restart_error: Option<String>,
+}
+
+/// The stack as the app left it, for the watch.
+struct Kept {
+    /// Started by the app (or found running when it started them): both should be up. Every stop clears it.
+    want: bool,
+    /// The watch's last restart of the eCash node and of the enforcer: a second stop of either within the hour waits for
+    /// Start; the other's first stop is still started again (v0.6.1 review; one time for both let them take turns).
+    restarted: [Option<Instant>; 2],
+    /// Shown until the next start by hand.
+    stopped: Option<StoppedOwn>,
+}
+
+fn kept() -> &'static Mutex<Kept> {
+    static K: Mutex<Kept> = Mutex::new(Kept { want: false, restarted: [None, None], stopped: None });
+    &K
+}
+
+/// Every minute, under the watch: a stack the app meant to run that has stopped on its own is noted with the last line
+/// of its log, and started again, once an hour at most; a second stop waits for Start.
+async fn check_gone(mgr: &NodeManager, st: &StackSettings, s: &Stack) {
+    if !kept().lock().unwrap().want || installing() {
+        return;
+    }
+    // A start or stop under way decides; look again next minute.
+    let Ok(_one) = OPS.try_lock() else { return };
+    let stops = STOPS.load(std::sync::atomic::Ordering::SeqCst);
+    let node_up = node_pid(st, s).is_some_and(|p| runs_bin(p, &bitcoind(mgr, &st.tag)));
+    let enf_up = enforcer_pid(st).is_some_and(|p| runs_bin(p, &enforcer_bin(mgr, &st.tag)));
+    if (node_up && enf_up) || !kept().lock().unwrap().want {
+        return;
+    }
+    let (what, name) = match (node_up, enf_up) {
+        (false, false) => ("both", "the eCash node and the enforcer"),
+        (false, true) => ("node", "the eCash node"),
+        _ => ("enforcer", "the enforcer"),
+    };
+    let line = if !node_up {
+        last_words(&st.node_files(s).join("debug.log"))
+    } else {
+        newest_file(&st.enforcer_dir().join("logs")).and_then(|p| last_words(&p))
+    };
+    // Which of the two this stop is about: [node, enforcer].
+    let which = [!node_up, !enf_up];
+    let again = {
+        let k = kept().lock().unwrap();
+        (0..2).any(|i| which[i] && k.restarted[i].is_some_and(|t| t.elapsed() < Duration::from_secs(3600)))
+    };
+    crate::activity::note(&format!(
+        "stack: {} stopped on its own{}: {}",
+        name,
+        if again { " again" } else { "" },
+        line.as_deref().unwrap_or("(nothing in its log)")
+    ));
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let mut gone = StoppedOwn { what: what.into(), at, line, restarted: false, restart_error: None };
+    if !again {
+        {
+            let mut k = kept().lock().unwrap();
+            for i in (0..2).filter(|&i| which[i]) {
+                k.restarted[i] = Some(Instant::now());
+            }
+        }
+        match start_locked(mgr, Why::Watch).await {
+            Ok(()) => {
+                gone.restarted = true;
+                crate::activity::note("stack: started again");
+            }
+            Err(e) => {
+                crate::activity::note(&format!("stack: starting it again failed: {}", e));
+                gone.restart_error = Some(e);
+            }
+        }
+    }
+    let mut k = kept().lock().unwrap();
+    // A stop asked meanwhile (`stop_asked` cleared want and the notice): it stands, and nothing is shown.
+    if STOPS.load(std::sync::atomic::Ordering::SeqCst) != stops || gone.restart_error.as_deref() == Some(STOP_ASKED) {
+        return;
+    }
+    k.want = gone.restarted;
+    k.stopped = Some(gone);
+}
+
+/// The watch's first look: a stack already running when the app opened, as "Keep running" leaves it (the FreeBank node
+/// is then found running, so nothing starts the stack), is watched too, if the app uses it (v0.6.1 review 3).
+async fn adopt(mgr: &NodeManager, st: &StackSettings, s: &Stack) {
+    let wanted = kept().lock().unwrap().want;
+    if wanted || installing() || !st.in_use(&*mgr.settings.lock().await) {
+        return;
+    }
+    let Ok(_one) = OPS.try_lock() else { return };
+    let node_up = node_pid(st, s).is_some_and(|p| runs_bin(p, &bitcoind(mgr, &st.tag)));
+    let enf_up = enforcer_pid(st).is_some_and(|p| runs_bin(p, &enforcer_bin(mgr, &st.tag)));
+    if node_up && enf_up {
+        kept().lock().unwrap().want = true;
+        crate::activity::note("stack: found running; the watch looks after it");
+    }
+}
+
+/// The app's own eCash node's debug.log and the enforcer's newest log, for a report's recent activity (v0.6.1).
+pub async fn report_logs(mgr: &NodeManager) -> Option<(PathBuf, Option<PathBuf>)> {
+    let s = network::current().stack?;
+    let st = mgr.settings.lock().await.stack.clone()?;
+    Some((st.node_files(s).join("debug.log"), newest_file(&st.enforcer_dir().join("logs"))))
+}
+
+/// The newest file in `dir` (the enforcer's rotating logs).
+fn newest_file(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter(|(_, p)| p.is_file())
+        .max_by_key(|(t, _)| *t)
+        .map(|(_, p)| p)
+}
+
+/// What a program's log says about how it stopped: the last error before a "Shutdown in progress" (the eCash node's
+/// orderly stop; "Shutdown: In progress" in older builds), else that it stopped normally; with no such line, the last
+/// error in its end, else that it ended without a word (a program killed or crashing writes nothing; its last lines go
+/// with a report). Without the time stamp; at most 300 characters.
+fn last_words(log: &Path) -> Option<String> {
+    let text = crate::node::process::read_since(log, 0, 16 * 1024)?;
+    let all: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines = &all[all.len().saturating_sub(40)..];
+    let stop = lines.iter().rposition(|l| {
+        let x = l.to_ascii_lowercase();
+        x.contains("shutdown in progress") || x.contains("shutdown: in progress")
+    });
+    let err = lines[..stop.unwrap_or(lines.len())].iter().rev().find(|l| {
+        let x = l.to_ascii_lowercase();
+        x.contains("error") || x.contains("fatal") || x.contains("panicked")
+    });
+    let pick = match (err, stop) {
+        (Some(e), _) => e,
+        (None, Some(_)) => return Some("It stopped normally, as if it had been asked to.".into()),
+        (None, None) if !lines.is_empty() => {
+            return Some("Its log ends with no error and no stop, as when a program is killed or crashes.".into())
+        }
+        (None, None) => return None,
+    };
+    Some(unstamped(pick).chars().take(300).collect())
+}
+
+/// A log line without its time stamp: "2026-10-21 05:45:20 " (FreeBank's node, older eCash builds), or
+/// "2026-10-21T05:45:20Z " (eCash 31) and "2026-10-21T05:45:20.123456Z " (the enforcer).
+fn unstamped(l: &str) -> &str {
+    let b = l.as_bytes();
+    if b.len() > 20 && b[4] == b'-' && b[7] == b'-' {
+        if b[10] == b' ' && b[13] == b':' && b[19] == b' ' {
+            return l[20..].trim_start();
+        }
+        if b[10] == b'T' {
+            return l.split_once(char::is_whitespace).map_or(l, |(_, r)| r.trim_start());
+        }
+    }
+    l
 }
 
 /// Cancel what the install is doing (Stop and delete, or the disk watch), with the reason it gives. Only an install
@@ -1108,6 +1356,8 @@ pub async fn remove(mgr: &Arc<NodeManager>) -> Result<Removed, String> {
 
 async fn remove_locked(mgr: &Arc<NodeManager>, st: &StackSettings) -> Result<Removed, String> {
     // Down first, without waiting for the install: that ends a download, a header wait or a snapshot load at once.
+    // Nothing is left to start again, and no notice stays for a stack that is gone (v0.6.1 review 4).
+    stop_asked();
     stop_locked(mgr, st).await?;
     let _one = OPS.lock().await;
     stop_locked(mgr, st).await?;
@@ -1159,13 +1409,19 @@ async fn remove_locked(mgr: &Arc<NodeManager>, st: &StackSettings) -> Result<Rem
 }
 
 /// While the app runs: every minute, an own node with less than LOW_DISK free where it writes is stopped (and an install
-/// in progress ends), before the disk fills. It says why in its status until it starts again.
+/// in progress ends), before the disk fills. It says why in its status until it starts again. And one that stopped on
+/// its own is noted and started again (`check_gone`, v0.6.1).
 pub fn spawn_watch(mgr: Arc<NodeManager>) {
     let Some(s) = network::current().stack else { return };
     tauri::async_runtime::spawn(async move {
+        let mut first = true;
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
             let Some(st) = mgr.settings.lock().await.stack.clone() else { continue };
+            if std::mem::take(&mut first) {
+                adopt(&mgr, &st, s).await;
+            }
+            check_gone(&mgr, &st, s).await;
             let up = node_pid(&st, s).is_some_and(|p| runs_bin(p, &bitcoind(&mgr, &st.tag)));
             if !up {
                 continue;
@@ -1537,7 +1793,7 @@ async fn install_stack(mgr: &Arc<NodeManager>, choice: Choice) -> Result<(), Str
     mgr.save_settings(settings).await?;
 
     set(|p| p.stage = "start".into());
-    start_locked(mgr, true).await
+    start_locked(mgr, Why::Install).await
 }
 
 /// A stack install is under way (the network switch and Obliterate wait for it).
@@ -1617,6 +1873,8 @@ pub struct Status {
     pub checked_of: Option<u64>,
     /// Stopped by the disk watch: why.
     pub stopped_low: Option<String>,
+    /// Stopped on its own while the app meant it to run (v0.6.1), until the next start by hand.
+    pub stopped_own: Option<StoppedOwn>,
 }
 
 /// The stack's status. `with_offers`: also ask the snapshots' servers which answer (setup only: Settings never contacts
@@ -1626,6 +1884,7 @@ pub async fn status(mgr: &NodeManager, with_offers: bool) -> Status {
     let st = mgr.settings.lock().await.stack.clone();
     let mut out = Status { offered: true, full_gb: s.full_gb, ..Default::default() };
     out.stopped_low = stopped_low().lock().unwrap().clone();
+    out.stopped_own = kept().lock().unwrap().stopped.clone();
     match st {
         None => {
             out.clashes = [s.p2p, s.rpc, s.zmq, s.grpc, s.erpc].into_iter().filter_map(holder).collect();
@@ -1755,6 +2014,57 @@ mod tests {
 
     fn easy() -> &'static Stack {
         network::EASYNET.stack.unwrap()
+    }
+
+    #[test]
+    fn last_words_say_how_a_program_stopped() {
+        let d = std::env::temp_dir().join(format!("fblastwords-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let log = d.join("debug.log");
+        let say = |text: &str| {
+            std::fs::write(&log, text).unwrap();
+            last_words(&log)
+        };
+        // An error, then the orderly stop it caused: the error. The fee estimator's complaint at start is older.
+        assert_eq!(
+            say("2026-10-21 05:32:18 ERROR: CBlockPolicyEstimator::Read(): up-version (149900) fee estimate file\n\
+                 2026-10-21 05:36:14 UpdateTip: new best=00 height=9\n\
+                 2026-10-21 05:36:14 Error: A fatal internal error occurred, see debug.log for details\n\
+                 2026-10-21 05:36:14 Shutdown: In progress...\n2026-10-21 05:36:14 Shutdown: done\n")
+            .as_deref(),
+            Some("Error: A fatal internal error occurred, see debug.log for details")
+        );
+        // An orderly stop with no error in the lines before it (40 at most): asked to stop.
+        let quiet: String = (0..45).map(|i| format!("2026-10-21 05:40:{:02} UpdateTip: height={i}\n", i % 60)).collect();
+        assert_eq!(
+            say(&format!("2026-10-21 05:00:00 ERROR: old\n{quiet}2026-10-21 05:45:49 Shutdown: In progress...\n")).as_deref(),
+            Some("It stopped normally, as if it had been asked to.")
+        );
+        // eCash 31's words and stamps.
+        assert_eq!(
+            say("2026-10-21T09:04:41Z [warning] natpmp: Getting external address failed\n\
+                 2026-10-21T09:05:00Z UpdateTip: new best=00 height=2925\n\
+                 2026-10-21T09:05:02Z Shutdown in progress...\n2026-10-21T09:05:03Z Shutdown done\n")
+            .as_deref(),
+            Some("It stopped normally, as if it had been asked to.")
+        );
+        assert_eq!(
+            say("2026-10-21T09:05:01Z [error] Disk full\n2026-10-21T09:05:02Z Shutdown in progress...\n").as_deref(),
+            Some("[error] Disk full")
+        );
+        // Killed from outside: no stop line, no error.
+        assert_eq!(
+            say("2026-10-21 05:45:49 UpdateTip: new best=00 height=2905\n").as_deref(),
+            Some("Its log ends with no error and no stop, as when a program is killed or crashes.")
+        );
+        // The enforcer's stamps.
+        assert_eq!(
+            say("2026-10-21T05:45:20.123456Z  INFO enforcer: synced\n2026-10-21T05:45:21.5Z ERROR enforcer: lost the node's ZMQ\n").as_deref(),
+            Some("ERROR enforcer: lost the node's ZMQ")
+        );
+        assert_eq!(say(""), None);
+        std::fs::remove_dir_all(&d).ok();
+        assert_eq!(last_words(&log), None, "no log at all");
     }
 
     #[test]
@@ -2269,6 +2579,78 @@ mod tests {
         assert!(x.node_up && x.enforcer_up, "{x:?}");
         stop(&mgr).await.unwrap();
         drop(squatter);
+    }
+
+    /// After `stack_real_easynet` (its FB_STACK_DIR): the watch (v0.6.1) with the real programs. The eCash node stopped
+    /// from outside is noted with its log's last words and started again; the enforcer killed within the hour is noted
+    /// and left for Start; a stop by the app is never taken for one on its own.
+    #[tokio::test]
+    #[ignore]
+    async fn stack_watch_real_easynet() {
+        network::set(&network::EASYNET);
+        let s = network::EASYNET.stack.unwrap();
+        let dir = PathBuf::from(std::env::var("FB_STACK_DIR").expect("FB_STACK_DIR"));
+        let mgr = Arc::new(NodeManager::new(dir.join("app")));
+        let st = mgr.settings.lock().await.stack.clone().expect("run stack_real_easynet first");
+        let (node_bin, enf_bin) = (bitcoind(&mgr, &st.tag), enforcer_bin(&mgr, &st.tag));
+        let kill = |pid: u32, sig: i32, bin: PathBuf| async move {
+            unsafe { libc::kill(pid as libc::pid_t, sig) };
+            wait_gone(pid, &bin, 120).await;
+            assert!(!runs_bin(pid, &bin), "{pid} still runs");
+        };
+        start(&mgr).await.expect("start");
+        check_gone(&mgr, &st, s).await;
+        assert_eq!(status(&mgr, false).await.stopped_own, None, "both up: nothing to say");
+
+        // The eCash node asked to stop from outside (SIGTERM: its orderly stop).
+        let node = node_pid(&st, s).unwrap();
+        kill(node, libc::SIGTERM, node_bin.clone()).await;
+        check_gone(&mgr, &st, s).await;
+        let x = status(&mgr, false).await;
+        let gone = x.stopped_own.clone().expect("noted");
+        println!("{gone:?}");
+        assert_eq!((gone.what.as_str(), gone.restarted), ("node", true));
+        assert_eq!(gone.line.as_deref(), Some("It stopped normally, as if it had been asked to."));
+        assert!(x.node_up && x.enforcer_up && node_pid(&st, s) != Some(node), "started again: {x:?}");
+
+        // The enforcer killed within the hour: the other program's first stop, so started again too (v0.6.1 review).
+        let killed = "Its log ends with no error and no stop, as when a program is killed or crashes.";
+        let enf = enforcer_pid(&st).unwrap();
+        kill(enf, libc::SIGKILL, enf_bin.clone()).await;
+        check_gone(&mgr, &st, s).await;
+        let x = status(&mgr, false).await;
+        let gone = x.stopped_own.clone().expect("noted");
+        println!("{gone:?}");
+        assert_eq!((gone.what.as_str(), gone.restarted), ("enforcer", true));
+        assert_eq!(gone.line.as_deref(), Some(killed));
+        assert!(x.node_up && x.enforcer_up && enforcer_pid(&st) != Some(enf), "started again: {x:?}");
+
+        // The eCash node stops again within the hour: noted, not started again, though the enforcer's restart came in
+        // between (v0.6.1 re-review 1: one time for both let the two take turns).
+        let node = node_pid(&st, s).unwrap();
+        kill(node, libc::SIGTERM, node_bin.clone()).await;
+        check_gone(&mgr, &st, s).await;
+        let x = status(&mgr, false).await;
+        let gone = x.stopped_own.clone().expect("noted");
+        println!("{gone:?}");
+        assert_eq!((gone.what.as_str(), gone.restarted, gone.restart_error.as_deref()), ("node", false, None));
+        assert!(!x.node_up, "left for Start: {x:?}");
+        check_gone(&mgr, &st, s).await;
+        assert_eq!(status(&mgr, false).await.stopped_own, Some(gone), "noted once");
+
+        // Start by hand: both up, the note gone.
+        start(&mgr).await.expect("start by hand");
+        let x = status(&mgr, false).await;
+        assert!(x.node_up && x.enforcer_up && x.stopped_own.is_none(), "{x:?}");
+        // A launch that finds them running ("Keep running"): the watch takes them on (v0.6.1 review 3).
+        kept().lock().unwrap().want = false;
+        adopt(&mgr, &st, s).await;
+        assert!(kept().lock().unwrap().want, "adopted");
+        // The app's own stop is not a stop on its own.
+        stop(&mgr).await.unwrap();
+        check_gone(&mgr, &st, s).await;
+        let x = status(&mgr, false).await;
+        assert!(!x.node_up && !x.enforcer_up && x.stopped_own.is_none(), "{x:?}");
     }
 
     #[test]

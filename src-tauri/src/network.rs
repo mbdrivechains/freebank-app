@@ -130,6 +130,8 @@ pub struct Network {
     pub seed_tag: &'static str,
     /// The Telegram bot with play money, if the network has one.
     pub bot: Option<&'static str>,
+    /// FreeBank's faucet for this network (`POST` an address, v0.6.1), if it has one.
+    pub faucet: Option<&'static str>,
     // ---- Where an eCash stack already running is looked for (BitWindow's, or one set up by hand)
     pub rest: &'static str,
     pub enforcer: &'static str,
@@ -180,6 +182,7 @@ pub static BETA: Network = Network {
     demo: true,
     seed_tag: "ecxfreebank.com",
     bot: Some("freebank_beta_bot"),
+    faucet: None,
     rest: "127.0.0.1:18302",
     enforcer: "127.0.0.1:50051",
     stack: Some(&BETA_STACK),
@@ -285,11 +288,13 @@ pub static EASYNET: Network = Network {
     l1_chain: "",
     l1_names: &["easynet"],
     l1_kind: L1Kind::Test,
-    // easy.ecxfreebank.com shows easynet's eCash chain, not its FreeBank.
-    explorer: None,
+    // FreeBank's own explorer on easynet (the explorer session's, 2026-10-21); easy.ecxfreebank.com shows easynet's
+    // eCash chain, not its FreeBank.
+    explorer: Some("https://fbeasy.ecxfreebank.com"),
     demo: false,
     seed_tag: "ecxfreebank.com",
     bot: None,
+    faucet: Some("https://faucet.ecxfreebank.com/faucet"),
     rest: "127.0.0.1:28532",
     enforcer: "127.0.0.1:28551",
     stack: Some(&EASYNET_STACK),
@@ -317,6 +322,7 @@ pub static MAINNET: Network = Network {
     demo: false,
     seed_tag: "ecxfreebank.com",
     bot: None,
+    faucet: None,
     rest: "127.0.0.1:18302",
     enforcer: "127.0.0.1:50051",
     stack: None,
@@ -464,6 +470,8 @@ pub struct Info {
     pub explorer: Option<&'static str>,
     pub demo: bool,
     pub bot: Option<&'static str>,
+    /// The network has a faucet (`faucet_ask`).
+    pub faucet: bool,
     /// The app can install this network's eCash node and enforcer itself.
     pub stack: bool,
     /// Every network, for the switch: (id, name, offered).
@@ -479,6 +487,7 @@ pub fn info() -> Info {
         explorer: n.explorer,
         demo: n.demo,
         bot: n.bot,
+        faucet: n.faucet.is_some(),
         stack: n.stack.is_some(),
         all: ALL.iter().map(|x| (x.id, x.name, x.ready)).collect(),
     }

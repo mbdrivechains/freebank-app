@@ -5,6 +5,8 @@
   import { onMount } from "svelte";
   import { writable } from "svelte/store";
   import QrCode from "./QrCode.svelte";
+  import FaucetAsk from "./FaucetAsk.svelte";
+  import { network } from "../lib/network";
   import { api, tauriInvoke } from "../lib/api";
   import { BASE_TICKER, BETA_FAUCET_BOT, playMoneyUrl } from "../lib/brand";
   import { nice } from "../lib/errors";
@@ -113,6 +115,7 @@
         <p class="small muted">In Telegram, tap <strong>Start</strong> (or Restart) at the bottom of the chat.</p>
       </div>
     {/if}
+    {#if $network.faucet && address}<FaucetAsk {address} coin="sECX" />{/if}
     {#if members.length}
       <div class="member-addresses" data-testid="member-addresses">
         <p class="small"><strong>To be paid in a members-only house's notes</strong>, give its member address:</p>

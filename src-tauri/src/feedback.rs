@@ -100,7 +100,9 @@ pub async fn feedback_details(mgr: State<'_, Arc<NodeManager>>) -> Result<Detail
 pub async fn feedback_activity(mgr: State<'_, Arc<NodeManager>>) -> Result<String, String> {
     let datadir = mgr.settings.lock().await.datadir.clone();
     let node = (!datadir.is_empty()).then(|| std::path::PathBuf::from(datadir));
-    Ok(crate::activity::recent(&mgr.app_dir, node.as_deref()))
+    let stack = crate::stack::report_logs(&mgr).await;
+    let stack = stack.as_ref().map(|(n, e)| (n.as_path(), e.as_deref()));
+    Ok(crate::activity::recent(&mgr.app_dir, node.as_deref(), stack))
 }
 
 /// An error the screens showed, for the recent activity. Error texts can carry amounts without a unit, so every

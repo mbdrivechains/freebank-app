@@ -45,6 +45,7 @@
   import ReportDialog from "./components/ReportDialog.svelte";
   import { openReport, reportDraft } from "./lib/report";
   import SecurityAlerts from "./components/SecurityAlerts.svelte";
+  import StackAlert from "./components/StackAlert.svelte";
   import DepositPanel from "./components/DepositPanel.svelte";
   import WithdrawPanel from "./components/WithdrawPanel.svelte";
   import EcashPanel from "./components/EcashPanel.svelte";
@@ -202,7 +203,12 @@
   // Demo mode (v0.4.4): play money and no eCash node, so no eCash tab, Deposit or Withdraw.
   $: demo = $demoMode;
   let asking = false; // the header's Ask FreeBank (v0.4.6)
-  $: needCoins = demo ? "You need FreeBank coins first: Receive, above, has Get play money." : NEED_COINS;
+  // A network with a faucet (easynet, v0.6.1): Receive has its button too.
+  $: needCoins = demo
+    ? "You need FreeBank coins first: Receive, above, has Get play money."
+    : $network.faucet
+      ? `You need FreeBank coins first: Receive, above, has Get ${$network.name} coins, and Deposit brings them in from eCash.`
+      : NEED_COINS;
 
   // Connection form (Model A: remote-control your own custodial node)
   let connMode: ConnMode = "local";
@@ -575,6 +581,7 @@
     {:else if currentView === "home"}
       <WalletBanner />
       {#if localNode && !isPWA}<HouseDue />{/if}
+      {#if localNode && !isPWA && !demo}<StackAlert />{/if}
       {#if demo}<DemoGuide />{/if}
       <!-- Home / Dashboard -->
       <SecurityAlerts on:open={() => { currentView = "settings"; settingsPart = "security"; }} />

@@ -21,6 +21,9 @@ const MAX_LINE: usize = 300;
 /// What a report takes: the app's last lines and the node's chosen ones, within the relay's 40,000 characters.
 const APP_LINES: usize = 150;
 const NODE_LINES: usize = 80;
+/// The app's own eCash node's chosen lines and the enforcer's warnings and errors (v0.6.1).
+const ECASH_LINES: usize = 40;
+const ENFORCER_LINES: usize = 20;
 pub const MAX_ACTIVITY: usize = 38_000;
 
 /// The node's log lines a report may carry, by how their message starts. Anything else is left out and counted.
@@ -42,6 +45,24 @@ const NODE_KEEP: &[&str] = &[
     "FreeBank version",
     "Loaded best chain:",
     "connect() to",
+];
+
+/// The app's own eCash node's log lines a report may carry (v0.6.1), as `NODE_KEEP`: chain progress, start and stop,
+/// errors. Its wallet lines never go. eCash 31 marks levels "[warning]", "[error]".
+const ECASH_KEEP: &[&str] = &[
+    "UpdateTip:",
+    "init message:",
+    "Shutdown",
+    "ERROR",
+    "Error",
+    "[error]",
+    "Warning",
+    "WARNING",
+    "[warning]",
+    "Leaving InitialBlockDownload",
+    "eCash version",
+    "Bitcoin Core version",
+    "Loaded best chain:",
 ];
 
 static APP_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -128,7 +149,9 @@ fn to_minute(line: &str) -> String {
         && b[16] == b':'
         && b[..19].iter().enumerate().all(|(i, c)| matches!(i, 4 | 7 | 10 | 13 | 16) || c.is_ascii_digit());
     if stamp {
-        format!("{}{}", &line[..16], &line[19..])
+        // The enforcer's stamps carry a fraction of a second too ("20:09:31.287887Z"): it goes with the seconds.
+        let frac = if b.get(19) == Some(&b'.') { 1 + b[20..].iter().take_while(|c| c.is_ascii_digit()).count() } else { 0 };
+        format!("{}{}", &line[..16], &line[19 + frac..])
     } else {
         line.to_string()
     }
@@ -389,14 +412,54 @@ fn tail(path: &Path, n: usize, max_bytes: u64) -> Vec<String> {
     lines[skip..].iter().map(|l| l.to_string()).collect()
 }
 
-/// The node's lines a report may carry (`NODE_KEEP`), masked; the others are counted as "(n lines left out)".
-fn node_lines(raw: &[String]) -> Vec<String> {
+/// A node's lines a report may carry (`keep`: `NODE_KEEP`, `ECASH_KEEP`), masked; the others are counted as
+/// "(n lines left out)".
+fn node_lines(raw: &[String], keep: &[&str]) -> Vec<String> {
+    chosen(raw, |line| node_message(line).is_some_and(|m| keep.iter().any(|k| m.starts_with(k))))
+}
+
+/// A node's log line after its time stamp: "2026-10-21 05:45:20 " (FreeBank's node, older eCash builds) or
+/// "2026-10-21T05:45:20Z " (eCash 31). None for a line without one.
+fn node_message(line: &str) -> Option<&str> {
+    let b = line.as_bytes();
+    if b.len() > 21 && b[4] == b'-' && b[7] == b'-' && b[13] == b':' && b[16] == b':' {
+        if b[10] == b' ' && b[19] == b' ' {
+            return Some(&line[20..]);
+        }
+        if b[10] == b'T' && b[19] == b'Z' && b[20] == b' ' {
+            return Some(&line[21..]);
+        }
+    }
+    None
+}
+
+/// The enforcer's warnings and errors (its lines are "<time>  WARN <target>: …"), masked, without the source file each
+/// names; the others are counted.
+fn enforcer_lines(raw: &[String]) -> Vec<String> {
+    let raw: Vec<String> = raw.iter().map(|l| without_source(l)).collect();
+    chosen(&raw, |line| line.split_whitespace().take(3).any(|w| matches!(w, "ERROR" | "WARN")))
+}
+
+/// "… WARN zeromq::reconnect: /usr/local/cargo/registry/…/reconnect.rs:180: Reconnection attempt 1" → "… WARN
+/// zeromq::reconnect: Reconnection attempt 1": the enforcer's lines name the Rust file and line they came from.
+fn without_source(line: &str) -> String {
+    if let Some(i) = line.find(".rs:") {
+        let start = line[..i].rfind(' ').map_or(0, |s| s + 1);
+        let rest = &line[i + 4..];
+        let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if digits > 0 && rest[digits..].starts_with(": ") {
+            return format!("{}{}", &line[..start], &rest[digits + 2..]);
+        }
+    }
+    line.to_string()
+}
+
+/// The lines `keep` takes, masked and to the minute, with the runs it leaves out counted.
+fn chosen(raw: &[String], keep: impl Fn(&str) -> bool) -> Vec<String> {
     let mut out = Vec::new();
     let mut left_out = 0;
     for line in raw {
-        let b = line.as_bytes();
-        let stamped = b.len() > 20 && b[4] == b'-' && b[10] == b' ' && b[13] == b':' && b[19] == b' ';
-        if stamped && NODE_KEEP.iter().any(|k| line[20..].starts_with(k)) {
+        if keep(line) {
             if left_out > 0 {
                 out.push(format!("({left_out} lines left out)"));
                 left_out = 0;
@@ -413,8 +476,10 @@ fn node_lines(raw: &[String]) -> Vec<String> {
 }
 
 /// What "Include recent activity" sends: the app's last lines and the node's chosen ones, masked, at most
-/// `MAX_ACTIVITY` characters (the oldest lines go first).
-pub fn recent(app_dir: &Path, node_datadir: Option<&Path>) -> String {
+/// `MAX_ACTIVITY` characters (the oldest lines go first). With the app's own eCash node (`stack`: its debug.log, and
+/// the enforcer's newest log), theirs too (v0.6.1): on a Mac's first easynet run its eCash node stopped and nobody
+/// could tell why.
+pub fn recent(app_dir: &Path, node_datadir: Option<&Path>, stack: Option<(&Path, Option<&Path>)>) -> String {
     let path = log_path(app_dir);
     let mut app = tail(&path.with_extension("log.1"), APP_LINES, 64 * 1024);
     app.extend(tail(&path, APP_LINES, 64 * 1024));
@@ -422,22 +487,43 @@ pub fn recent(app_dir: &Path, node_datadir: Option<&Path>) -> String {
     let mut app: Vec<String> =
         app[app.len().saturating_sub(APP_LINES)..].iter().map(|l| cut(&to_minute(&mask(l)), MAX_LINE)).collect();
     let raw = node_datadir.map(|d| tail(&d.join("debug.log"), 600, 96 * 1024)).unwrap_or_default();
-    let mut node = node_lines(&raw);
+    let mut node = node_lines(&raw, NODE_KEEP);
     let skip = node.len().saturating_sub(NODE_LINES);
     node.drain(..skip);
+    let last = |mut v: Vec<String>, n: usize| {
+        let skip = v.len().saturating_sub(n);
+        v.drain(..skip);
+        v
+    };
+    let mut ecash = stack.map(|(log, _)| last(node_lines(&tail(log, 600, 96 * 1024), ECASH_KEEP), ECASH_LINES));
+    let mut enforcer = stack.map(|(_, log)| {
+        last(log.map(|l| enforcer_lines(&tail(l, 600, 96 * 1024))).unwrap_or_default(), ENFORCER_LINES)
+    });
+    let or_none = |v: &[String]| if v.is_empty() { "(none)".to_string() } else { v.join("\n") };
     loop {
-        let text = format!(
+        let mut text = format!(
             "== FreeBank app ==\n{}\n== FreeBank node (debug.log, chosen lines) ==\n{}\n",
             app.join("\n"),
-            if node.is_empty() { "(none)".to_string() } else { node.join("\n") }
+            or_none(&node)
         );
-        if text.chars().count() <= MAX_ACTIVITY || (app.is_empty() && node.is_empty()) {
+        if let (Some(e), Some(f)) = (&ecash, &enforcer) {
+            text.push_str(&format!(
+                "== The app's eCash node (debug.log, chosen lines) ==\n{}\n== Its enforcer (warnings and errors) ==\n{}\n",
+                or_none(e),
+                or_none(f)
+            ));
+        }
+        let n = |v: &Option<Vec<String>>| v.as_ref().map_or(0, Vec::len);
+        if text.chars().count() <= MAX_ACTIVITY || app.len() + node.len() + n(&ecash) + n(&enforcer) == 0 {
             return text;
         }
-        if node.len() > app.len() {
-            node.remove(0);
-        } else {
-            app.remove(0);
+        // The oldest line of the longest part goes.
+        let longest = [app.len(), node.len(), n(&ecash), n(&enforcer)].into_iter().enumerate().max_by_key(|(_, l)| *l).map_or(0, |(i, _)| i);
+        match longest {
+            0 => drop(app.remove(0)),
+            1 => drop(node.remove(0)),
+            2 => drop(ecash.as_mut().map(|v| v.remove(0))),
+            _ => drop(enforcer.as_mut().map(|v| v.remove(0))),
         }
     }
 }
@@ -503,7 +589,7 @@ mod tests {
         .lines()
         .map(String::from)
         .collect();
-        let got = node_lines(&raw);
+        let got = node_lines(&raw, NODE_KEEP);
         assert_eq!(
             got,
             vec![
@@ -522,6 +608,7 @@ mod tests {
         assert_eq!(utc(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(to_minute("2026-10-02T07:01:02Z node: started"), "2026-10-02T07:01Z node: started");
         assert_eq!(to_minute("2026-10-02 07:01:02 UpdateTip: x"), "2026-10-02 07:01 UpdateTip: x");
+        assert_eq!(to_minute("2026-10-21T20:09:31.287887Z  WARN x: y"), "2026-10-21T20:09Z  WARN x: y");
         assert_eq!(to_minute("(3 lines left out)"), "(3 lines left out)");
     }
 
@@ -540,7 +627,7 @@ mod tests {
         assert!(log_path(&dir).with_extension("log.1").exists(), "rotated");
         assert!(std::fs::metadata(log_path(&dir)).unwrap().len() <= MAX_FILE + 400);
         std::fs::write(dir.join("node/debug.log"), "boot\n2026-10-02 07:09:01 UpdateTip: new best=".to_string() + &"b".repeat(64) + " height=9\n").unwrap();
-        let r = recent(&dir, Some(&dir.join("node")));
+        let r = recent(&dir, Some(&dir.join("node")), None);
         assert!(r.starts_with("== FreeBank app ==\n"));
         assert!(r.contains(" event 3999 sent <hash> the phone link"));
         assert!(r.contains("2026-10-02 07:09 UpdateTip: new best=<hash> height=9"));
@@ -548,6 +635,44 @@ mod tests {
         assert!(!r.contains(&"f".repeat(64)) && !r.contains(&"b".repeat(64)));
         assert_eq!(r.lines().filter(|l| l.contains(" event ")).count(), APP_LINES);
         assert!(r.chars().count() <= MAX_ACTIVITY);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_report_carries_the_apps_own_ecash_node_and_enforcer() {
+        let dir = std::env::temp_dir().join(format!("fb-activity-stack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("debug.log");
+        let enf = dir.join("enforcer.log");
+        std::fs::write(
+            &node,
+            "2026-10-21T06:40:01Z eCash version v31.1.0 (release build)\n\
+             2026-10-21T06:45:40Z UpdateTip: new best=".to_string() + &"c".repeat(64) + " height=2905\n\
+             2026-10-21T06:45:41Z AddToWallet " + &"d".repeat(64) + " new\n\
+             2026-10-21T06:45:49Z [error] Disk full\n2026-10-21T06:45:49Z Shutdown in progress...\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &enf,
+            "2026-10-21T06:45:20.1Z  INFO bip300301_enforcer: synced to 2905\n\
+             2026-10-21T06:45:49.9Z ERROR bip300301_enforcer: lost the node at 100.64.0.7:28532\n\
+             2026-10-21T06:45:50.287887Z  WARN zeromq::reconnect: /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zeromq-0.6.0/src/reconnect.rs:180: Reconnection attempt 1\n",
+        )
+        .unwrap();
+        let r = recent(&dir, None, Some((&node, Some(&enf))));
+        let at = r.find("== The app's eCash node (debug.log, chosen lines) ==").expect("its section");
+        let mine = &r[at..];
+        assert!(mine.contains("eCash version v31.1.0"), "{mine}");
+        assert!(mine.contains("UpdateTip: new best=<hash> height=2905"));
+        assert!(mine.contains("[error] Disk full") && mine.contains("Shutdown in progress"));
+        assert!(!mine.contains("AddToWallet") && mine.contains("(1 lines left out)"), "its wallet lines never go");
+        assert!(mine.contains("== Its enforcer (warnings and errors) ==\n(1 lines left out)\n2026-10-21T06:45Z ERROR"), "{mine}");
+        assert!(mine.contains("\n2026-10-21T06:45Z  WARN zeromq::reconnect: Reconnection attempt 1"), "{mine}");
+        assert!(mine.contains("ERROR bip300301_enforcer: lost the node at <ip>"), "{mine}");
+        assert!(!r.contains("100.64.0.7"));
+        // Without the app's own stack, no such sections.
+        assert!(!recent(&dir, None, None).contains("eCash node"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

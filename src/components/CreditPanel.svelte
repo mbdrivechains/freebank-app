@@ -18,6 +18,7 @@
   import { nettingStep, roundHexFrom, type NettingRound } from "../lib/netting";
   import { BASE_TICKER, BETA_BOT_URL } from "../lib/brand";
   import { openUrl } from "../lib/node";
+  import { network } from "../lib/network";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import { nice } from "../lib/errors";
   import { walletLocked, withUnlock } from "../lib/wallet";
@@ -65,7 +66,9 @@
   export let demo = false;
   $: NEED_COINS = demo
     ? "You need FreeBank coins first: Home › Receive › Get play money brings some."
-    : "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
+    : $network.faucet
+      ? `You need FreeBank coins first: Home › Receive › Get ${$network.name} coins brings some.`
+      : "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
 
   function open(s: Seg) {
     seg = s;

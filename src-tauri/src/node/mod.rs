@@ -416,34 +416,33 @@ impl NodeManager {
                 return Some(h);
             }
         }
-        // A network without a FreeBank explorer (easynet): the best height this node's peers report, or its own headers.
-        let Some(explorer) = explorer() else {
-            let s = self.settings.lock().await.clone();
-            let c = detect::local_client(&self.http, &s);
-            let peers = c.call("getpeerinfo", vec![]).await.ok()?;
-            let from_peers = peers
-                .as_array()?
-                .iter()
-                // Headers it has checked from each peer, not the height a peer says it has (review finding 8).
-                .filter_map(|p| p["synced_headers"].as_i64())
-                .max()
-                .filter(|&h| h > 0)? as u64;
-            let headers = c.call("getblockchaininfo", vec![]).await.ok().and_then(|i| i["headers"].as_u64()).unwrap_or(0);
-            let h = from_peers.max(headers);
-            *self.explorer_tip.lock().unwrap() = Some((Instant::now(), h));
-            return Some(h);
+        // The explorer's tip; with none (or none answering: easynet's fbeasy is young, v0.6.1 review), the best height
+        // this node's peers report, or its own headers.
+        let from_explorer = match explorer() {
+            Some(explorer) => async {
+                let r = self.http.get(format!("{}/api/blocks/tip/height", explorer)).timeout(Duration::from_secs(8)).send().await.ok()?;
+                r.text().await.ok()?.trim().parse::<u64>().ok()
+            }
+            .await,
+            None => None,
         };
-        let text = self
-            .http
-            .get(format!("{}/api/blocks/tip/height", explorer))
-            .timeout(Duration::from_secs(8))
-            .send()
-            .await
-            .ok()?
-            .text()
-            .await
-            .ok()?;
-        let h: u64 = text.trim().parse().ok()?;
+        let h = match from_explorer {
+            Some(h) => h,
+            None => {
+                let s = self.settings.lock().await.clone();
+                let c = detect::local_client(&self.http, &s);
+                let peers = c.call("getpeerinfo", vec![]).await.ok()?;
+                let from_peers = peers
+                    .as_array()?
+                    .iter()
+                    // Headers it has checked from each peer, not the height a peer says it has (review finding 8).
+                    .filter_map(|p| p["synced_headers"].as_i64())
+                    .max()
+                    .filter(|&h| h > 0)? as u64;
+                let headers = c.call("getblockchaininfo", vec![]).await.ok().and_then(|i| i["headers"].as_u64()).unwrap_or(0);
+                from_peers.max(headers)
+            }
+        };
         *self.explorer_tip.lock().unwrap() = Some((Instant::now(), h));
         Some(h)
     }

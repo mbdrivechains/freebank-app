@@ -4,7 +4,7 @@
   // this network, with Start and Stop. v0.5.1: how it started (a snapshot or a full sync), the older blocks it is
   // still checking, what it takes on disk and what is free, and Stop and delete.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
-  import { gigabytes, network, stack, startWords, switchNetwork, type Removed, type StackStatus } from "../lib/network";
+  import { gigabytes, network, stack, startWords, stoppedOwnWords, switchNetwork, type Removed, type StackStatus } from "../lib/network";
 
   let asking: string | null = null;
   let busy = false;
@@ -119,6 +119,7 @@
       {/if}
     </dl>
     {#if own.stopped_low}<p class="soft-error">{own.stopped_low}</p>{/if}
+    {#if own.stopped_own}<p class={own.stopped_own.restarted ? "small" : "soft-error"} data-testid="stack-stopped-own">{stoppedOwnWords(own.stopped_own)}</p>{/if}
     {#if own.snapshot_pending}
       <p class="small">Its snapshot isn't loaded yet. Continue carries on: a download goes on from where it stopped.</p>
       <div class="row-actions">
@@ -132,10 +133,11 @@
       </div>
     {/if}
     <div class="row-actions">
+      {#if !(own.node_up && own.enforcer_up) && !own.snapshot_pending}
+        <button class="secondary" on:click={() => run(stack.start)} disabled={busy}>Start them</button>
+      {/if}
       {#if own.node_up || own.enforcer_up}
         <button class="secondary" on:click={() => run(stack.stop)} disabled={busy}>Stop them</button>
-      {:else if !own.snapshot_pending}
-        <button class="secondary" on:click={() => run(stack.start)} disabled={busy}>Start them</button>
       {/if}
       <button class="secondary danger-text" on:click={() => (deleting = true)} disabled={busy || deleting} data-testid="stack-remove">Stop and delete…</button>
     </div>

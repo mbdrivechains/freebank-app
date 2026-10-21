@@ -14,6 +14,8 @@ export interface NetworkInfo {
   demo: boolean;
   /** The Telegram bot with play money, if any. */
   bot: string | null;
+  /** The network has a faucet (v0.6.1: easynet's). */
+  faucet: boolean;
   /** The app can install this network's eCash node and enforcer itself. */
   stack: boolean;
   /** Every network: [id, name, offered]. */
@@ -28,6 +30,7 @@ export const BETA: NetworkInfo = {
   explorer: "https://explorer.ecxfreebank.com",
   demo: true,
   bot: "freebank_beta_bot",
+  faucet: false,
   stack: false,
   all: [["beta", "Beta", true]],
 };
@@ -99,6 +102,20 @@ export interface StackStatus {
   checked_of: number | null;
   /** Stopped for want of disk space: why. */
   stopped_low: string | null;
+  /** Stopped on its own while the app meant it to run (v0.6.1), until the next start by hand. */
+  stopped_own: StoppedOwn | null;
+}
+
+/** What the app's watch found (stack.rs `check_gone`): its eCash node or enforcer stopped on its own. */
+export interface StoppedOwn {
+  what: "node" | "enforcer" | "both";
+  /** When (Unix seconds). */
+  at: number;
+  /** The last error in its log before it stopped, else how its log ends. */
+  line: string | null;
+  /** The app started it again (once an hour at most). */
+  restarted: boolean;
+  restart_error: string | null;
 }
 
 /** A snapshot the node can start from. */
@@ -197,6 +214,25 @@ export function startWords(start: string | null | undefined): string {
       : start === "full"
         ? "a full sync from the start"
         : "";
+}
+
+/** The stop (its `at`) whose Home notice × hid: for the rest of the session, as Home is left and come back to. */
+export const stoppedOwnHidden = writable(0);
+
+/** What the watch found, in sentences for Home and Settings. */
+export function stoppedOwnWords(s: StoppedOwn): string {
+  const name = s.what === "both" ? "The eCash node and the enforcer" : s.what === "node" ? "The eCash node" : "The enforcer";
+  const it = s.what === "both" ? "them" : "it";
+  const time = new Date(s.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // stack.rs `last_words` says some things in its own sentence; others are the log's own line.
+  const own = !!s.line && /^It(s log ends with no error| stopped normally)/.test(s.line);
+  const log = !s.line ? "" : own ? ` ${s.line}` : ` Its log says: “${s.line}”`;
+  const then = s.restarted
+    ? ` FreeBank started ${it} again.`
+    : s.restart_error
+      ? ` Starting ${it} again failed: ${s.restart_error}`
+      : ` It happened again within the hour, so FreeBank left ${it} stopped: press Start them.`;
+  return `${name} stopped by ${s.what === "both" ? "themselves" : "itself"} at ${time}.${log}${then}`;
 }
 
 /** What each install stage is called on screen. */
