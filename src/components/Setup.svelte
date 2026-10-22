@@ -245,8 +245,11 @@
   // its blocks on a disk of their own if the person likes.
   $: bigChain = (own?.full_gb ?? 0) >= 100;
   $: available = (own?.offers ?? []).filter((o) => o.available);
+  // The first snapshot that answers, until the person picks one (v0.6.3: not fixed at the first look, which comes before
+  // the snapshots are asked when the old node is still installed, as after Stop and delete).
   let startFrom: string | null = null;
-  $: if (own && startFrom === null) startFrom = available[0]?.id ?? "full";
+  let startPicked = false;
+  $: if (own && !startPicked) startFrom = available[0]?.id ?? "full";
   let blocksElsewhere = false;
   let blocksDir = "";
   let blocksFree: number | null = null;
@@ -695,15 +698,15 @@
               <fieldset class="start-from" data-testid="own-start-from">
                 <legend>Start from</legend>
                 {#each available as o (o.id)}
-                  <label><input type="radio" bind:group={startFrom} value={o.id} /> <span>{snapshotWords(o)}</span></label>
+                  <label><input type="radio" bind:group={startFrom} value={o.id} on:change={() => (startPicked = true)} /> <span>{snapshotWords(o)}</span></label>
                 {/each}
-                <label><input type="radio" bind:group={startFrom} value="full" /> <span>A full sync from the start: days, with nothing to download first.</span></label>
+                <label><input type="radio" bind:group={startFrom} value="full" on:change={() => (startPicked = true)} /> <span>A full sync from the start: days, with nothing to download first.</span></label>
               </fieldset>
               {#if !available.length}
                 <p class="hint">No snapshot answered just now, so the node syncs from the start. Check again later for a faster start.</p>
               {/if}
               <p class="hint">
-                A snapshot gets the node to the chain's tip in hours, not days: most of it is the download (about 9.4 GB). It
+                A snapshot gets the node to the chain's tip in hours, not days: most of it is the download (about 9.5 GB). It
                 then checks the older blocks behind it, so the disk fills either way: a snapshot saves time, not space.
               </p>
               <p class="disk" data-testid="own-disk">

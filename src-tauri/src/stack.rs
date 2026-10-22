@@ -11,9 +11,9 @@
 //! - Both run in sessions of their own, so "Keep running" can leave them up; otherwise they stop as the app closes.
 //!   A stack left running is used again at the next launch (its pid files, checked against the programs' paths).
 //! - Beta's (v0.5.1) is the whole chain, about 890 GB. It starts from a snapshot when one answers (network.rs
-//!   `Snapshot`: ours, else L2L's), else syncs from the start. Its blocks may go on another disk (`blocksdir=`). The
-//!   free space is shown before and while it runs; the node stops itself when under `LOW_DISK` is left; and "Stop and
-//!   delete" (`remove`) ends an install or a sync at any point and deletes what it wrote.
+//!   `Snapshot`: Ava Chow's at 965,000, else hers at 935,000), else syncs from the start. Its blocks may go on another
+//!   disk (`blocksdir=`). The free space is shown before and while it runs; the node stops itself when under `LOW_DISK` is
+//!   left; and "Stop and delete" (`remove`) ends an install or a sync at any point and deletes what it wrote.
 
 use crate::network::{self, Snapshot, Stack};
 use crate::node::{install, NodeManager, Settings};
@@ -576,7 +576,7 @@ async fn start_inner(mgr: &NodeManager, why: Why) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     // A snapshot first (v0.5.1), then the enforcer, which starts from the snapshot's blocks on.
-    if let Some(x) = st.snapshot.clone().and_then(|id| snapshot_by_id(s, &id)) {
+    if let Some(x) = st.snapshot.clone().and_then(|id| pending_snapshot(s, &id)) {
         load_snapshot(mgr, &mut st, s, x).await?;
     }
     check_cancel()?;
@@ -1061,6 +1061,47 @@ fn snapshot_by_id(s: &Stack, id: &str) -> Option<&'static Snapshot> {
     s.snapshots.iter().find(|x| x.id == id)
 }
 
+/// The snapshot to carry on with, chosen and not loaded yet. One no longer offered (v0.6.3: ours at 967,000 went, for
+/// Ava Chow's at 965,000) becomes the first there is, rather than leave the node to sync from the start.
+fn pending_snapshot(s: &Stack, id: &str) -> Option<&'static Snapshot> {
+    snapshot_by_id(s, id).or_else(|| s.snapshots.first())
+}
+
+/// Part-files of snapshots no longer offered (v0.6.3: ours at 967,000), so 9 GB doesn't stay behind.
+fn remove_old_snapshots(st: &StackSettings, s: &Stack) {
+    let keep: Vec<PathBuf> = s.snapshots.iter().map(|x| snapshot_file(st, s, x)).collect();
+    let Ok(dir) = std::fs::read_dir(st.blocks_at(s)) else { return };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Only the names snapshot_file gives: utxo-<height>-<id>.dat.
+        let ours = name.strip_prefix("utxo-").and_then(|n| n.strip_suffix(".dat")).and_then(|n| n.split_once('-')).is_some_and(|(h, id)| {
+            !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit()) && !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())
+        });
+        if ours && !keep.contains(&e.path()) {
+            crate::activity::note(&format!("stack: deleting {}, a snapshot no longer offered", name));
+            remove_snapshot(&e.path());
+        }
+    }
+}
+
+/// Give a downloaded snapshot the node's network bytes (v0.6.3). Its header is `utxo\xff`, a 2-byte version, then the
+/// 4 bytes of the network it was made on, which the node wants to be its own; beta's chain is Bitcoin's up to the fork,
+/// so Bitcoin Core's file loads once they say beta's. Nothing else in the file changes. False: not a snapshot's header.
+fn own_network(file: &Path, network: [u8; 4]) -> Result<bool, String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(file).map_err(|e| e.to_string())?;
+    let mut head = [0u8; 11];
+    if f.read_exact(&mut head).is_err() || &head[..5] != b"utxo\xff" {
+        return Ok(false);
+    }
+    if head[7..] != network {
+        f.seek(SeekFrom::Start(7)).map_err(|e| e.to_string())?;
+        f.write_all(&network).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+    }
+    Ok(true)
+}
+
 /// Where a snapshot is downloaded to: beside the blocks (the big disk), deleted once loaded.
 fn snapshot_file(st: &StackSettings, s: &Stack, x: &Snapshot) -> PathBuf {
     st.blocks_at(s).join(format!("utxo-{}-{}.dat", x.height, x.id))
@@ -1190,6 +1231,16 @@ async fn loaded_snapshot(st: &StackSettings, s: &Stack) -> Option<String> {
     v["chainstates"].as_array()?.iter().find_map(|c| c["snapshot_blockhash"].as_str().map(String::from))
 }
 
+/// The block of a snapshot the node started from and hasn't finished checking the history behind, when the stack `s`
+/// has no snapshot at that block (v0.6.3: 967,000). The node keeps it in `chainstate_snapshot` until that check is done
+/// and it has restarted; a node without an entry for its block stops as it starts, so an update to it would strand the
+/// chain.
+fn stranded_snapshot(st: &StackSettings, s: &Stack) -> Option<String> {
+    let b = std::fs::read(st.node_files(s).join("chainstate_snapshot").join("base_blockhash")).ok()?;
+    let hash: String = b.iter().rev().map(|x| format!("{:02x}", x)).collect();
+    (b.len() == 32 && !s.snapshots.iter().any(|x| x.blockhash == hash)).then_some(hash)
+}
+
 /// Start the node from snapshot `x`: download it (while the node gets the headers), check it, load it with the network
 /// paused (the node would otherwise go on fetching blocks from the start), and delete the file. The node itself checks
 /// the file's UTXO hash against the one compiled into it, and refuses a wrong one.
@@ -1212,6 +1263,7 @@ async fn load_snapshot(mgr: &NodeManager, st: &mut StackSettings, s: &Stack, x: 
     if let Some(d) = file.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
+    remove_old_snapshots(st, s);
     set(|p| {
         p.stage = "download-snapshot".into();
         p.snapshot = Some(x.id.to_string());
@@ -1228,8 +1280,16 @@ async fn load_snapshot(mgr: &NodeManager, st: &mut StackSettings, s: &Stack, x: 
     )?;
     set(|p| p.stage = "check-snapshot".into());
     let f2 = file.clone();
-    let sum = tokio::task::spawn_blocking(move || install::sha256_file(&f2)).await.map_err(|e| e.to_string())??;
-    if sum != x.sha256 {
+    // The network's bytes first: the hash FreeBank expects is of the file with them (and writing them again is a no-op).
+    let sum = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        if !own_network(&f2, x.network)? {
+            return Ok(None);
+        }
+        install::sha256_file(&f2).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if sum.as_deref() != Some(x.sha256) {
         remove_snapshot(&file);
         return Err(format!(
             "The snapshot from {} didn't match the hash FreeBank expects, so it was deleted and not loaded. Try again, or \
@@ -1705,6 +1765,16 @@ async fn install_stack(mgr: &Arc<NodeManager>, choice: Choice) -> Result<(), Str
     let s = network::current().stack.ok_or("This network has no eCash node the app installs.")?;
     // An earlier release still running stops first, by its own programs' paths (review finding 2).
     if let Some(old) = mgr.settings.lock().await.stack.clone().filter(|o| o.tag != s.tag) {
+        let same_chain = old.dir == mgr.app_dir.join("stack-data").join(s.chain).to_string_lossy();
+        if same_chain && stranded_snapshot(&old, s).is_some() {
+            return Err(format!(
+                "This {} node is still checking the history behind the snapshot it started from, and the new one ({}) \
+                 can't take that over. To update it, use Stop and delete, then install again: it starts afresh from a \
+                 snapshot.",
+                network::current().l1,
+                s.tag
+            ));
+        }
         stop_locked(mgr, &old).await?;
     }
     let dir = programs(mgr, s.tag);
@@ -1756,7 +1826,11 @@ async fn install_stack(mgr: &Arc<NodeManager>, choice: Choice) -> Result<(), Str
                 dir,
                 ports,
                 blocks: o.blocks,
-                snapshot: o.snapshot.clone().map(|was| choice.snapshot.clone().filter(|c| snapshot_by_id(s, c).is_some()).unwrap_or(was)),
+                snapshot: o
+                    .snapshot
+                    .clone()
+                    .map(|was| choice.snapshot.clone().filter(|c| snapshot_by_id(s, c).is_some()).unwrap_or(was))
+                    .and_then(|id| pending_snapshot(s, &id).map(|x| x.id.to_string())),
                 start: o.start,
             },
             false,
@@ -2352,6 +2426,7 @@ mod tests {
             size: body.len() as u64,
             height: 1,
             blockhash: "",
+            network: [0; 4],
         }));
         let d = std::env::temp_dir().join(format!("fbsnap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -2421,13 +2496,93 @@ mod tests {
         let body: Vec<u8> = vec![7u8; 1234];
         let (url, _) = serve(body, usize::MAX).await;
         let url: &'static str = Box::leak(url.into_boxed_str());
-        let mk = |id: &'static str, size: u64| Snapshot { id, source: "t", url, sha256: "", size, height: 1, blockhash: "" };
+        let mk = |id: &'static str, size: u64| Snapshot { id, source: "t", url, sha256: "", size, height: 1, blockhash: "", network: [0; 4] };
         let s: &'static Stack = Box::leak(Box::new(Stack {
             snapshots: Box::leak(vec![mk("right", 1234), mk("wrong", 999)].into_boxed_slice()),
             ..clone_stack(beta())
         }));
         let got = offers(&reqwest::Client::new(), s).await;
         assert_eq!(got.iter().map(|o| (o.id, o.available)).collect::<Vec<_>>(), [("right", true), ("wrong", false)]);
+    }
+
+    #[test]
+    fn a_snapshot_gets_the_nodes_network_bytes() {
+        let d = std::env::temp_dir().join(format!("fbnetbytes-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        // Bitcoin Core's header (magic, version 2, Bitcoin's network bytes), then the base block and the rest.
+        let mut bitcoin = b"utxo\xff\x02\x00\xf9\xbe\xb4\xd9".to_vec();
+        bitcoin.extend((0..5000u32).map(|i| (i % 251) as u8));
+        let f = d.join("utxo-965000-ava.dat");
+        std::fs::write(&f, &bitcoin).unwrap();
+        assert_eq!(own_network(&f, [0xec, 0xa5, 0xb1, 0x04]), Ok(true));
+        let got = std::fs::read(&f).unwrap();
+        assert_eq!(got[7..11], [0xec, 0xa5, 0xb1, 0x04]);
+        assert_eq!((&got[..7], &got[11..]), (&bitcoin[..7], &bitcoin[11..]), "nothing else changes");
+        // Again (a check after a restart): the same file.
+        assert_eq!(own_network(&f, [0xec, 0xa5, 0xb1, 0x04]), Ok(true));
+        assert_eq!(std::fs::read(&f).unwrap(), got);
+        // Not a snapshot (a server's error page, say): left as it is, for the check to delete.
+        std::fs::write(&f, b"<html>not found</html>").unwrap();
+        assert_eq!(own_network(&f, [0xec, 0xa5, 0xb1, 0x04]), Ok(false));
+        assert_eq!(std::fs::read(&f).unwrap(), b"<html>not found</html>");
+        std::fs::write(&f, b"utxo").unwrap();
+        assert_eq!(own_network(&f, [0xec, 0xa5, 0xb1, 0x04]), Ok(false), "too short");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_update_never_strands_a_snapshot_the_new_node_has_no_entry_for() {
+        let s = beta();
+        let d = std::env::temp_dir().join(format!("fbstranded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let st = StackSettings {
+            tag: "betanet-967000-1".into(),
+            dir: d.to_string_lossy().into_owned(),
+            ports: Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 },
+            blocks: None,
+            snapshot: None,
+            start: Some("ours".into()),
+        };
+        assert_eq!(stranded_snapshot(&st, s), None, "no snapshot chainstate");
+        let cs = st.node_files(s).join("chainstate_snapshot");
+        std::fs::create_dir_all(&cs).unwrap();
+        // As the node writes it: the block hash's bytes, last first.
+        let raw = |hex: &str| (0..32).rev().map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let ours = "00000000000000000000a6b2523780117f2257d82718a1f43d793d6a058fa294";
+        std::fs::write(cs.join("base_blockhash"), raw(ours)).unwrap();
+        assert_eq!(stranded_snapshot(&st, s).as_deref(), Some(ours), "967,000 isn't in betanet-965000-1");
+        std::fs::write(cs.join("base_blockhash"), raw(s.snapshots[0].blockhash)).unwrap();
+        assert_eq!(stranded_snapshot(&st, s), None, "965,000 is");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_snapshot_no_longer_offered_gives_way_to_the_first() {
+        let s = beta();
+        assert_eq!(pending_snapshot(s, "ours").map(|x| x.id), Some("ava"), "967,000 went in v0.6.3");
+        assert_eq!(pending_snapshot(s, "l2l").map(|x| x.id), Some("ava"), "LayerTwo Labs' copy went in v0.6.3");
+        assert_eq!(pending_snapshot(s, "ava935").map(|x| x.id), Some("ava935"));
+        assert!(pending_snapshot(network::EASYNET.stack.unwrap(), "ours").is_none(), "no snapshots, so none");
+        // Its part-file goes; the others' stay, and so does anything that isn't a snapshot's.
+        let d = std::env::temp_dir().join(format!("fboldsnap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let st = StackSettings {
+            tag: s.tag.into(),
+            dir: d.join("data").to_string_lossy().into_owned(),
+            ports: Ports { p2p: 1, rpc: 2, zmq: 3, grpc: 4, erpc: 5 },
+            blocks: Some(d.to_string_lossy().into_owned()),
+            snapshot: Some("ours".into()),
+            start: None,
+        };
+        for f in ["utxo-967000-ours.dat", "utxo-967000-ours.dat.validator", "utxo-965000-ava.dat", "utxo-935000-ava935.dat", "utxo-935000-l2l.dat", "blk00000.dat", "utxo-notes.dat", "utxo-1-x.dat.bak"] {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        remove_old_snapshots(&st, s);
+        let mut left: Vec<String> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["blk00000.dat", "utxo-1-x.dat.bak", "utxo-935000-ava935.dat", "utxo-965000-ava.dat", "utxo-notes.dat"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// A copy of a stack's facts, to change one in a test.

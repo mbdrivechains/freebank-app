@@ -43,7 +43,8 @@ pub struct Download {
 /// into it for that height; the sha256 here only spares a wasted load.
 #[derive(Debug)]
 pub struct Snapshot {
-    /// "ours", "l2l": what the screens and the settings call it.
+    /// "ava", "ava935" (until v0.6.3 "ours", and "l2l" for LayerTwo Labs' copy of 935,000): what the screens and the
+    /// settings call it.
     pub id: &'static str,
     /// Who publishes it, as the screens name it.
     pub source: &'static str,
@@ -53,6 +54,10 @@ pub struct Snapshot {
     pub height: u64,
     /// Its block, as `getchainstates` names a loaded snapshot.
     pub blockhash: &'static str,
+    /// The network bytes the node wants in the file's header (v0.6.3). A file made on another network carries that
+    /// network's (Bitcoin's in Ava Chow's files, alphanet's in LayerTwo Labs'), so the app writes these over them once the
+    /// download is whole; `sha256` is of the file after that.
+    pub network: [u8; 4],
 }
 
 /// The eCash node and enforcer the app installs and runs for a network itself (v0.5.0), and their default ports.
@@ -198,42 +203,51 @@ const ENFORCER_EASYNET_3_1: Download = Download {
     mac: "f83640ad58f5eff94863afec7360705a649ef37826d0925618c19e0e16d01f34",
 };
 
-/// beta's own stack (v0.5.1): mbdrivechains' betanet-967000-1 node (eCash's betanet branch plus the 967,000 snapshot
-/// entry; github.com/mbdrivechains/bitcoin, its SHA256SUMS) and easynet-3.1's enforcer in its betanet preset. Its ports
-/// keep off BitWindow's beta node and enforcer, and off the eCash node's own defaults (8532, 8533).
+/// Beta's network bytes: how its node's messages and its snapshots start (`pchMessageStart`, ec a5 b1 04).
+const BETA_NETWORK: [u8; 4] = [0xec, 0xa5, 0xb1, 0x04];
+
+/// beta's own stack (v0.5.1): mbdrivechains' node (eCash's betanet branch plus a snapshot entry; github.com/mbdrivechains/bitcoin,
+/// its SHA256SUMS) and easynet-3.1's enforcer in its betanet preset. Since v0.6.3 the node is betanet-965000-1: the
+/// branch plus Bitcoin Core's own 965,000 entry (Ava Chow's commit, cherry-picked unchanged), in place of
+/// betanet-967000-1's 967,000 of ours. Its ports keep off BitWindow's beta node and enforcer, and off the eCash node's
+/// own defaults (8532, 8533).
 static BETA_STACK: Stack = Stack {
-    tag: "betanet-967000-1",
+    tag: "betanet-965000-1",
     chain: "beta",
     node: Download {
-        url: "https://github.com/mbdrivechains/bitcoin/releases/download/betanet-967000-1/bitcoin-betanet-967000-1-{platform}.tar.gz",
-        linux: "f586da22e3d13254a6ebe74422021b4bc17397e34ebf3d31e32fb9b877e4cf13",
-        mac: "713944c870e62ade08957d63ceb329441d2c4cc3c88c4f15d76388677a36e417",
+        url: "https://github.com/mbdrivechains/bitcoin/releases/download/betanet-965000-1/bitcoin-betanet-965000-1-{platform}.tar.gz",
+        linux: "ae56ef6e88a4352e02fcc1f7bf6730d96d643cfac18e372637f8ba90317e751e",
+        mac: "5a9059c46cd65c73b8b17697a1dbfc4d205f5c176586a1deaf1282e96f5b871c",
     },
     enforcer: ENFORCER_EASYNET_3_1,
     section: "main",
     folder: "",
     txindex: false,
     snapshots: &[
-        // Ours: published with that node release, its entry checked against Bitcoin Core 31.1 validated from genesis.
+        // Ava Chow's: Bitcoin Core's file for its own 965,000 entry (beta's chain is Bitcoin's up to the fork). As
+        // downloaded its sha256 is 89351f71…7dda, with Bitcoin's network bytes.
         Snapshot {
-            id: "ours",
-            source: "mbdrivechains",
-            url: "https://pub-77f0535533b1480dacd9d5992d0c1831.r2.dev/utxo-967000-betanet.dat",
-            sha256: "da1e9b5de3fd21f5883e136184e6f24f5ec5348b7e3f36db3242b676666eed3b",
-            size: 9_441_693_688,
-            height: 967_000,
-            blockhash: "00000000000000000000a6b2523780117f2257d82718a1f43d793d6a058fa294",
+            id: "ava",
+            source: "Ava Chow",
+            url: "https://achow101.com/files/utxo-snapshots/mainnet-965000-utxos.dat",
+            sha256: "5583006dc2f191980b0df734e9f986cfd089e79c13d278597c1b78f88f8a657d",
+            size: 9_468_312_119,
+            height: 965_000,
+            blockhash: "00000000000000000001595977e6000ce56129f5c9b4073e31ccc30b90b97da9",
+            network: BETA_NETWORK,
         },
-        // LayerTwo Labs': the file BitWindow loads (its network catalog, for alphanet). Up to the fork, beta's chain is
-        // Bitcoin's, and 935,000 is one of Bitcoin Core 31.1's own entries.
+        // Ava Chow's file for Bitcoin Core 31.1's own 935,000 entry. As downloaded its sha256 is e572ddbe…d486, with
+        // Bitcoin's network bytes. Until v0.6.3 this was LayerTwo Labs' copy (BitWindow's, for alphanet): the same file
+        // with alphanet's bytes, which beta's node never loaded.
         Snapshot {
-            id: "l2l",
-            source: "LayerTwo Labs",
-            url: "https://data.drivechain.dev/alphanet/utxo-935000.dat",
-            sha256: "922ccc7ae0ebf23fbff674e12e295265c9958ecfb0a5da729341b50319ae73cc",
+            id: "ava935",
+            source: "Ava Chow",
+            url: "https://achow101.com/files/utxo-snapshots/mainnet-935000-utxos.dat",
+            sha256: "dd38115648221d796a42685d449b84e7ebf352a57bdda37679cece5f6137d1e0",
             size: 9_387_990_306,
             height: 935_000,
             blockhash: "0000000000000000000147034958af1652b2b91bba607beacc5e72a56f0fb5ee",
+            network: BETA_NETWORK,
         },
     ],
     full_gb: 890,
@@ -657,12 +671,13 @@ mod tests {
     #[test]
     fn betas_snapshots() {
         let s = BETA.stack.unwrap();
-        assert_eq!(s.snapshots.iter().map(|x| x.id).collect::<Vec<_>>(), ["ours", "l2l"], "ours first, then L2L's");
+        assert_eq!(s.snapshots.iter().map(|x| x.id).collect::<Vec<_>>(), ["ava", "ava935"], "Ava Chow's 965,000, then her 935,000");
         for x in s.snapshots {
             assert_eq!(x.sha256.len(), 64);
             assert_eq!(x.blockhash.len(), 64);
             assert!(x.height < BETA.pin_height, "a snapshot below FreeBank's pin block");
             assert!(x.size > 9_000_000_000);
+            assert_eq!(x.network, [0xec, 0xa5, 0xb1, 0x04], "beta's network bytes");
         }
         assert!(!s.txindex && s.folder.is_empty() && s.section == "main");
         assert!(EASYNET.stack.unwrap().snapshots.is_empty());

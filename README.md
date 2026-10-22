@@ -107,10 +107,11 @@ https://fbeasy.ecxfreebank.com.
 Where FreeBank runs the eCash node and enforcer itself (v0.6.1), it watches them while the app is open: one that stops
 on its own is noted with what its log said and started again, once an hour at most, and Home says so.
 
-On beta without BitWindow (v0.5.1), setup offers to **run eCash beta's node and enforcer itself**: it looks for a snapshot
-first (ours at block 967,000, else LayerTwo Labs' at 935,000), shows the free space against the whole chain (about
-890 GB), and can put the blocks on a bigger disk. "Stop and delete" stops it and deletes its chain at any point. Or it
-can use **another computer's** eCash node and enforcer, found by IP address or Tailscale name.
+On beta without BitWindow (v0.5.1), setup offers to **run eCash beta's node and enforcer itself**: it looks for a
+snapshot first (Ava Chow's at block 965,000, else hers at 935,000), shows the free
+space against the whole chain (about 890 GB), and can put the blocks on a bigger disk. "Stop and delete" stops it and
+deletes its chain at any point. Or it can use **another computer's** eCash node and enforcer, found by IP address or
+Tailscale name.
 
 ## Features
 

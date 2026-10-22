@@ -100,20 +100,25 @@ macOS.
   enforcer has no login, so it stays on this computer. Before starting them the app looks at which programs hold their
   ports (Linux `/proc`, Mac `lsof`) and takes free ones; it never changes another program's settings. Their data:
   `<app data>/networks/<id>/stack-data/<chain>/` (on beta `<app data>/stack-data/beta/`).
-- **Beta's own eCash node** (v0.5.1, same file): mbdrivechains' `betanet-967000-1` node and easynet-3.1's enforcer in
-  its `betanet` preset, without the transaction index (the FreeBank node reads deposits from the block itself). The
-  whole chain is about 890 GB. It starts from a UTXO snapshot when one answers: mbdrivechains' at 967,000, else
-  LayerTwo Labs' at 935,000, else it syncs from the start. A snapshot file is checked against the sha256 in
-  `network.rs`, then the node checks its UTXO hash against the one compiled into it for that height and refuses any
-  other, so a swapped file can't be loaded. The file is deleted once loaded. Its blocks may go on another disk
-  (`blocksdir=`): always in a folder the app makes itself, `freebank-<chain>-blocks`, inside an existing folder given
-  as a full path without `..` and resolved through links first (`blocks_folder`). Every folder the app makes for it
-  carries a mark (`.freebank-stack`); "Stop and delete" stops the FreeBank node, the eCash node and the enforcer and
-  deletes only marked folders, or a chain's folder directly inside the app's own `stack-data/` when neither is a link
-  (`in_own_data`: v0.5.0 made no mark). The node is stopped when less than 20 GB is free where it writes (`LOW_DISK`;
-  2 GB for easynet's small chain). The node's RPC listens on 127.0.0.1 only. Obliterate lists those folders as a line
-  of their own; untick it to keep the chain. A reinstall or a port move from Settings leaves a user who chose another
-  computer's node on it (`record_stack`).
+- **Beta's own eCash node** (v0.5.1, same file): mbdrivechains' `betanet-965000-1` node (v0.6.3; `betanet-967000-1`
+  before) and easynet-3.1's enforcer in its `betanet` preset, without the transaction index (the FreeBank node reads
+  deposits from the block itself). The whole chain is about 890 GB. It starts from a UTXO snapshot when one answers: Ava
+  Chow's at 965,000, else hers at 935,000 (both v0.6.3; until then ours at 967,000, else LayerTwo Labs' copy of 935,000,
+  which said alphanet and never loaded), else it syncs from the start. Both files were made on Bitcoin, so once one is
+  downloaded the app writes beta's 4 network bytes over theirs at offset 7 of its header (`own_network` in `stack.rs`)
+  and nothing else. The file is then checked against the sha256 in `network.rs` (of the file with beta's bytes), then
+  the node checks its UTXO hash against the one compiled into it for that height and refuses any other, so a swapped
+  file can't be loaded. The file is deleted once loaded. Its blocks may go on another disk (`blocksdir=`): always in a
+  folder the app makes itself, `freebank-<chain>-blocks`, inside an existing folder given as a full path without `..`
+  and resolved through links first (`blocks_folder`). Every folder the app makes for it carries a mark
+  (`.freebank-stack`); "Stop and delete" stops the FreeBank node, the eCash node and the enforcer and deletes only
+  marked folders, or a chain's folder directly inside the app's own `stack-data/` when neither is a link (`in_own_data`:
+  v0.5.0 made no mark). The node is stopped when less than 20 GB is free where it writes (`LOW_DISK`; 2 GB for easynet's
+  small chain). The node's RPC listens on 127.0.0.1 only. Obliterate lists those folders as a line of their own; untick
+  it to keep the chain. A reinstall or a port move from Settings leaves a user who chose another computer's node on it
+  (`record_stack`). An update refuses while the node is still checking the history behind a snapshot the new node has no
+  entry for (`stranded_snapshot`: 967,000 in v0.6.3), as that node would stop as it starts; Stop and delete, then
+  Install, starts afresh.
 - **Another computer's eCash node** (v0.5.1, `find_remote` in `stack.rs`): setup can look for an eCash node and
   enforcer at an IP address or Tailscale name, on their usual ports (18302, 18303, 8532 and 38532 for the node's REST,
   50051 and 38551 for the enforcer, or the port typed), and use them. It reads `/rest/chaininfo.json`, the pinned block
@@ -180,7 +185,7 @@ macOS.
     when you press Install or Update, checked as above; FreeBank's easynet node (`freebank-easynet-<version>-...`) from
     the same FreeBank releases, with the same signature check;
   - on beta (v0.5.1), only while setup offers FreeBank's own eCash node, or one waits to load its snapshot: a `HEAD`
-    request to each snapshot's address (`pub-77f0535533b1480dacd9d5992d0c1831.r2.dev`, `data.drivechain.dev`), at
+    request to each snapshot's address (`achow101.com`; `data.drivechain.dev` too before v0.6.3), at
     most every ten minutes, to see which answers with its size. When you press Install: the node and enforcer from
     `github.com/mbdrivechains/bitcoin/releases/download/<tag>/`, and the snapshot you chose from its address (resumed
     with `Range` after an interruption).
@@ -358,9 +363,9 @@ The `.deb`'s hash must be the one in the release's `SHA256SUMS`, and the program
   approval, Face ID).
 - **The eCash node and enforcer the app installs on easynet and on beta** are mbdrivechains' builds of eCash's node and
   LayerTwo Labs' enforcer. The app checks they are the files this release names, not how they were built: their
-  release notes at `github.com/mbdrivechains/bitcoin/releases` say how each was built (betanet-967000-1's Linux build is
-  a Guix build, rebuilt twice to the same sha256). The snapshots' UTXO hashes are compiled into that node: the
-  967,000 entry is mbdrivechains' (checked against Bitcoin Core 31.1 validated from genesis, per that release), the
-  935,000 one Bitcoin Core's own.
+  release notes at `github.com/mbdrivechains/bitcoin/releases` say how each was built (betanet-965000-1's Linux build is
+  a Guix build, rebuilt twice to the same sha256). The snapshots' UTXO hashes are compiled into that node, both
+  Bitcoin Core's own: 935,000 from Bitcoin Core 31.1, and 965,000 from Ava Chow's commit adding it (Bitcoin Core
+  6e582335d1, cherry-picked unchanged onto eCash's betanet branch).
 - **Other software you run with FreeBank** (on beta, the eCash node and enforcer you run, BitWindow) is not covered
   here.

@@ -198,22 +198,22 @@ export function gigabytes(n: number | null | undefined): string {
 
 /** Who made a snapshot, and how far it takes the node, in words. */
 export function snapshotWords(o: Offer): string {
-  return o.id === "ours"
-    ? `Our snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}), published by mbdrivechains with its eCash beta node build: not an L2L or eCash release. The node checks it against the hash compiled into it.`
-    : o.id === "l2l"
-      ? `LayerTwo Labs' snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}), the one BitWindow uses. The node checks it against Bitcoin Core's own hash for that block.`
-      : `${o.source}'s snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}).`;
+  return o.id === "ava" || o.id === "ava935"
+    ? `Ava Chow's snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}), made for Bitcoin Core: beta's chain is Bitcoin's up to the fork. FreeBank writes beta's network bytes into it, and the node checks it against Bitcoin Core's own hash for that block.`
+    : `${o.source}'s snapshot at block ${o.height.toLocaleString()} (${gigabytes(o.size)}).`;
 }
 
-/** How the node started, for Settings. */
+/** How the node started, for Settings ("ours" at 967,000 until v0.6.3). */
 export function startWords(start: string | null | undefined): string {
-  return start === "ours"
-    ? "from mbdrivechains' snapshot (967,000)"
-    : start === "l2l"
-      ? "from LayerTwo Labs' snapshot (935,000)"
-      : start === "full"
-        ? "a full sync from the start"
-        : "";
+  return start === "ava"
+    ? "from Ava Chow's snapshot (965,000)"
+    : start === "ours"
+      ? "from mbdrivechains' snapshot (967,000)"
+      : start === "ava935"
+        ? "from Ava Chow's snapshot (935,000)"
+        : start === "full"
+          ? "a full sync from the start"
+          : "";
 }
 
 /** The stop (its `at`) whose Home notice × hid: for the rest of the session, as Home is left and come back to. */

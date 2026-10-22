@@ -4,13 +4,18 @@
   // this network, with Start and Stop. v0.5.1: how it started (a snapshot or a full sync), the older blocks it is
   // still checking, what it takes on disk and what is free, and Stop and delete.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
-  import { gigabytes, network, stack, startWords, stoppedOwnWords, switchNetwork, type Removed, type StackStatus } from "../lib/network";
+  import { gigabytes, network, stack, stackStages, startWords, stoppedOwnWords, switchNetwork, type Removed, type StackProgress, type StackStatus } from "../lib/network";
 
   let asking: string | null = null;
   let busy = false;
   let error = "";
   let own: StackStatus | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
+  // Continue and Update (v0.6.3): the install runs on its own, so this card follows it through its progress, to show
+  // its stage and, when it stops, why.
+  let installing = false;
+  let prog: StackProgress | null = null;
+  $: progWords = prog?.running ? stackStages(prog.snapshot).find(([id]) => id === prog?.stage)?.[1] ?? "" : "";
 
   $: others = $network.all.filter(([id]) => id !== $network.id);
   $: askName = $network.all.find(([id]) => id === asking)?.[1] ?? "";
@@ -18,6 +23,18 @@
   async function load() {
     if (!$network.stack) return;
     own = await stack.status().catch(() => own);
+    if (installing) {
+      prog = await stack.progress().catch(() => prog);
+      if (prog && !prog.running) {
+        installing = false;
+        if (prog.error) error = prog.error;
+      }
+    }
+  }
+
+  async function install() {
+    await stack.install();
+    installing = true;
   }
   onMount(() => {
     load();
@@ -123,15 +140,16 @@
     {#if own.snapshot_pending}
       <p class="small">Its snapshot isn't loaded yet. Continue carries on: a download goes on from where it stopped.</p>
       <div class="row-actions">
-        <button on:click={() => run(() => stack.install())} disabled={busy}>Continue</button>
+        <button on:click={() => run(install)} disabled={busy || installing}>Continue</button>
       </div>
     {/if}
     {#if own.update}
       <p class="small">FreeBank has a newer {$network.l1} node, {own.update}. Updating stops these, puts it in place and starts it.</p>
       <div class="row-actions">
-        <button on:click={() => run(stack.install)} disabled={busy}>Update to {own.update}</button>
+        <button on:click={() => run(install)} disabled={busy || installing}>Update to {own.update}</button>
       </div>
     {/if}
+    {#if installing && progWords}<p class="small">{progWords}…</p>{/if}
     <div class="row-actions">
       {#if !(own.node_up && own.enforcer_up) && !own.snapshot_pending}
         <button class="secondary" on:click={() => run(stack.start)} disabled={busy}>Start them</button>
