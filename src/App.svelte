@@ -27,6 +27,7 @@
   import WalletGate from "./components/WalletGate.svelte";
   import AskDialog from "./components/AskDialog.svelte";
   import DemoGuide from "./components/DemoGuide.svelte";
+  import StartGuide from "./components/StartGuide.svelte";
   import HouseDue from "./components/HouseDue.svelte";
   import WalletBanner from "./components/WalletBanner.svelte";
   import WalletSettings from "./components/WalletSettings.svelte";
@@ -582,7 +583,7 @@
       <WalletBanner />
       {#if localNode && !isPWA}<HouseDue />{/if}
       {#if localNode && !isPWA && !demo}<StackAlert />{/if}
-      {#if demo}<DemoGuide />{/if}
+      {#if demo}<DemoGuide />{:else if $network.faucet && !isPWA}<StartGuide />{/if}
       <!-- Home / Dashboard -->
       <SecurityAlerts on:open={() => { currentView = "settings"; settingsPart = "security"; }} />
       <BalanceCard {balance} onRefresh={refresh} />

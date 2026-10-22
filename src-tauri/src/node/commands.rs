@@ -110,6 +110,9 @@ pub async fn stack_check(mgr: State<'_, Mgr>) -> Result<detect::StackCheck, Stri
 #[tauri::command]
 pub async fn node_set_demo(mgr: State<'_, Mgr>, on: bool) -> Result<Settings, String> {
     mgr.still_here()?;
+    if on && !super::relay::available() {
+        return Err("The demo has moved to easynet: Settings › Node & connection › Switch to easynet.".into());
+    }
     if on {
         super::relay::ensure(&mgr).await?;
     }

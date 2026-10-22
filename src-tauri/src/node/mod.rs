@@ -261,10 +261,19 @@ impl Drop for Busy<'_> {
 
 impl NodeManager {
     pub fn new(app_dir: PathBuf) -> Self {
-        let settings: Settings = std::fs::read(app_dir.join("settings.json"))
+        let mut settings: Settings = std::fs::read(app_dir.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        // Beta's demo retired in v0.6.2 (network.rs): a profile left in demo mode goes back to setup, which offers
+        // easynet, beta's own node, BitWindow's or another computer's. Its wallet and data folder stay as they are.
+        if settings.demo && !crate::network::current().demo {
+            settings.demo = false;
+            if let Ok(json) = serde_json::to_vec_pretty(&settings) {
+                let _ = std::fs::write(app_dir.join("settings.json"), json);
+            }
+            crate::activity::note("demo mode ended: the demo has moved to easynet");
+        }
         DEMO.store(settings.demo, Ordering::SeqCst);
         let http = reqwest::Client::builder()
             .user_agent(concat!("FreeBank-app/", env!("CARGO_PKG_VERSION")))
@@ -810,5 +819,24 @@ mod tests {
         assert!(!root.join("releases").exists());
         assert!(!remove_inside(&root, &root.join("releases")).unwrap());
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_profile_left_in_demo_mode_goes_back_to_setup() {
+        // Beta's demo retired in v0.6.2: no network offers it, so a profile still in it loses it, on disk too, and its
+        // other settings stay (the tests run on beta, the default network).
+        assert!(!crate::network::BETA.demo && !crate::network::EASYNET.demo);
+        let dir = std::env::temp_dir().join(format!("fb-demo-ended-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let before = Settings { demo: true, installed_tag: Some("v0.2.29".into()), rpc_port: 18999, ..Default::default() };
+        std::fs::write(dir.join("settings.json"), serde_json::to_vec(&before).unwrap()).unwrap();
+        let mgr = NodeManager::new(dir.clone());
+        let now = mgr.settings.try_lock().unwrap().clone();
+        assert!(!now.demo && !DEMO.load(Ordering::SeqCst));
+        assert_eq!((now.installed_tag.as_deref(), now.rpc_port), (Some("v0.2.29"), 18999));
+        let saved: Settings = serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert!(!saved.demo, "written back");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

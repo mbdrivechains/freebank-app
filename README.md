@@ -1,10 +1,10 @@
 # FreeBank
 
 The desktop app for the [**FreeBank**](https://github.com/mbdrivechains/freebank) credit-creation
-drivechain (BIP 300/301, slot 130): it sets up and runs a FreeBank node beside your eCash beta node,
-shows its blocks and peers, and is its wallet. With no eCash node, its demo mode (from v0.4.4) runs FreeBank on the beta
-with play money: the node asks FreeBank's read-only gateway about the eCash chain instead. Setup offers it, and from
-v0.4.7 so does Settings › Node & connection, for a node already set up with its own eCash node.
+drivechain (BIP 300/301, slot 130): it sets up and runs a FreeBank node beside an eCash node (its own, BitWindow's, or
+your own), shows its blocks and peers, and is its wallet. It runs on eCash beta or on easynet, a small test network
+where it sets everything up itself in minutes; a new computer starts there (v0.6.2). Beta's demo mode (v0.4.4 to
+v0.6.1), which ran with no eCash node through FreeBank's read-only gateway, has ended.
 
 ## Install
 
@@ -86,6 +86,9 @@ Your wallet lives in your own `freebankd` node, and the app runs it for you.
 - Advanced: the app can also connect to your own node on another computer, over Tailscale.
 
 ## First run (desktop)
+
+A new computer starts on **easynet** (v0.6.2): FreeBank sets it all up in a few minutes, and the easynet faucet gives
+test coins (below). A computer that has run the app on beta stays on beta.
 
 On a computer that already runs an **eCash beta full node and its enforcer** (the easiest way
 is [BitWindow](https://releases.drivechain.info) in full-node mode on eCash beta), FreeBank

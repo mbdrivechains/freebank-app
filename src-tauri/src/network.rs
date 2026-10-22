@@ -179,7 +179,9 @@ pub static BETA: Network = Network {
     l1_names: &["main"],
     l1_kind: L1Kind::Main,
     explorer: Some("https://explorer.ecxfreebank.com"),
-    demo: true,
+    // Retired in v0.6.2: newcomers start on easynet instead, where FreeBank runs its own eCash node in minutes; a
+    // profile left in demo mode goes back to setup (node/mod.rs).
+    demo: false,
     seed_tag: "ecxfreebank.com",
     bot: Some("freebank_beta_bot"),
     faucet: None,
@@ -351,8 +353,8 @@ struct Choice {
     network: String,
 }
 
-/// The network chosen for this computer: FREEBANK_NETWORK, else `network.json` in the app's top folder, else beta. One
-/// that isn't ready (mainnet before the fork) or unknown counts as beta.
+/// The network chosen for this computer: FREEBANK_NETWORK, else `network.json` in the app's top folder, else the
+/// default. One that isn't ready (mainnet before the fork) or unknown counts as the default.
 pub fn chosen(top: &Path) -> &'static Network {
     let word = std::env::var("FREEBANK_NETWORK").ok().filter(|w| !w.is_empty()).or_else(|| {
         std::fs::read(top.join("network.json"))
@@ -360,7 +362,18 @@ pub fn chosen(top: &Path) -> &'static Network {
             .and_then(|b| serde_json::from_slice::<Choice>(&b).ok())
             .map(|c| c.network)
     });
-    word.as_deref().and_then(by_id).filter(|n| n.ready).unwrap_or(&BETA)
+    word.as_deref().and_then(by_id).filter(|n| n.ready).unwrap_or_else(|| default_for(top))
+}
+
+/// With nothing chosen: beta where the app has run on beta (its settings are in the top folder), else easynet, where a
+/// newcomer starts from v0.6.2: FreeBank sets it all up in minutes, and the faucet gives test coins (in place of beta's
+/// demo).
+fn default_for(top: &Path) -> &'static Network {
+    if present(top, &BETA) {
+        &BETA
+    } else {
+        &EASYNET
+    }
 }
 
 /// The app folder of network `n`: the top folder for beta, `networks/<id>` inside it for the others.
@@ -569,12 +582,20 @@ mod tests {
     fn the_choice_is_read_and_kept() {
         let d = std::env::temp_dir().join(format!("fbnet-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(chosen(&d).id, "beta", "nothing chosen yet");
+        assert_eq!(chosen(&d).id, "easynet", "a newcomer starts on easynet (v0.6.2)");
+        choose(&d, &BETA).unwrap();
+        assert_eq!(chosen(&d).id, "beta");
         choose(&d, &EASYNET).unwrap();
         assert_eq!(chosen(&d).id, "easynet");
         assert!(choose(&d, &MAINNET).is_err(), "mainnet isn't offered before the fork");
         std::fs::write(d.join("network.json"), r#"{"network":"mainnet"}"#).unwrap();
-        assert_eq!(chosen(&d).id, "beta", "a network not ready counts as beta");
+        assert_eq!(chosen(&d).id, "easynet", "a network not ready counts as the default");
+        std::fs::write(d.join("network.json"), r#"{"network":"nowhere"}"#).unwrap();
+        assert_eq!(chosen(&d).id, "easynet");
+        // Someone who has run the app on beta stays there, with nothing chosen, as before v0.6.2.
+        std::fs::remove_file(d.join("network.json")).unwrap();
+        std::fs::write(d.join("settings.json"), "{}").unwrap();
+        assert_eq!(chosen(&d).id, "beta");
         std::fs::write(d.join("network.json"), r#"{"network":"nowhere"}"#).unwrap();
         assert_eq!(chosen(&d).id, "beta");
         std::fs::remove_dir_all(&d).unwrap();

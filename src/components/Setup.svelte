@@ -60,8 +60,9 @@
   // An earlier install's folder: "use" it (its blocks, wallet and name) or start "fresh" (moved aside).
   let earlier: "use" | "fresh" | null = null;
   $: problem = tagProblem(tag);
-  // Someone who has never installed FreeBank's node: the demo leads, as it takes minutes, not a full node's hours.
-  $: newcomer = !!info?.demo_available && !info?.installed;
+  // Someone who has never installed FreeBank's node: easynet leads (v0.6.2, in place of beta's demo), as it takes
+  // minutes, not a full node's hours, and its faucet gives test coins.
+  $: newcomer = !info?.installed && !info?.settings.demo;
   // Said right by the Install button whenever it is disabled.
   $: installBlocked = problem
     ? "Fix the name above to continue."
@@ -235,8 +236,9 @@
   // which other programs hold the defaults) and the install's progress.
   let own: StackStatus | null = null;
   let ownProg: StackProgress | null = null;
-  // On beta, easynet is offered too (it needs no BitWindow).
+  // On beta, easynet is offered too (it needs no BitWindow); on easynet, beta, for someone who runs BitWindow there.
   $: easynetOffered = $network.id === "beta" && $network.all.some(([id, , offered]) => id === "easynet" && offered);
+  $: betaOffered = $network.id === "easynet" && $network.all.some(([id, , offered]) => id === "beta" && offered);
   $: ownStages = stackStages(ownProg?.snapshot);
   $: ownStage = ownProg ? ownStages.findIndex(([id]) => id === ownProg!.stage) : -1;
   // Beta's (v0.5.1): the whole chain (about 890 GB), from a snapshot when one answers (looked for first),
@@ -591,12 +593,18 @@
     {:else}
       <div class="hero">
         <div class="mark" aria-hidden="true">☉</div>
-        {#if newcomer}
+        {#if newcomer && $network.faucet}
+          <h2>Welcome to FreeBank</h2>
+          <p class="lede" data-testid="welcome-easynet">
+            Try it on <strong>{$network.name}</strong>, a small public test network on eCash's rules. FreeBank sets it all
+            up itself in a few minutes, and the {$network.name} faucet gives you test coins. They have no value.
+          </p>
+        {:else if newcomer}
           <h2>Welcome to FreeBank</h2>
           <p class="lede">
-            Try it in a few minutes with play money, or run it alongside your own <strong>{$network.l1} full node</strong>
-            and its <strong>enforcer</strong>{#if easynetOffered}, or on <strong>easynet</strong>, a small test network
-            FreeBank sets up for you{/if}.
+            {#if easynetOffered}Try it in a few minutes on <strong>easynet</strong>, a small test network FreeBank sets up
+              for you, with free test coins, or run it{:else}Run it{/if} alongside your own <strong>{$network.l1} full
+            node</strong> and its <strong>enforcer</strong>.
           </p>
         {:else}
           <h2>FreeBank needs {$network.l1}</h2>
@@ -738,11 +746,12 @@
         </div>
       {/if}
       {#if !info?.settings.demo}
-        <div class="card steps" data-testid="remote-stack">
+        <!-- Last, after the other networks' card (v0.6.2): few newcomers have one. -->
+        <div class="card steps" data-testid="remote-stack" style:order={1}>
           <h3>Or use another computer's</h3>
           <p>
-            If a computer near you runs {$network.l1}'s node and enforcer (in BitWindow, or set up by hand), FreeBank can
-            use them. Nothing is downloaded here, and FreeBank deletes nothing on that computer.
+            If a computer near you runs {$network.l1}'s node and enforcer ({$network.id === "beta" ? "in BitWindow, or set up by hand" : "set up by hand"}),
+            FreeBank can use them. Nothing is downloaded here, and FreeBank deletes nothing on that computer.
           </p>
           <div class="row-inline">
             <input
@@ -794,18 +803,34 @@
         </div>
       {/if}
       {#if easynetOffered}
-        <div class="card steps" data-testid="try-easynet">
-          <h3>Or try easynet</h3>
+        <!-- A newcomer's first card (v0.6.2: it took the demo's place). -->
+        <div class="card steps" data-testid="try-easynet" style:order={newcomer ? -1 : 0}>
+          <h3>{newcomer ? "Just trying it? Use easynet" : "Or try easynet"}</h3>
           <p>
             easynet is a small test network on eCash's rules, with no value. FreeBank installs its eCash node and enforcer
-            itself, and it syncs in a few minutes, with no BitWindow.
+            itself, and it syncs in a few minutes, with no BitWindow. Its faucet gives you test coins.
           </p>
           <div class="row-actions">
-            <button class="secondary" on:click={() => switchNetwork("easynet").catch((e) => (startError = String(e)))} disabled={checking}>
+            <button class:secondary={!newcomer} on:click={() => switchNetwork("easynet").catch((e) => (startError = String(e)))} disabled={checking}>
               Switch to easynet
             </button>
           </div>
           <p class="hint">FreeBank restarts on easynet. Beta stays as it is, and you can switch back in Settings.</p>
+        </div>
+      {/if}
+      {#if betaOffered}
+        <div class="card steps" data-testid="use-beta">
+          <h3>Or use eCash beta</h3>
+          <p>
+            FreeBank's beta runs alongside eCash beta's full node and its enforcer: BitWindow's, your own, or one FreeBank
+            runs for you (the whole chain is about 890 GB). Its coins are kept apart from easynet's.
+          </p>
+          <div class="row-actions">
+            <button class="secondary" on:click={() => switchNetwork("beta").catch((e) => (startError = String(e)))} disabled={checking}>
+              Switch to beta
+            </button>
+          </div>
+          <p class="hint">FreeBank restarts on beta. easynet stays as it is, and you can switch back in Settings.</p>
         </div>
       {/if}
       {#if $network.id === "beta"}
