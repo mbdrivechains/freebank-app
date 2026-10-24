@@ -73,7 +73,8 @@ macOS.
 - **The eCash wallets** (v0.2.6): `src-tauri/src/ecash/`. Their keys come from the words (`keys.rs`: BIP85's XPRV
   application at m/83696968'/32'/0', then BIP84 accounts 0 and 1). The eCash node holds both wallets watch-only, with
   public descriptors; FreeBank checks each payment the node funds (`sign.rs`, `check`: every input its own and its
-  parent transaction matching, one output to the recipient, change to its own change branch, eCash's replay stamp,
+  parent transaction matching, one output to the recipient, change to its own change branch, eCash's replay stamp
+  (the network's nLockTime, `Network::replay_locktime`: 499999999 on beta, 499999998 on easynet and mainnet, v0.6.4),
   the fee quoted and under a rate worked out here) and signs it here. The main eCash wallet's key is derived from
   `seed.enc` with the passphrase for each payment. The bidding wallet's key is in `<app data>/wallet/ecash-bids.key`,
   readable by your user only, so bids can go out with nobody there; it holds only what you move into it. A typed eCash

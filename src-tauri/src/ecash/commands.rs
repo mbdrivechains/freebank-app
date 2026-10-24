@@ -227,7 +227,9 @@ pub async fn ecash_receive(mgr: State<'_, Arc<NodeManager>>) -> Result<String, S
 #[tauri::command]
 pub async fn ecash_history(mgr: State<'_, Arc<NodeManager>>) -> Result<Vec<Tx>, String> {
     let (c, r) = ready(&mgr).await?;
-    wallet::history(&c, &r).await
+    let list = wallet::history(&c, &r).await?;
+    // A record of deposits that can't be read leaves the rows as the node lists them (Deposit says why).
+    Ok(deposit::fold_into(list, &deposit::load(&mgr.app_dir).unwrap_or_default()))
 }
 
 #[derive(Debug, Serialize)]

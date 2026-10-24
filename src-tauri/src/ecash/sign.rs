@@ -70,7 +70,7 @@ pub fn check(psbt: &str, acct: &AccountPub, expect: &Expect) -> Result<Checked, 
         return Err("The eCash node's payment is malformed.".into());
     }
     // eCash's replay stamp, so it can't be replayed on Bitcoin, and nothing that could hold it back (re-review L-B).
-    if tx.lock_time.to_consensus_u32() != super::REPLAY_LOCKTIME || tx.input.iter().any(|i| i.sequence.0 != SEQUENCE) {
+    if tx.lock_time.to_consensus_u32() != super::replay_locktime() || tx.input.iter().any(|i| i.sequence.0 != SEQUENCE) {
         return Err("The eCash node's payment lacks eCash's replay stamp or carries a timelock. Nothing was sent.".into());
     }
     let mut spends = Vec::new();

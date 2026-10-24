@@ -283,7 +283,8 @@ pub struct Tx {
     /// "main" or "bids".
     pub wallet: &'static str,
     pub txid: String,
-    /// Core's category: "send", "receive", "generate", "immature".
+    /// Core's category: "send", "receive", "generate", "immature"; or "deposit" (or "deposit_failed"), a deposit into
+    /// FreeBank (`deposit::fold_into`).
     pub category: String,
     /// Signed: out is negative. Fees not included.
     pub sats: i64,
@@ -375,7 +376,7 @@ pub async fn quote(conn: &Conn, name: &str, address: &str, sats: Option<u64>) ->
         .wallet(name)
         .call_typed(
             "walletcreatefundedpsbt",
-            vec![json!([]), json!([{ address: to_coins(amount) }]), json!(super::REPLAY_LOCKTIME), opts, json!(true)],
+            vec![json!([]), json!([{ address: to_coins(amount) }]), json!(super::replay_locktime()), opts, json!(true)],
         )
         .await
         .map_err(|e| match e {

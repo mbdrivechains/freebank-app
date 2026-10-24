@@ -21,11 +21,15 @@ pub mod wallet;
 #[cfg(test)]
 mod tests;
 
-/// eCash's replay protection, as BitWindow stamps every eCash send (its `replay.ReplayLockTime`): nLockTime
-/// 499999999 with an input below SEQUENCE_FINAL. eCash's patched node takes it as final; stock Bitcoin Core reads it as
-/// a height ~500 million blocks away and refuses it, so the payment can't be replayed onto Bitcoin. The eCash node's own
-/// wallet doesn't stamp it (locktime 0 on regtest, checked), so every transaction the app builds sets it.
-pub const REPLAY_LOCKTIME: u32 = 499_999_999;
+/// eCash's replay protection, as BitWindow stamps every eCash send (its `replay.ReplayLockTime`): this network's
+/// nLockTime (499999999 on beta, 499999998 on mainnet and easynet: `Network::replay_locktime`) with an input below
+/// SEQUENCE_FINAL. eCash's patched node takes it as final; stock Bitcoin Core reads it as a height ~500 million blocks
+/// away and refuses it, so the payment can't be replayed onto Bitcoin. The eCash node's own wallet doesn't stamp it
+/// (locktime 0 on regtest, checked), so every transaction the app builds sets it. Until v0.6.4 the app used beta's
+/// everywhere, which easynet's node refuses as non-final.
+pub fn replay_locktime() -> u32 {
+    crate::network::current().replay_locktime
+}
 
 /// eCash amounts, sats -> "0.00000000" (the screens show ECX with 8 places, as sECX).
 pub fn to_coins(sats: u64) -> String {

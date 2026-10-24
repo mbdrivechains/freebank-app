@@ -127,6 +127,11 @@ pub struct Network {
     /// The names its eCash node gives its chain (getblockchaininfo's `chain`).
     pub l1_names: &'static [&'static str],
     pub l1_kind: L1Kind,
+    /// eCash's replay stamp on this chain: the nLockTime its node takes as final whatever the height, given an input
+    /// below SEQUENCE_FINAL (`IsFinalTx`, src/consensus/tx_verify.cpp). 499999999 on beta (eCash's betanet branch);
+    /// 499999998 on mainnet (eCash master 6e58233) and easynet (easynet-3.1). Each node refuses the other's as
+    /// non-final (both checked on regtest, 2026-10-24).
+    pub replay_locktime: u32,
     /// FreeBank's explorer for this network: tx links and the tip. None: the network has none.
     pub explorer: Option<&'static str>,
     /// Demo mode (no eCash node, FreeBank's gateway) is offered.
@@ -183,6 +188,7 @@ pub static BETA: Network = Network {
     l1_chain: "main",
     l1_names: &["main"],
     l1_kind: L1Kind::Main,
+    replay_locktime: 499_999_999,
     explorer: Some("https://explorer.ecxfreebank.com"),
     // Retired in v0.6.2: newcomers start on easynet instead, where FreeBank runs its own eCash node in minutes; a
     // profile left in demo mode goes back to setup (node/mod.rs).
@@ -304,6 +310,7 @@ pub static EASYNET: Network = Network {
     l1_chain: "",
     l1_names: &["easynet"],
     l1_kind: L1Kind::Test,
+    replay_locktime: 499_999_998,
     // FreeBank's own explorer on easynet (the explorer session's, 2026-10-21); easy.ecxfreebank.com shows easynet's
     // eCash chain, not its FreeBank.
     explorer: Some("https://fbeasy.ecxfreebank.com"),
@@ -334,6 +341,7 @@ pub static MAINNET: Network = Network {
     l1_chain: "main",
     l1_names: &["main"],
     l1_kind: L1Kind::Main,
+    replay_locktime: 499_999_998,
     explorer: None,
     demo: false,
     seed_tag: "ecxfreebank.com",
@@ -590,6 +598,14 @@ mod tests {
         assert_eq!(of_app_dir(Path::new("/a/networks")).id, "beta");
         assert_eq!(top_of(&app_dir(top, &EASYNET)), top);
         assert_eq!(top_of(top), top);
+    }
+
+    #[test]
+    fn each_chain_takes_its_own_replay_stamp() {
+        // IsFinalTx: LOCKTIME_THRESHOLD - 1 on eCash's betanet branch, - 2 on its master and on easynet-3.1.
+        assert_eq!(BETA.replay_locktime, 499_999_999);
+        assert_eq!(EASYNET.replay_locktime, 499_999_998);
+        assert_eq!(MAINNET.replay_locktime, 499_999_998);
     }
 
     #[test]

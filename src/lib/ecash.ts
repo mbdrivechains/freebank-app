@@ -26,6 +26,7 @@ export interface EcashStatus {
 export interface EcashTx {
   wallet: "main" | "bids";
   txid: string;
+  /** Core's category, or "deposit" ("deposit_failed": it can't confirm): a deposit into FreeBank, from the app's record. */
   category: string;
   /** Signed: out is negative. */
   sats: number;

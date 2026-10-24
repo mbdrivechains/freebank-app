@@ -24,7 +24,7 @@ use super::conn::Conn;
 use super::keys::AccountKey;
 use super::sign::{self, Spend};
 use super::wallet;
-use super::{sats_of, to_coins, REPLAY_LOCKTIME};
+use super::{replay_locktime, sats_of, to_coins};
 use crate::rpc::{FreeBankClient, RpcError};
 use bitcoin::absolute::LockTime;
 use bitcoin::script::PushBytesBuf;
@@ -324,7 +324,7 @@ fn bid_tx(coin: &Coin, data_hex: &str, change: &ScriptBuf, fee: u64) -> Result<T
     let push = PushBytesBuf::try_from(data).map_err(|e| e.to_string())?;
     Ok(Transaction {
         version: Version::TWO,
-        lock_time: LockTime::from_consensus(REPLAY_LOCKTIME),
+        lock_time: LockTime::from_consensus(replay_locktime()),
         input: vec![TxIn {
             previous_output: OutPoint { txid: Txid::from_str(&coin.txid).map_err(|e| e.to_string())?, vout: coin.vout },
             script_sig: ScriptBuf::new(),

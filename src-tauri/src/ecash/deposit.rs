@@ -18,7 +18,8 @@
 use super::conn::Conn;
 use super::keys::AccountPub;
 use super::sign::Spend;
-use super::{sats_of, REPLAY_LOCKTIME};
+use super::wallet::Tx;
+use super::{replay_locktime, sats_of};
 use crate::seed::Chain;
 use bitcoin::absolute::LockTime;
 use bitcoin::consensus::encode;
@@ -157,7 +158,7 @@ fn the_tx(ctip: &Ctip, address: &str, amount: u64, coins: &[Coin], change: Optio
     if let Some((script, value)) = change {
         output.push(TxOut { value: Amount::from_sat(value), script_pubkey: script.clone() });
     }
-    Ok(Transaction { version: Version::TWO, lock_time: LockTime::from_consensus(REPLAY_LOCKTIME), input, output })
+    Ok(Transaction { version: Version::TWO, lock_time: LockTime::from_consensus(replay_locktime()), input, output })
 }
 
 /// The signed size of `tx`, vbytes, with every wallet input's witness at its largest (the treasury input has none).
@@ -358,6 +359,32 @@ pub fn save(app_dir: &Path, records: &[Record]) -> Result<(), String> {
     super::wallet::write_private(&p, &serde_json::to_vec_pretty(records).map_err(|e| e.to_string())?)
 }
 
+/// The eCash payments with each deposit on record as one row, "deposit" ("deposit_failed" for one that can't confirm:
+/// another spent the treasury first), of its amount and fee. The node can't tell
+/// them: it lists a send for each output that isn't the wallet's (the OP_RETURN and the new treasury output), each
+/// with the wallet's inputs less every output as the fee, which the old treasury input (not the wallet's) makes minus
+/// its value.
+pub fn fold_into(history: Vec<Tx>, records: &[Record]) -> Vec<Tx> {
+    let mut out: Vec<Tx> = Vec::with_capacity(history.len());
+    for t in history {
+        match records.iter().find(|r| r.txid == t.txid) {
+            Some(rec) if t.wallet == "main" && t.category == "send" => {
+                if !out.iter().any(|o| o.txid == t.txid && o.category.starts_with("deposit")) {
+                    out.push(Tx {
+                        category: if rec.state == "failed" { "deposit_failed" } else { "deposit" }.into(),
+                        sats: -(rec.sats as i64),
+                        fee: rec.fee,
+                        address: Some(rec.address.clone()),
+                        ..t
+                    });
+                }
+            }
+            _ => out.push(t),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,7 +427,7 @@ mod tests {
         let outs: u64 = b.tx.output.iter().map(|o| o.value.to_sat()).sum();
         assert_eq!(ins - outs, b.fee);
         assert_eq!(b.fee, signed_vsize(&b.tx, 1) * 2);
-        assert_eq!(b.tx.lock_time.to_consensus_u32(), REPLAY_LOCKTIME);
+        assert_eq!(b.tx.lock_time.to_consensus_u32(), replay_locktime());
         assert!(b.tx.input.iter().all(|i| i.sequence.0 == super::super::sign::SEQUENCE));
     }
 
@@ -460,5 +487,48 @@ mod tests {
         assert_eq!(plain_deposit_address(ADDR).unwrap(), ADDR);
         assert!(plain_deposit_address(&format!("s130_{ADDR}_000000")).unwrap_err().contains("checksum"));
         assert!(plain_deposit_address(&format!("s131_{ADDR}_{sum}")).is_err());
+    }
+
+    #[test]
+    fn a_deposit_is_one_row_with_its_own_fee() {
+        // As easynet's node listed one (v0.6.4's walk): a send for the OP_RETURN and one for the treasury output,
+        // each with a "fee" of minus the old treasury's value.
+        let row = |txid: &str, category: &str, sats: i64, fee: u64| Tx {
+            wallet: "main",
+            txid: txid.into(),
+            category: category.into(),
+            sats,
+            fee,
+            confirmations: 12,
+            time: 7,
+            address: None,
+        };
+        let history = vec![
+            row("aa", "send", 0, 2_499_799_582),
+            row("aa", "send", -2_699_800_000, 2_499_799_582),
+            row("bb", "receive", 1_000_000_000, 0),
+        ];
+        let rec_of = |txid: &str| Record {
+            txid: txid.into(),
+            hex: String::new(),
+            sats: 200_000_000,
+            fee: 707,
+            address: "XFreeBank".into(),
+            time: 7,
+            state: "credited".into(),
+            fb_wallet: None,
+        };
+        let out = fold_into(history, &[rec_of("aa")]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(
+            (out[0].category.as_str(), out[0].sats, out[0].fee, out[0].address.as_deref(), out[0].confirmations),
+            ("deposit", -200_000_000, 707, Some("XFreeBank"), 12)
+        );
+        assert_eq!(out[1].txid, "bb");
+
+        // One that lost the treasury to another deposit says so.
+        let failed = Record { state: "failed".into(), ..rec_of("cc") };
+        let out = fold_into(vec![row("cc", "send", 0, 1), row("cc", "send", -5, 1)], &[failed]);
+        assert_eq!(out.iter().map(|t| t.category.as_str()).collect::<Vec<_>>(), ["deposit_failed"]);
     }
 }

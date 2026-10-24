@@ -261,6 +261,8 @@
     if (t.moved === "back") return `Moved ${coins(-t.sats)} back to the main wallet${fee}`;
     // A bid: nothing sent anywhere, the whole bid its fee.
     if (t.wallet === "bids" && t.category === "send" && t.sats === 0) return `Bid for a FreeBank block, ${coins(t.fee)}`;
+    if (t.category === "deposit") return `Deposited ${coins(-t.sats)} into FreeBank${fee}`;
+    if (t.category === "deposit_failed") return `Deposit of ${coins(-t.sats)} not sent: another deposit used FreeBank's treasury first, or a coin was spent`;
     if (t.category === "send") return `Sent ${coins(-t.sats)}${fee}`;
     if (t.category === "immature") return `Mined ${coins(t.sats)}, not yet spendable`;
     if (t.category === "generate") return `Mined ${coins(t.sats)}`;
@@ -430,10 +432,10 @@
         <ul class="ec-history">
           {#each merged(history).slice(0, 50) as t (rowKey(t))}
             <li>
-              <span class="ec-tag">{t.moved ? "Move" : t.wallet === "bids" ? "Bidding" : "eCash"}</span>
+              <span class="ec-tag">{t.moved ? "Move" : t.category.startsWith("deposit") ? "Deposit" : t.wallet === "bids" ? "Bidding" : "eCash"}</span>
               <span>{txLine(t)}</span>
               <span class="muted small">
-                {t.confirmations > 0 ? `${t.confirmations} confirmation${t.confirmations === 1 ? "" : "s"}` : "unconfirmed"}
+                {t.confirmations > 0 ? `${t.confirmations} confirmation${t.confirmations === 1 ? "" : "s"}` : t.confirmations < 0 ? "won't confirm" : "unconfirmed"}
               </span>
               <button class="link-btn small" on:click={() => (openTx = openTx === rowKey(t) ? "" : rowKey(t))} data-testid="ecash-tx-details">
                 {openTx === rowKey(t) ? "Hide" : "Details"}

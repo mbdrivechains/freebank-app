@@ -137,7 +137,7 @@ fn funded(acct: &AccountKey, to: ScriptBuf, sats: u64, fee: u64, change: Option<
     let prev = parent(TxOut { value: Amount::from_sat(value), script_pubkey: coin_script.clone() });
     let tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
-        lock_time: bitcoin::absolute::LockTime::from_consensus(super::REPLAY_LOCKTIME),
+        lock_time: bitcoin::absolute::LockTime::from_consensus(super::replay_locktime()),
         input: vec![TxIn {
             previous_output: OutPoint { txid: prev.compute_txid(), vout: 1 },
             script_sig: ScriptBuf::new(),
@@ -745,13 +745,17 @@ async fn a_lost_bid_still_held_by_the_ecash_node_is_replaced_from_its_recorded_c
 
 /// Against a real eCash node on regtest (FB_ECASH_RPC=host:port, FB_ECASH_DIR=the folder with its .cookie): set up both
 /// watch-only wallets, mine to the main one, move eCash into the bidding wallet (signed here) and back (signed with the
-/// bidding key), and the node takes both.
+/// bidding key), and the node takes both. FB_ECASH_NETWORK=easynet (or mainnet) stamps as that network does, for its
+/// node's build; run this test alone then, since the network is set once per process.
 #[tokio::test]
 #[ignore]
 async fn ecash_real_node() {
     let (Ok(at), Ok(dir)) = (std::env::var("FB_ECASH_RPC"), std::env::var("FB_ECASH_DIR")) else {
         panic!("set FB_ECASH_RPC and FB_ECASH_DIR");
     };
+    if let Ok(id) = std::env::var("FB_ECASH_NETWORK") {
+        crate::network::set(crate::network::by_id(&id).expect("FB_ECASH_NETWORK: beta, easynet or mainnet"));
+    }
     let s = crate::node::Settings { rest: at, l1_datadir: Some(dir), ..Default::default() };
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let conn = super::conn::connect(&http, &s, None).await.unwrap();
@@ -784,7 +788,7 @@ async fn ecash_real_node() {
     }
     let txid = wallet::sign_and_send(&conn, &q, &main, None).await.unwrap();
     let tx = conn.node().call_typed("getrawtransaction", vec![json!(txid), json!(true)]).await.unwrap();
-    assert_eq!(tx["locktime"], json!(499_999_999));
+    assert_eq!(tx["locktime"], json!(crate::network::current().replay_locktime));
     mine_to(main_addr.clone(), 1).await;
     assert_eq!(wallet::balance(&conn, &bname).await.unwrap().trusted, 100_000_000);
 
