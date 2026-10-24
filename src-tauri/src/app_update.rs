@@ -501,6 +501,7 @@ async fn restart_when_free(app: &AppHandle, mgr: &NodeManager, p: &Mutex<Progres
         }
         tokio::time::sleep(Duration::from_secs(if rebuilding(mgr) { 3 } else { 1 })).await;
     }
+    crate::front::mark(&crate::network::top_of(&mgr.app_dir));
     app.request_restart();
 }
 

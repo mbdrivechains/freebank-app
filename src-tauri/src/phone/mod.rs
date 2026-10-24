@@ -737,8 +737,7 @@ fn history_view(r: &Value) -> Value {
 }
 
 /// A wallet's notes (`listmynotes`) as the phone shows them, with their houses' names, states and types.
-/// `demo`: demo mode is on (`crate::node::DEMO`), so no Redeem is offered.
-fn notes_view(mine: &Value, houses: &Value, demo: bool) -> Value {
+fn notes_view(mine: &Value, houses: &Value) -> Value {
     let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
     let list = mine
         .as_array()
@@ -761,9 +760,7 @@ fn notes_view(mine: &Value, houses: &Value, demo: bool) -> Value {
                 "amount": to_ecx(units),
                 "demanded": to_ecx(n["demanded_units"].as_u64().unwrap_or(0)),
                 "redeemable": to_ecx(redeemable),
-                // Not in demo mode: a demo node never holds a house's keys, and a holder's redeem without them burns the
-                // notes and pays nothing (Demand is the holder's way).
-                "can_redeem": n["redeemable"] == true && !demo,
+                "can_redeem": n["redeemable"] == true,
                 "can_demand": n["demandable"] == true,
                 "rate_bps": house.map(|h| h["defer_interest_bps"].clone()).unwrap_or(Value::Null),
                 "type": house_type(house),
@@ -1705,9 +1702,6 @@ impl Phone {
                 let r = self.rpc.call("listhouses", vec![]).await?;
                 Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(house_view).collect()))
             }
-            "note-redeem" if crate::node::DEMO.load(std::sync::atomic::Ordering::SeqCst) => {
-                Err("Redeem needs the house's keys, which a demo node never has: use Demand, and the house pays you.".into())
-            }
             "send" | "note-send" | "note-redeem" | "note-demand" => {
                 // Signed by this phone's own Face ID: the desktop's approval needn't ask for it again (security review M1).
                 let face_id = self.passkey_of(dev).is_some_and(|k| k.sends);
@@ -2132,7 +2126,7 @@ impl Phone {
             }
         };
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-        Ok(notes_view(&mine, &houses, crate::node::DEMO.load(std::sync::atomic::Ordering::SeqCst)))
+        Ok(notes_view(&mine, &houses))
     }
 
     /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody

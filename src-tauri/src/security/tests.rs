@@ -766,10 +766,9 @@ fn opener_scope_matches_the_frontend() {
         .and_then(|rest| rest.split("$/;").next())
         .expect("OPENABLE in lib/node.ts");
     assert_eq!(js.replace("\\/", "/"), scope);
-    // Only https, and only FreeBank's own hosts (and, on the beta, its Telegram bot: the bot itself, v0.4.5's "Open the
-    // bot", or its start link with an address, nothing else after the bot's name).
+    // Only https, and only FreeBank's own hosts (beta's Telegram bot, opened from v0.4.4 to v0.6.4, was deleted).
     assert!(scope.starts_with("https://("));
-    assert!(scope.ends_with("|t\\.me/freebank_beta_bot(\\?start=fund_[A-Za-z0-9]{25,59})?)"), "{scope}");
+    assert!(!scope.contains("t\\.me"), "{scope}");
     assert!(!scope.contains("http?") && !scope.contains(".*") && !scope.contains("\\w+"));
     // Every network's explorer opens (v0.6.1's easynet links did nothing until fbeasy was added here).
     for n in crate::network::ALL {

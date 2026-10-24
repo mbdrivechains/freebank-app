@@ -9,15 +9,9 @@ pub mod install;
 pub mod lock;
 pub mod obliterate;
 pub mod process;
-pub mod relay;
 pub mod release_key;
 #[cfg(all(test, unix))]
 pub mod testnode;
-
-/// Demo mode is on (v0.4.5), for code that holds no `Mgr`: the phone's notes offer no Redeem then (a demo node never
-/// holds a house's keys, and a holder's redeem without them burns the notes). Kept with the settings: set as they load
-/// and each time they are saved.
-pub static DEMO: AtomicBool = AtomicBool::new(false);
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -136,9 +130,6 @@ pub struct Settings {
     /// "Update FreeBank by itself" (v0.4.2, Settings > App updates; app_update.rs `auto_round`): off unless the user
     /// turns it on. On, a signed release is fetched, checked and put in place without asking; it runs from the next start.
     pub auto_update: bool,
-    /// Demo mode (v0.4.4, relay.rs): no eCash node. The node asks FreeBank's read-only enforcer gateway for eCash facts,
-    /// through the app's relay; `rest` and `enforcer` are kept for leaving it. Play money only: no deposits or withdrawals.
-    pub demo: bool,
     /// The eCash node and enforcer this app installed and runs for the network (v0.5.0, stack.rs). None: it uses a
     /// stack that was already running (BitWindow's, or one set up by hand), at `rest` and `enforcer`.
     pub stack: Option<crate::stack::StackSettings>,
@@ -170,7 +161,6 @@ impl Default for Settings {
             changer_url: None,
             changer_key: None,
             auto_update: false,
-            demo: false,
             stack: None,
         }
     }
@@ -243,11 +233,6 @@ pub struct NodeManager {
     pub app_updating: AtomicBool,
     /// When the app last looked for its node from an earlier launch.
     pub adopt_tried: std::sync::Mutex<Option<Instant>>,
-    /// Demo mode's relay (relay.rs) runs in this process; `relay_start` lets one caller start it.
-    pub relay_up: AtomicBool,
-    pub relay_start: tokio::sync::Mutex<()>,
-    /// The gateway's eCash height for the status poll, and when it was asked (relay.rs `tip`).
-    pub relay_tip: std::sync::Mutex<Option<(Instant, Option<u64>)>>,
 }
 
 /// Holds `NodeManager::activity` for one long operation; clears it when dropped.
@@ -261,20 +246,12 @@ impl Drop for Busy<'_> {
 
 impl NodeManager {
     pub fn new(app_dir: PathBuf) -> Self {
-        let mut settings: Settings = std::fs::read(app_dir.join("settings.json"))
+        // A profile left in beta's demo mode (v0.4.4 to v0.6.1, its code gone in v0.6.5) loads as one that left it: its
+        // `rest` and `enforcer` were kept for that. Its wallet and data folder stay as they are.
+        let settings: Settings = std::fs::read(app_dir.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        // Beta's demo retired in v0.6.2 (network.rs): a profile left in demo mode goes back to setup, which offers
-        // easynet, beta's own node, BitWindow's or another computer's. Its wallet and data folder stay as they are.
-        if settings.demo && !crate::network::current().demo {
-            settings.demo = false;
-            if let Ok(json) = serde_json::to_vec_pretty(&settings) {
-                let _ = std::fs::write(app_dir.join("settings.json"), json);
-            }
-            crate::activity::note("demo mode ended: the demo has moved to easynet");
-        }
-        DEMO.store(settings.demo, Ordering::SeqCst);
         let http = reqwest::Client::builder()
             .user_agent(concat!("FreeBank-app/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(8))
@@ -303,9 +280,6 @@ impl NodeManager {
             close_asked: std::sync::Mutex::new(None),
             adopt_tried: std::sync::Mutex::new(None),
             app_updating: AtomicBool::new(false),
-            relay_up: AtomicBool::new(false),
-            relay_start: tokio::sync::Mutex::new(()),
-            relay_tip: std::sync::Mutex::new(None),
         }
     }
 
@@ -368,7 +342,6 @@ impl NodeManager {
         std::fs::create_dir_all(&self.app_dir).map_err(|e| e.to_string())?;
         let json = serde_json::to_vec_pretty(&s).map_err(|e| e.to_string())?;
         std::fs::write(self.app_dir.join("settings.json"), json).map_err(|e| e.to_string())?;
-        DEMO.store(s.demo, Ordering::SeqCst);
         *self.settings.lock().await = s;
         Ok(())
     }
@@ -822,21 +795,9 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_left_in_demo_mode_goes_back_to_setup() {
-        // Beta's demo retired in v0.6.2: no network offers it, so a profile still in it loses it, on disk too, and its
-        // other settings stay (the tests run on beta, the default network).
-        assert!(!crate::network::BETA.demo && !crate::network::EASYNET.demo);
-        let dir = std::env::temp_dir().join(format!("fb-demo-ended-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let before = Settings { demo: true, installed_tag: Some("v0.2.29".into()), rpc_port: 18999, ..Default::default() };
-        std::fs::write(dir.join("settings.json"), serde_json::to_vec(&before).unwrap()).unwrap();
-        let mgr = NodeManager::new(dir.clone());
-        let now = mgr.settings.try_lock().unwrap().clone();
-        assert!(!now.demo && !DEMO.load(Ordering::SeqCst));
-        assert_eq!((now.installed_tag.as_deref(), now.rpc_port), (Some("v0.2.29"), 18999));
-        let saved: Settings = serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
-        assert!(!saved.demo, "written back");
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn a_profile_left_in_demo_mode_still_loads() {
+        // Beta's demo (v0.4.4 to v0.6.1) wrote `"demo": true`. Its code is gone; the rest of such a profile stays.
+        let s: Settings = serde_json::from_str(r#"{"demo": true, "installed_tag": "v0.2.29", "rpc_port": 18999}"#).unwrap();
+        assert_eq!((s.installed_tag.as_deref(), s.rpc_port), (Some("v0.2.29"), 18999));
     }
 }

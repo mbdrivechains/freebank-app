@@ -26,13 +26,12 @@
   // v0.2.0 wallet: the passphrase-first flow over every screen, the Home banner, Settings > Wallet
   import WalletGate from "./components/WalletGate.svelte";
   import AskDialog from "./components/AskDialog.svelte";
-  import DemoGuide from "./components/DemoGuide.svelte";
   import StartGuide from "./components/StartGuide.svelte";
   import HouseDue from "./components/HouseDue.svelte";
   import WalletBanner from "./components/WalletBanner.svelte";
   import WalletSettings from "./components/WalletSettings.svelte";
   import { holdAddresses } from "./lib/walletSeed";
-  import { checkForUpdate, demoMode, node, update, versions, type Obliterated, type Removed } from "./lib/node";
+  import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
   import { appUpdate, loadAptOffer, startAppUpdateChecks } from "./lib/appUpdate";
   import AppUpdate from "./components/AppUpdate.svelte";
   import AptOffer from "./components/AptOffer.svelte";
@@ -134,7 +133,6 @@
   $: onSetup = !connected && !isPWA && !manualConnect && !gone && !removed && !stackGone;
 
   async function onSetupReady() {
-    demoMode.set(await node.setupInfo().then((i) => !!i.settings.demo).catch(() => false));
     homeAction = "";
     localNode = true;
     connected = true;
@@ -147,7 +145,6 @@
   let removed: Removed | null = null;
   function onRemoved(e: CustomEvent<Removed>) {
     removed = e.detail;
-    demoMode.set(false); // setup sets it again from the settings, if demo mode is still on
     connected = false;
     localNode = false;
     clearReceipts();
@@ -170,7 +167,6 @@
   let closing = false;
   function onObliterated(e: CustomEvent<Obliterated>) {
     gone = e.detail;
-    demoMode.set(false);
     connected = false;
     localNode = false;
     clearReceipts();
@@ -201,15 +197,11 @@
   }
 
   const NEED_COINS = "You need FreeBank coins first: Deposit, above, brings them in from eCash.";
-  // Demo mode (v0.4.4): play money and no eCash node, so no eCash tab, Deposit or Withdraw.
-  $: demo = $demoMode;
   let asking = false; // the header's Ask FreeBank (v0.4.6)
   // A network with a faucet (easynet, v0.6.1): Receive has its button too.
-  $: needCoins = demo
-    ? "You need FreeBank coins first: Receive, above, has Get play money."
-    : $network.faucet
-      ? `You need FreeBank coins first: Receive, above, has Get ${$network.name} coins, and Deposit brings them in from eCash.`
-      : NEED_COINS;
+  $: needCoins = $network.faucet
+    ? `You need FreeBank coins first: Receive, above, has Get ${$network.name} coins, and Deposit brings them in from eCash.`
+    : NEED_COINS;
 
   // Connection form (Model A: remote-control your own custodial node)
   let connMode: ConnMode = "local";
@@ -541,11 +533,9 @@
       <button class:active={currentView === "credit"} on:click={() => (currentView = "credit")}>
         Credit
       </button>
-      {#if !demo}
-        <button class:active={currentView === "ecash"} on:click={() => (currentView = "ecash")}>
-          eCash
-        </button>
-      {/if}
+      <button class:active={currentView === "ecash"} on:click={() => (currentView = "ecash")}>
+        eCash
+      </button>
       {#if localNode}
         <button class:active={currentView === "node"} on:click={() => (currentView = "node")}>
           Node
@@ -582,24 +572,22 @@
     {:else if currentView === "home"}
       <WalletBanner />
       {#if localNode && !isPWA}<HouseDue />{/if}
-      {#if localNode && !isPWA && !demo}<StackAlert />{/if}
-      {#if demo}<DemoGuide />{:else if $network.faucet && !isPWA}<StartGuide />{/if}
+      {#if localNode && !isPWA}<StackAlert />{/if}
+      {#if $network.faucet && !isPWA}<StartGuide />{/if}
       <!-- Home / Dashboard -->
       <SecurityAlerts on:open={() => { currentView = "settings"; settingsPart = "security"; }} />
       <BalanceCard {balance} onRefresh={refresh} />
       <div class="home-actions">
         <button class:active={homeAction === "send"} on:click={() => openHome("send")} data-testid="home-send">Send</button>
         <button class:active={homeAction === "receive"} on:click={() => openHome("receive")} data-testid="home-receive">Receive</button>
-        {#if !demo}
-          <button class:active={homeAction === "deposit"} on:click={() => openHome("deposit")} data-testid="home-deposit">Deposit</button>
-          <button class:active={homeAction === "withdraw"} on:click={() => openHome("withdraw")} data-testid="home-withdraw">Withdraw</button>
-        {/if}
+        <button class:active={homeAction === "deposit"} on:click={() => openHome("deposit")} data-testid="home-deposit">Deposit</button>
+        <button class:active={homeAction === "withdraw"} on:click={() => openHome("withdraw")} data-testid="home-withdraw">Withdraw</button>
       </div>
       {#if homeAction === "send"}
         <!-- Send: Max, a speed, the fee shown before Confirm; the receipt has Speed up -->
         <SendPanel {balance} on:sent={() => { refresh(); homeAction = ""; }} />
       {:else if homeAction === "receive"}
-        <ReceivePanel {canShowAddresses} onBeta={!!blockchainInfo && networkName(blockchainInfo) === "Beta"} />
+        <ReceivePanel {canShowAddresses} />
       {:else if homeAction === "deposit"}
         <DepositPanel {canShowAddresses} on:ecash={() => (currentView = "ecash")} />
       {:else if homeAction === "withdraw"}
@@ -610,7 +598,7 @@
     {:else if currentView === "ecash"}
       <EcashPanel on:settings={(e) => openFromEcash(e.detail)} />
     {:else if currentView === "credit"}
-      <CreditPanel {balance} {demo} height={blockchainInfo?.blocks ?? 0} syncing={!!blockchainInfo && blockchainInfo.headers > blockchainInfo.blocks + 2} />
+      <CreditPanel {balance} height={blockchainInfo?.blocks ?? 0} syncing={!!blockchainInfo && blockchainInfo.headers > blockchainInfo.blocks + 2} />
     {:else if currentView === "settings"}
       <!-- Settings: an index, one section at a time (v0.2.6); Start over last. -->
       <nav class="segments settings-index" aria-label="Settings">
@@ -626,7 +614,7 @@
       {:else if settingsPart === "node"}
         {#if localNode}
           <NodeSettings part="connection" on:removed={onRemoved} on:obliterated={onObliterated} on:stackRemoved={onStackRemoved} />
-          {#if !demo}<EcashLogin />{/if}
+          <EcashLogin />
           <ChangerSettings />
         {:else}
           <div class="card">
@@ -654,9 +642,6 @@
   {#if $reportDraft}<ReportDialog />{/if}
 
   {#if asking}<AskDialog on:close={() => (asking = false)} />{/if}
-
-  <!-- Demo mode: a light DEMO across every page, so play money is never taken for the real thing. -->
-  {#if demo}<div class="demo-mark" aria-hidden="true"><span>DEMO</span></div>{/if}
 
   {#if $versions}
     <footer class="app-foot">

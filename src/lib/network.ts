@@ -11,9 +11,6 @@ export interface NetworkInfo {
   l1: string;
   /** FreeBank's explorer on this network (tx links), or none. */
   explorer: string | null;
-  demo: boolean;
-  /** The Telegram bot with play money, if any. */
-  bot: string | null;
   /** The network has a faucet (v0.6.1: easynet's). */
   faucet: boolean;
   /** The app can install this network's eCash node and enforcer itself. */
@@ -28,8 +25,6 @@ export const BETA: NetworkInfo = {
   name: "Beta",
   l1: "eCash beta",
   explorer: "https://explorer.ecxfreebank.com",
-  demo: true,
-  bot: "freebank_beta_bot",
   faucet: false,
   stack: false,
   all: [["beta", "Beta", true]],

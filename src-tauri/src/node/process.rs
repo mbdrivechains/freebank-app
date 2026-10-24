@@ -23,7 +23,7 @@ pub async fn start(mgr: &NodeManager) -> Result<(), String> {
 /// node's lock is taken, so the Node tab isn't held while the eCash node comes up.
 pub async fn ensure_stack(mgr: &NodeManager) -> Result<(), String> {
     let s = mgr.settings.lock().await.clone();
-    if s.stack.as_ref().is_some_and(|st| st.in_use(&s)) && !s.demo {
+    if s.stack.as_ref().is_some_and(|st| st.in_use(&s)) {
         crate::stack::start(mgr).await?;
     }
     Ok(())
@@ -200,20 +200,6 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
         ));
     }
 
-    // Demo mode: the enforcer is FreeBank's gateway through the app's relay, and there is no eCash node.
-    let (enforcer, rest) = if s.demo {
-        if !super::relay::node_can_demo(&tag) {
-            return Err(format!(
-                "Demo mode needs FreeBank's node v0.2.25 or newer, and this computer has {}. Update it first.",
-                tag
-            ));
-        }
-        super::relay::ensure(mgr).await?;
-        (super::relay::relay_addr(), String::new())
-    } else {
-        (s.enforcer.clone(), s.rest.clone())
-    };
-
     let logs = mgr.app_dir.join("logs");
     std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
     let out = std::fs::OpenOptions::new()
@@ -233,8 +219,8 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     cmd.args(crate::network::datadir_args(net, Path::new(&s.datadir)))
         .arg("-server=1")
         .arg("-mainchaintransport=enforcer")
-        .arg(format!("-enforceraddr={}", enforcer))
-        .arg(format!("-mainchainrest={}", rest))
+        .arg(format!("-enforceraddr={}", s.enforcer))
+        .arg(format!("-mainchainrest={}", s.rest))
         .arg(format!("-mainchainblockpin={}:{}", pin_height(), pin_hash()));
     if !net.l1_chain.is_empty() {
         cmd.arg(format!("-mainchainchain={}", net.l1_chain));
@@ -249,8 +235,7 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     if reindex {
         cmd.arg("-reindex");
     }
-    // A demo node never outlives the app, which runs its relay (demo mode turns Keep running off; this is the backstop).
-    let detach = s.keep_running && !s.demo;
+    let detach = s.keep_running;
     #[cfg(unix)]
     unsafe {
         cmd.pre_exec(move || {
@@ -548,8 +533,6 @@ pub struct NodeStatus {
     pub datadir: String,
     pub rest: String,
     pub enforcer: String,
-    /// Demo mode: no eCash node (`rest` is empty), and `enforcer` names FreeBank's gateway.
-    pub demo: bool,
     pub release: Option<String>,
     pub p2p_port: u16,
     /// False when freebank.conf says listen=0: no incoming peers.
@@ -664,9 +647,8 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         tag: conf_tag(&datadir),
         explorer: super::explorer().unwrap_or_default().to_string(),
         datadir: s.datadir.clone(),
-        rest: if s.demo { String::new() } else { s.rest.clone() },
-        enforcer: if s.demo { super::relay::GATEWAY.to_string() } else { s.enforcer.clone() },
-        demo: s.demo,
+        rest: s.rest.clone(),
+        enforcer: s.enforcer.clone(),
         release: s.installed_tag.clone(),
         p2p_port: s.p2p_port,
         listens: std::fs::read_to_string(datadir.join("freebank.conf"))
@@ -677,7 +659,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
             app: super::APP_VERSION.to_string(),
             ..Default::default()
         },
-        own_stack: !s.demo && s.stack.as_ref().is_some_and(|st| st.in_use(&s)),
+        own_stack: s.stack.as_ref().is_some_and(|st| st.in_use(&s)),
     };
     // Mid-operation the node may not answer for a while; say what is happening instead.
     let activity = mgr.activity.lock().unwrap().clone();
@@ -724,13 +706,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         c.call("getnetworkinfo", vec![]),
         c.call("getblockchaininfo", vec![]),
         c.call("getpeerinfo", vec![]),
-        async {
-            if s.demo {
-                super::relay::tip(mgr).await
-            } else {
-                detect::l1_blocks(&mgr.http, &s.rest).await
-            }
-        },
+        detect::l1_blocks(&mgr.http, &s.rest),
     );
     let chain = chain?;
     st.peers = peers?

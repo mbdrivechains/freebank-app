@@ -1,6 +1,5 @@
 <script lang="ts">
-  // "Get easynet coins" (v0.6.1): on a network with a faucet, Receive asks it to pay this address, as "Get play money"
-  // opens the bot on beta. Home's Receive gets sECX on FreeBank, the eCash tab's ECX on easynet itself. Rust asks
+  // "Get easynet coins" (v0.6.1): on a network with a faucet, Receive asks it to pay this address. Home's Receive gets sECX on FreeBank, the eCash tab's ECX on easynet itself. Rust asks
   // (faucet.rs); only the address goes.
   import { tauriInvoke } from "../lib/api";
   import { network } from "../lib/network";
@@ -53,7 +52,6 @@
 </div>
 
 <style>
-  /* As ReceivePanel's "Get play money" (its style is that component's own). */
   .play-money {
     margin-top: 0.75rem;
     display: flex;

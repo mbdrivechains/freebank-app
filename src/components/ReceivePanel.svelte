@@ -8,15 +8,12 @@
   import FaucetAsk from "./FaucetAsk.svelte";
   import { network } from "../lib/network";
   import { api, tauriInvoke } from "../lib/api";
-  import { BASE_TICKER, BETA_FAUCET_BOT, playMoneyUrl } from "../lib/brand";
+  import { BASE_TICKER } from "../lib/brand";
   import { nice } from "../lib/errors";
-  import { openUrl } from "../lib/node";
   import { withUnlock } from "../lib/wallet";
   import { walletList } from "../lib/wallets";
 
   export let canShowAddresses = true;
-  /** The node is on the beta chain: Receive offers play money from FreeBank's Telegram bot. */
-  export let onBeta = false;
 
   // The wallet chosen in the header: each keeps its own address (the walk-through's second run found Savings showing
   // the main wallet's). Its name shows above the code once there is more than one.
@@ -40,12 +37,6 @@
       error = nice(e);
     }
     busy = false;
-  }
-
-  // The address goes to Telegram with the user's account, so the wallet moves on to a new one for what comes next.
-  async function playMoney() {
-    await openUrl(playMoneyUrl(address));
-    await fresh();
   }
 
   async function copy() {
@@ -105,16 +96,6 @@
       <p class="muted small">Getting your address…</p>
     {/if}
     <button class="link-btn" on:click={fresh} disabled={busy}>New address</button>
-    {#if onBeta && BETA_FAUCET_BOT && address}
-      <div class="play-money" data-testid="play-money">
-        <p class="small">
-          <strong>Trying the beta?</strong> FreeBank's Telegram bot sends a little {BASE_TICKER} to this wallet, once per
-          Telegram account. It arrives within about half an hour.
-        </p>
-        <button class="secondary" on:click={playMoney} disabled={busy}>Get play money ↗</button>
-        <p class="small muted">In Telegram, tap <strong>Start</strong> (or Restart) at the bottom of the chat.</p>
-      </div>
-    {/if}
     {#if $network.faucet && address}<FaucetAsk {address} coin="sECX" />{/if}
     {#if members.length}
       <div class="member-addresses" data-testid="member-addresses">
@@ -142,13 +123,6 @@
     margin-top: 1rem;
     border-top: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
     padding-top: 0.75rem;
-  }
-  .play-money {
-    margin-top: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.5rem;
   }
   .member-row {
     margin-top: 0.5rem;

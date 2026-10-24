@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Ask FreeBank (v0.4.6): one question, one answer, nothing kept. On the demo card and in the header's Ask, in both
-  // modes: the helper steers a newcomer through the demo and explains the app in full mode.
+  // Ask FreeBank (v0.4.6): one question, one answer, nothing kept. On easynet's Getting started card and in the
+  // header's Ask: the helper steers a newcomer and explains the app.
   import { onMount } from "svelte";
   import { askHelper } from "../lib/ask";
   import { nice } from "../lib/errors";

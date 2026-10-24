@@ -17,7 +17,6 @@
   import { fmtEcx } from "../lib/amount";
   import { BASE_TICKER } from "../lib/brand";
   import { nice } from "../lib/errors";
-  import { demoMode } from "../lib/node";
   import { showReceipt } from "../lib/receipts";
   import { withUnlock } from "../lib/wallet";
   import {
@@ -746,7 +745,7 @@
       {/if}
       {#if error}<p class="soft-error" role="alert">{error}</p>{/if}
       <p class="hint">
-        {#if !$demoMode}These words also cover the app's eCash wallets.{/if} Other wallets can't read FreeBank's
+        These words also cover the app's eCash wallets. Other wallets can't read FreeBank's
         addresses from them directly.
       </p>
       <div class="row-actions">

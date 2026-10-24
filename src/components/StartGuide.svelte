@@ -1,6 +1,6 @@
 <script lang="ts">
   // Home on a network with a faucet (easynet, v0.6.2): where a newcomer's first steps are, in the place beta's demo
-  // card had (DemoGuide.svelte). Coins come from the faucet in Receive, not from a bot. "Got it" folds the card to one
+  // card had (to v0.6.1). Coins come from the faucet in Receive. "Got it" folds the card to one
   // line, remembered on this computer only (a convenience: it opens again if lost).
   import { network } from "../lib/network";
   import AskBox from "./AskBox.svelte";
@@ -46,7 +46,6 @@
 {/if}
 
 <style>
-  /* As DemoGuide's (its style is that component's own). */
   .dg {
     display: flex;
     flex-direction: column;

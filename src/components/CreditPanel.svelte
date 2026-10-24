@@ -16,8 +16,7 @@
     type Pool,
   } from "../lib/api";
   import { nettingStep, roundHexFrom, type NettingRound } from "../lib/netting";
-  import { BASE_TICKER, BETA_BOT_URL } from "../lib/brand";
-  import { openUrl } from "../lib/node";
+  import { BASE_TICKER } from "../lib/brand";
   import { network } from "../lib/network";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import { nice } from "../lib/errors";
@@ -62,13 +61,9 @@
   const SEGS: [Seg, string][] = [["notes", "Notes"], ["houses", "Houses"], ["pools", "Pools"], ["bills", "Bills"]];
   let seg: Seg = "notes";
   let error = "";
-  /** Demo mode (v0.4.4): no Deposit; play money comes from Receive. */
-  export let demo = false;
-  $: NEED_COINS = demo
-    ? "You need FreeBank coins first: Home › Receive › Get play money brings some."
-    : $network.faucet
-      ? `You need FreeBank coins first: Home › Receive › Get ${$network.name} coins brings some.`
-      : "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
+  $: NEED_COINS = $network.faucet
+    ? `You need FreeBank coins first: Home › Receive › Get ${$network.name} coins brings some.`
+    : "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
 
   function open(s: Seg) {
     seg = s;
@@ -919,11 +914,8 @@
                      onto one of this wallet's addresses (a redeem takes coins summing exactly to the amount). -->
                 <button on:click={() => startAction("send", n.house_id)}>{typeOf(houses, n.house_id) === "redeem" ? "Gather" : "Send"}</button>
                 <!-- Redeem pays from the house's reserves, so only a node holding the house's keys can (without them the
-                     node burns the notes and pays nothing). A demo wallet runs no house: its play money is far short of a
-                     house's pledge. Demand is the holder's way. -->
-                {#if !demo}
-                  <button on:click={() => startAction("redeem", n.house_id)} disabled={!n.redeemable}>Redeem</button>
-                {/if}
+                     node burns the notes and pays nothing). Demand is the holder's way. -->
+                <button on:click={() => startAction("redeem", n.house_id)} disabled={!n.redeemable}>Redeem</button>
                 <button on:click={() => startAction("demand", n.house_id)} disabled={!n.demandable}>Demand</button>
               </div>
               {#if action && action.houseId === n.house_id}
@@ -936,7 +928,7 @@
                     <p class="hint">{unitsEcho(actionUnits)}</p>
                   {/if}
                   {#if action.type === "send" && typeOf(houses, n.house_id) === "redeem"}
-                    <p class="hint">This house's notes go only back to the house. Gather moves them onto one of your own addresses, so a {demo ? "demand" : "redeem or a demand"} can take them together.</p>
+                    <p class="hint">This house's notes go only back to the house. Gather moves them onto one of your own addresses, so a redeem or a demand can take them together.</p>
                   {:else if action.type === "send"}
                     <label>
                       To address
@@ -956,7 +948,7 @@
                     {#if n.house_status === "d"}
                       <p class="hint">Your notes join the house's payout queue and earn {queueRate(houses, n.house_id)} from today. The house can pay you at any time; until it does, these notes can't be sent.</p>
                     {:else}
-                      <p class="hint">A formal demand: the house must pay you in full within the demand window. Until it pays, these notes can't be sent.{#if demo}{" "}FreeBank's beta houses usually pay a demand within the hour.{/if}</p>
+                      <p class="hint">A formal demand: the house must pay you in full within the demand window. Until it pays, these notes can't be sent.</p>
                     {/if}
                   {/if}
                   <div class="note-form-actions">
@@ -971,8 +963,8 @@
           {/each}
         {/if}
       </div>
-      <!-- v0.4.8: sell or buy a house's notes through the money changer (none in demo mode: no eCash wallet). -->
-      {#if !demo && !locked.notes}
+      <!-- v0.4.8: sell or buy a house's notes through the money changer. -->
+      {#if !locked.notes}
         <NoteChanger {notes} on:changed={loadNotes} />
       {/if}
 
@@ -1453,25 +1445,16 @@
           </button>
         </div>
         <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, backed by a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
-        {#if demo}
-          <p class="hint demo-lend" data-testid="demo-lend">
-            In the demo, the beta's houses lend through FreeBank's Telegram bot: borrow there, then its Wallet › Send to
-            your app brings the notes to Credit › Notes.
-            <button class="link-btn" on:click={() => openUrl(BETA_BOT_URL)}>Open the bot ↗</button>
-          </p>
-        {/if}
         {#if locked.bills}
           <p class="muted small">—</p>
         {:else if bills.length === 0}
           <div class="empty">
             <p>You have no bills yet.</p>
-            {#if !demo}
-              <p class="muted small">
-                {balance > 0
-                  ? "Issue one under House tools, or share a bill key so someone can hand a bill to you."
-                  : "Someone can hand a bill to you: share a bill key below."}
-              </p>
-            {/if}
+            <p class="muted small">
+              {balance > 0
+                ? "Issue one under House tools, or share a bill key so someone can hand a bill to you."
+                : "Someone can hand a bill to you: share a bill key below."}
+            </p>
           </div>
         {:else}
           {#each bills as b}

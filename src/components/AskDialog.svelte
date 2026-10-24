@@ -1,8 +1,7 @@
 <script lang="ts">
-  // The header's Ask (v0.4.6): Ask FreeBank from any screen, in either mode. Esc or Close shuts it.
+  // The header's Ask (v0.4.6): Ask FreeBank from any screen. Esc or Close shuts it.
   import { createEventDispatcher } from "svelte";
   import AskBox from "./AskBox.svelte";
-  import { demoMode } from "../lib/node";
 
   const dispatch = createEventDispatcher<{ close: void }>();
 </script>
@@ -16,11 +15,9 @@
       <button class="ghost" on:click={() => dispatch("close")}>Close</button>
     </div>
     <p class="muted small">
-      {$demoMode
-        ? "Stuck in the demo, or curious? Ask about any step: play money, borrowing in the bot, notes, Demand."
-        : "Ask about any screen: sending, deposits, notes, houses, bills, your phone."}
+      Ask about any screen: sending, deposits, notes, houses, bills, your phone.
     </p>
-    <AskBox focus placeholder={$demoMode ? "What do I do after Get play money?" : "How does a deposit work?"} />
+    <AskBox focus placeholder="How does a deposit work?" />
   </div>
 </div>
 

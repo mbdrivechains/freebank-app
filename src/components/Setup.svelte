@@ -19,7 +19,6 @@
     tagProblem,
     versions,
     BITWINDOW_URL,
-    demoMode,
     type DatadirCheck,
     type InstallProgress,
     type NodeProgress,
@@ -62,7 +61,7 @@
   $: problem = tagProblem(tag);
   // Someone who has never installed FreeBank's node: easynet leads (v0.6.2, in place of beta's demo), as it takes
   // minutes, not a full node's hours, and its faucet gives test coins.
-  $: newcomer = !info?.installed && !info?.settings.demo;
+  $: newcomer = !info?.installed;
   // Said right by the Install button whenever it is disabled.
   $: installBlocked = problem
     ? "Fix the name above to continue."
@@ -112,7 +111,7 @@
     ["download", "Download"],
     ["verify", "Check it against the signed checksums"],
     ["unpack", "Unpack"],
-    ["config", "Save your name"], // "Save its settings" in demo mode, which asks for no name
+    ["config", "Save your name"],
     ["start", "Start FreeBank"],
   ];
   $: stageIndex = install ? STAGES.findIndex(([id]) => id === install!.stage) : -1;
@@ -160,7 +159,6 @@
     backError = "";
     try {
       info = await node.setupInfo();
-      demoMode.set(!!info.settings.demo); // the watermark from the first setup screen, after a restart too
       versions.update((v) => v ?? { app: info!.app_version, node: null, commit: null });
       if (!tag) tag = info.current_tag || info.suggested_tag;
       if (info.platform_error) {
@@ -187,8 +185,7 @@
         !stack.found &&
         ownStack_ &&
         !ownInstalling?.running &&
-        info.settings.rest === `127.0.0.1:${ownStack_.ports.rpc}` &&
-        !info.settings.demo
+        info.settings.rest === `127.0.0.1:${ownStack_.ports.rpc}`
       ) {
         try {
           await ownStack.start();
@@ -224,8 +221,7 @@
   }
 
   async function proceed() {
-    // Demo mode with a node too old for it: installing fetches the newest release (data folder and wallet stay).
-    if (info?.installed && (!info.settings.demo || info.demo_ready)) {
+    if (info?.installed) {
       await startNode();
     } else {
       await showInstall();
@@ -356,23 +352,6 @@
     earlier = null;
     cancelledNote = "";
     screen = "install";
-  }
-
-  // Demo mode (v0.4.4): play money without an eCash node, FreeBank's gateway answering for the eCash chain. Turned on,
-  // setup goes straight on once the gateway answers; turned off, it shows the eCash checklist again.
-  async function setDemo(on: boolean) {
-    checking = true;
-    startError = "";
-    try {
-      await node.setDemo(on);
-      demoMode.set(on);
-      stack = null; // the last check was of the other mode's stack: don't show its answer on this screen
-    } catch (e) {
-      startError = String(e);
-      checking = false;
-      return;
-    }
-    await check(on);
   }
 
   // "Continue" on the eCash node screen, and "Back" after a failed install.
@@ -549,7 +528,7 @@
     <div class="hero">
       <div class="spinner big" aria-hidden="true"></div>
       <h2>Looking for {$network.l1}</h2>
-      <p class="lede">{info?.settings.demo ? "Checking FreeBank's gateway." : "Checking this computer for an eCash node and enforcer."}</p>
+      <p class="lede">Checking this computer for an eCash node and enforcer.</p>
     </div>
 
   {:else if screen === "unsupported"}
@@ -557,32 +536,6 @@
       <h2>Not available on this computer yet</h2>
       <p class="lede">{info?.platform_error}</p>
     </div>
-
-  {:else if screen === "stack" && info?.settings.demo}
-    <div class="hero left">
-      <h2>Demo mode</h2>
-      <p class="lede">
-        FreeBank runs with play money and no eCash node: FreeBank's gateway answers its questions about the eCash
-        chain. There are no deposits or withdrawals; Receive has Get play money.
-      </p>
-    </div>
-    <div class="checklist">
-      <div class="check-item" class:ok={stack?.found}>
-        <span class="dot"></span>
-        FreeBank's gateway
-        <span class="check-state">{stack?.found ? `block ${fmt(stack.l1_blocks)}` : stack || !checking ? "not answering" : "checking…"}</span>
-      </div>
-    </div>
-    {#if stack && !stack.found}<p class="hint">{stack.detail}</p>{/if}
-    <div class="row-actions">
-      {#if stack?.found}
-        <button on:click={() => goOn(proceed)} disabled={checking}>{checking ? "One moment…" : "Continue"}</button>
-      {:else}
-        <button on:click={() => check()} disabled={checking}>{checking ? "Checking…" : "Check again"}</button>
-      {/if}
-      <button class="secondary" on:click={() => setDemo(false)} disabled={checking}>Leave demo mode</button>
-    </div>
-    {#if startError}<p class="soft-error">{startError}</p>{/if}
 
   {:else if screen === "stack"}
     {#if stack?.found}
@@ -618,21 +571,7 @@
         {/if}
       </div>
 
-      <!-- Newcomers see the demo first; someone who has run FreeBank before, the way back to their own eCash node. -->
       <div class="setup-cards">
-      {#if info?.demo_available}
-        <div class="card steps" data-testid="try-demo" style:order={newcomer ? 0 : 1}>
-          <h3>Just trying it?</h3>
-          <p>
-            Try FreeBank with play money and no eCash node: FreeBank's gateway answers its questions about the eCash
-            chain. The play money and loans come from FreeBank's Telegram bot, so you'll need Telegram. There are no
-            deposits or withdrawals. You can leave demo mode later in Settings.
-          </p>
-          <div class="row-actions">
-            <button class:secondary={!newcomer} on:click={() => setDemo(true)} disabled={checking}>Try the demo</button>
-          </div>
-        </div>
-      {/if}
       {#if $network.stack}
         <div class="card steps" data-testid="own-stack">
           <h3>{bigChain ? `Let FreeBank run ${$network.l1}'s node` : "Let FreeBank set it up"}</h3>
@@ -748,63 +687,61 @@
           {#if ownError}<p class="soft-error" data-testid="own-error">{ownError}</p>{/if}
         </div>
       {/if}
-      {#if !info?.settings.demo}
-        <!-- Last, after the other networks' card (v0.6.2): few newcomers have one. -->
-        <div class="card steps" data-testid="remote-stack" style:order={1}>
-          <h3>Or use another computer's</h3>
-          <p>
-            If a computer near you runs {$network.l1}'s node and enforcer ({$network.id === "beta" ? "in BitWindow, or set up by hand" : "set up by hand"}),
-            FreeBank can use them. Nothing is downloaded here, and FreeBank deletes nothing on that computer.
-          </p>
-          <div class="row-inline">
-            <input
-              type="text"
-              bind:value={remoteHost}
-              placeholder="IP address or Tailscale name"
-              spellcheck="false"
-              data-testid="remote-host"
-              on:keydown={(e) => e.key === "Enter" && findRemote()}
-            />
-            <button class="secondary" on:click={findRemote} disabled={finding || !remoteHost.trim()} data-testid="remote-find">{finding ? "Looking…" : "Find it"}</button>
-          </div>
-          {#if remote}
-            {#if remote.rest && remote.enforcer && remote.on_network}
-              <p class="hint" data-testid="remote-found">
-                Found its eCash node at <code>{remote.rest}</code>{remote.l1_blocks != null ? ` (block ${remote.l1_blocks.toLocaleString()})` : ""}
-                and its enforcer at <code>{remote.enforcer}</code>.
-              </p>
-              {#if remote.tailscale}
-                <p class="hint">Over Tailscale: the link is encrypted.</p>
-              {:else}
-                <p class="hint warn">
-                  This computer doesn't reach {remote.address} over Tailscale, so what FreeBank and that computer say to
-                  each other crosses your network unencrypted, including the eCash login if you give FreeBank one.
-                </p>
-              {/if}
-              <div class="row-actions">
-                <button on:click={useRemote} disabled={checking || !!ownProg?.running} data-testid="remote-use">Use them</button>
-              </div>
-              {#if ownProg?.running}
-                <p class="hint">FreeBank is installing its own node above: stop and delete it, or let it finish, first.</p>
-              {/if}
+      <!-- Last, after the other networks' card (v0.6.2): few newcomers have one. -->
+      <div class="card steps" data-testid="remote-stack" style:order={1}>
+        <h3>Or use another computer's</h3>
+        <p>
+          If a computer near you runs {$network.l1}'s node and enforcer ({$network.id === "beta" ? "in BitWindow, or set up by hand" : "set up by hand"}),
+          FreeBank can use them. Nothing is downloaded here, and FreeBank deletes nothing on that computer.
+        </p>
+        <div class="row-inline">
+          <input
+            type="text"
+            bind:value={remoteHost}
+            placeholder="IP address or Tailscale name"
+            spellcheck="false"
+            data-testid="remote-host"
+            on:keydown={(e) => e.key === "Enter" && findRemote()}
+          />
+          <button class="secondary" on:click={findRemote} disabled={finding || !remoteHost.trim()} data-testid="remote-find">{finding ? "Looking…" : "Find it"}</button>
+        </div>
+        {#if remote}
+          {#if remote.rest && remote.enforcer && remote.on_network}
+            <p class="hint" data-testid="remote-found">
+              Found its eCash node at <code>{remote.rest}</code>{remote.l1_blocks != null ? ` (block ${remote.l1_blocks.toLocaleString()})` : ""}
+              and its enforcer at <code>{remote.enforcer}</code>.
+            </p>
+            {#if remote.tailscale}
+              <p class="hint">Over Tailscale: the link is encrypted.</p>
             {:else}
-              <p class="soft-error" data-testid="remote-missing">{remote.detail}</p>
-              {#if remote.address && !(remote.rest && remote.enforcer)}
-                <p class="hint">
-                  For FreeBank to reach them, that computer's eCash node needs <code>rest=1</code>, <code>rpcbind=</code> its
-                  own address and <code>rpcallowip=</code> this computer's; its enforcer needs <code>--serve-grpc-addr=</code>
-                  its address and port 50051. FreeBank tried {remote.tried.join(", ")}.
-                </p>
-              {/if}
+              <p class="hint warn">
+                This computer doesn't reach {remote.address} over Tailscale, so what FreeBank and that computer say to
+                each other crosses your network unencrypted, including the eCash login if you give FreeBank one.
+              </p>
+            {/if}
+            <div class="row-actions">
+              <button on:click={useRemote} disabled={checking || !!ownProg?.running} data-testid="remote-use">Use them</button>
+            </div>
+            {#if ownProg?.running}
+              <p class="hint">FreeBank is installing its own node above: stop and delete it, or let it finish, first.</p>
+            {/if}
+          {:else}
+            <p class="soft-error" data-testid="remote-missing">{remote.detail}</p>
+            {#if remote.address && !(remote.rest && remote.enforcer)}
+              <p class="hint">
+                For FreeBank to reach them, that computer's eCash node needs <code>rest=1</code>, <code>rpcbind=</code> its
+                own address and <code>rpcallowip=</code> this computer's; its enforcer needs <code>--serve-grpc-addr=</code>
+                its address and port 50051. FreeBank tried {remote.tried.join(", ")}.
+              </p>
             {/if}
           {/if}
-          <p class="hint">
-            FreeBank's eCash wallet logs in to that node with a login you type under Settings, eCash. It then adds two
-            watch-only wallets of its own there (the node looks through {$network.l1}'s blocks once to fill them) and sends your
-            payments through it. It never opens that node's other wallets.
-          </p>
-        </div>
-      {/if}
+        {/if}
+        <p class="hint">
+          FreeBank's eCash wallet logs in to that node with a login you type under Settings, eCash. It then adds two
+          watch-only wallets of its own there (the node looks through {$network.l1}'s blocks once to fill them) and sends your
+          payments through it. It never opens that node's other wallets.
+        </p>
+      </div>
       {#if easynetOffered}
         <!-- A newcomer's first card (v0.6.2: it took the demo's place). -->
         <div class="card steps" data-testid="try-easynet" style:order={newcomer ? -1 : 0}>
@@ -910,43 +847,23 @@
     <button class="link-btn back-link" on:click={() => (screen = "stack")}>← Back</button>
     <div class="hero left">
       <h2>Set up FreeBank</h2>
-      {#if info?.settings.demo}
-        <p class="lede">
-          FreeBank installs its own node: a few minutes to download it, check it and catch up with the FreeBank chain.
-        </p>
-      {:else}
-        <p class="lede">FreeBank found {$network.l1}'s node and its enforcer. It can now install its own node alongside them.</p>
-      {/if}
+      <p class="lede">FreeBank found {$network.l1}'s node and its enforcer. It can now install its own node alongside them.</p>
     </div>
 
     <div class="checklist">
-      {#if info?.settings.demo}
-        <div class="check-item ok">
-          <span class="dot"></span>
-          FreeBank's gateway
-          <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
-        </div>
-      {:else}
-        <div class="check-item ok">
-          <span class="dot"></span>
-          {$network.l1} node <code>{info?.settings.rest}</code>
-          <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
-        </div>
-        <div class="check-item ok">
-          <span class="dot"></span>
-          Enforcer <code>{info?.settings.enforcer}</code>
-          <span class="check-state">found</span>
-        </div>
-      {/if}
+      <div class="check-item ok">
+        <span class="dot"></span>
+        {$network.l1} node <code>{info?.settings.rest}</code>
+        <span class="check-state">block {fmt(stack?.l1_blocks)}</span>
+      </div>
+      <div class="check-item ok">
+        <span class="dot"></span>
+        Enforcer <code>{info?.settings.enforcer}</code>
+        <span class="check-state">found</span>
+      </div>
     </div>
 
     <div class="card">
-      {#if info?.settings.demo && info.installed && !info.demo_ready}
-        <p class="hint unchecked-note">
-          Demo mode needs a newer FreeBank node than {info.settings.installed_tag}. Installing downloads the newest release
-          and checks it. Your data folder and wallet stay as they are.
-        </p>
-      {/if}
       {#if info?.unverified}
         <p class="hint unchecked-note">
           FreeBank {info.unverified} is on this computer, but an earlier version of the app installed it without checking its
@@ -973,8 +890,6 @@
           </div>
         </div>
       {/if}
-      <!-- A demo node can't bid for blocks, so its name (still set, for leaving demo later) isn't asked for. -->
-      {#if !info?.settings.demo || problem}
       <label class="field">
         <span class="field-label">Name on your blocks</span>
         <div class="input-with-btn">
@@ -986,7 +901,6 @@
         <p class="field-problem">{problem}</p>
       {:else}
         <p class="hint">When your node wins a block (it can bid for them later, eCash › Bidding), the explorer shows this name on it. Any name you like, up to 64 characters.</p>
-      {/if}
       {/if}
 
       {#if datadir && datadir.kind === "other"}
@@ -1020,7 +934,7 @@
   {:else if screen === "installing"}
     <div class="hero left">
       <h2>Installing FreeBank{install?.tag ? ` ${install.tag}` : ""}</h2>
-      {#if !info?.settings.demo}<p class="lede">Name on your blocks: <strong>{tag}</strong></p>{/if}
+      <p class="lede">Name on your blocks: <strong>{tag}</strong></p>
     </div>
     <div class="card">
       <ul class="stages">
@@ -1045,7 +959,7 @@
                   {/key}
                 </span>
               {:else}
-                {id === "config" && info?.settings.demo ? "Save its settings" : label}
+                {label}
               {/if}
               {#if (state === "active" || state === "done") && install?.note && i === stageIndex && id !== "download"}
                 <span class="stage-note">{install.note}</span>
@@ -1208,10 +1122,6 @@
   }
   .unchecked-note {
     margin-bottom: 16px;
-  }
-  /* In demo mode nothing may come before Install in its card. */
-  .card > button.wide:first-child {
-    margin-top: 0;
   }
   .setup-cards {
     display: flex;

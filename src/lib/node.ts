@@ -19,8 +19,6 @@ export interface Settings {
   moved_aside: string[];
   /** "Keep FreeBank's node running after I close the app". */
   keep_running: boolean;
-  /** Demo mode (v0.4.4): no eCash node; eCash facts come from FreeBank's gateway. Play money only. */
-  demo?: boolean;
   /** The eCash node and enforcer the app installed and runs itself (v0.5.0), or none. */
   stack?: { tag: string; dir: string; ports: import("./network").Ports } | null;
 }
@@ -36,10 +34,6 @@ export interface SetupInfo {
   unverified: string | null;
   default_datadir: string;
   app_version: string;
-  /** This build offers demo mode. */
-  demo_available?: boolean;
-  /** The installed node runs in demo mode (v0.2.25 or newer), or none is installed yet. */
-  demo_ready?: boolean;
 }
 
 export interface StackCheck {
@@ -142,8 +136,6 @@ export interface NodeStatus {
   datadir: string;
   rest: string;
   enforcer: string;
-  /** Demo mode: no eCash node (`rest` is empty) and `enforcer` names FreeBank's gateway. */
-  demo?: boolean;
   release: string | null;
   p2p_port: number;
   /** False when freebank.conf says listen=0: no incoming peers. */
@@ -294,13 +286,12 @@ export function randomTag(): string {
 
 // The only links the app opens: the explorers (beta's, and easynet's FreeBank one from v0.6.1), BitWindow's downloads, FreeBank's release pages (v0.2.0),
 // the app's new-issue and private security-report pages on GitHub (v0.2.1, lib/report.ts), and the apt
-// repository's page (v0.2.4, lib/appUpdate.ts), and on the beta, the start link of FreeBank's Telegram bot with an
-// address, for Receive's "Get play money" (v0.4.4, lib/brand.ts BETA_FAUCET_BOT): exactly that link, nothing else on
-// t.me (Telegram takes a start parameter of up to 64 characters: "fund_" and up to 59).
+// repository's page (v0.2.4, lib/appUpdate.ts). Beta's Telegram bot (Receive's "Get play money", v0.4.4 to v0.6.4) was
+// deleted, and its links with it.
 // tauri.conf.json's plugins.shell.open holds the same pattern, and the shell plugin enforces it; this
 // copy keeps the browser build's window.open to them too. Keep the two alike (security/tests.rs checks).
 export const OPENABLE =
-  /^https:\/\/((explorer\.ecxfreebank\.com|fbeasy\.ecxfreebank\.com|apt\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases|github\.com\/mbdrivechains\/freebank-app\/(issues\/new|security\/advisories\/new))([\/?][A-Za-z0-9._~%\/?=&#+-]*)?|t\.me\/freebank_beta_bot(\?start=fund_[A-Za-z0-9]{25,59})?)$/;
+  /^https:\/\/((explorer\.ecxfreebank\.com|fbeasy\.ecxfreebank\.com|apt\.ecxfreebank\.com|releases\.drivechain\.info|github\.com\/mbdrivechains\/(freebank|freebank-app)\/releases|github\.com\/mbdrivechains\/freebank-app\/(issues\/new|security\/advisories\/new))([\/?][A-Za-z0-9._~%\/?=&#+-]*)?)$/;
 
 export async function openUrl(url: string): Promise<void> {
   if (!OPENABLE.test(url)) {
@@ -313,10 +304,6 @@ export async function openUrl(url: string): Promise<void> {
     window.open(url, "_blank", "noopener");
   }
 }
-
-/** Demo mode is on (v0.4.4): the screens hide the eCash tab, Deposit and Withdraw. Set from the settings as setup
- *  finishes, and whenever demo mode is turned on or off. */
-export const demoMode = writable(false);
 
 export const node = {
   setupInfo: () => tauriInvoke("setup_info") as Promise<SetupInfo>,
@@ -349,8 +336,6 @@ export const node = {
   /** Ctrl+Q (Linux): ask what to stop, as ⌘Q does on a Mac; quits at once when there is nothing to ask. */
   quitAsked: () => tauriInvoke("app_quit_asked") as Promise<void>,
   setKeepRunning: (on: boolean) => tauriInvoke("node_set_keep_running", { on }) as Promise<Settings>,
-  /** Demo mode on or off; the node runs with it from its next start. */
-  setDemo: (on: boolean) => tauriInvoke("node_set_demo", { on }) as Promise<Settings>,
   restart: () => tauriInvoke("node_restart") as Promise<void>,
   refetchStart: () => tauriInvoke("refetch_start") as Promise<void>,
 };

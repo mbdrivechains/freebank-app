@@ -33,17 +33,12 @@ pub struct SetupInfo {
     pub unverified: Option<String>,
     pub default_datadir: String,
     pub app_version: String,
-    /// This build has demo mode (relay.rs `GATEWAY`): setup offers it.
-    pub demo_available: bool,
-    /// The installed node runs in demo mode (v0.2.25 or newer), or none is installed yet.
-    pub demo_ready: bool,
 }
 
 #[tauri::command]
 pub async fn setup_info(mgr: State<'_, Mgr>) -> Result<SetupInfo, String> {
     let settings = mgr.settings.lock().await.clone();
     let installed = mgr.can_start(&settings);
-    let demo_ready = settings.installed_tag.as_deref().map_or(true, super::relay::node_can_demo);
     Ok(SetupInfo {
         current_tag: conf_tag(Path::new(&settings.datadir)),
         unverified: mgr.unverified(&settings),
@@ -53,8 +48,6 @@ pub async fn setup_info(mgr: State<'_, Mgr>) -> Result<SetupInfo, String> {
         installed,
         default_datadir: default_datadir().to_string_lossy().into_owned(),
         app_version: super::APP_VERSION.to_string(),
-        demo_available: super::relay::available(),
-        demo_ready,
     })
 }
 
@@ -100,33 +93,7 @@ pub async fn setup_save(mgr: State<'_, Mgr>, input: SettingsInput) -> Result<Set
 #[tauri::command]
 pub async fn stack_check(mgr: State<'_, Mgr>) -> Result<detect::StackCheck, String> {
     let s = mgr.settings.lock().await.clone();
-    if s.demo {
-        return Ok(super::relay::check(&mgr).await);
-    }
     Ok(detect::check_stack(&mgr.http, &s.rest, &s.enforcer).await)
-}
-
-/// Demo mode on or off (setup's "Try the demo", Settings' "Leave demo mode"). The node starts with it next time.
-#[tauri::command]
-pub async fn node_set_demo(mgr: State<'_, Mgr>, on: bool) -> Result<Settings, String> {
-    mgr.still_here()?;
-    if on && !super::relay::available() {
-        return Err("The demo has moved to easynet: Settings › Node & connection › Switch to easynet.".into());
-    }
-    if on {
-        super::relay::ensure(&mgr).await?;
-    }
-    let mut s = mgr.settings.lock().await.clone();
-    s.demo = on;
-    // The relay lives in the app, so a demo node must not outlive it: left running, the node would find nothing on
-    // the relay's port, or whatever else took it.
-    if on {
-        s.keep_running = false;
-        s.keep_phone = false;
-        crate::phone::login_item::set(&mgr.app_dir, false)?;
-    }
-    mgr.save_settings(s.clone()).await?;
-    Ok(s)
 }
 
 #[tauri::command]
@@ -370,9 +337,6 @@ fn stack_folders(mgr: &NodeManager, s: &super::Settings) -> Vec<obliterate::Stac
 
 /// The eCash node's host when it is another computer's (the FreeBank node reads its REST there).
 fn elsewhere(s: &super::Settings) -> Option<String> {
-    if s.demo {
-        return None;
-    }
     let host = crate::security::host_part(&s.rest).to_string();
     (!host.is_empty() && !crate::security::is_loopback_host(&host)).then_some(host)
 }
@@ -560,9 +524,6 @@ pub async fn connect_local(
 pub async fn node_set_keep_running(mgr: State<'_, Mgr>, on: bool) -> Result<Settings, String> {
     mgr.still_here()?;
     let mut s = mgr.settings.lock().await.clone();
-    if on && s.demo {
-        return Err(super::relay::DEMO_STOPS.into());
-    }
     s.keep_running = on;
     // Keeping the phone connected needs the node left running (code review 6), and so does starting at login.
     if !on {
@@ -624,17 +585,15 @@ mod network_tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
-    /// Obliterate names an eCash node on another computer (v0.5.1), by name or address; never this computer's own, nor
-    /// in demo mode.
+    /// Obliterate names an eCash node on another computer (v0.5.1), by name or address; never this computer's own.
     #[test]
     fn another_computers_node_is_named() {
-        let with = |rest: &str, demo: bool| elsewhere(&super::super::Settings { rest: rest.into(), demo, ..Default::default() });
-        assert_eq!(with("nearby-box:18303", false).as_deref(), Some("nearby-box"));
-        assert_eq!(with("100.64.0.2:38532", false).as_deref(), Some("100.64.0.2"));
-        assert_eq!(with("[fd7a:115c:a1e0::2]:38532", false).as_deref(), Some("fd7a:115c:a1e0::2"));
-        assert_eq!(with("127.0.0.1:38532", false), None);
-        assert_eq!(with("localhost:18303", false), None);
-        assert_eq!(with("[::1]:18303", false), None);
-        assert_eq!(with("nearby-box:18303", true), None);
+        let with = |rest: &str| elsewhere(&super::super::Settings { rest: rest.into(), ..Default::default() });
+        assert_eq!(with("nearby-box:18303").as_deref(), Some("nearby-box"));
+        assert_eq!(with("100.64.0.2:38532").as_deref(), Some("100.64.0.2"));
+        assert_eq!(with("[fd7a:115c:a1e0::2]:38532").as_deref(), Some("fd7a:115c:a1e0::2"));
+        assert_eq!(with("127.0.0.1:38532"), None);
+        assert_eq!(with("localhost:18303"), None);
+        assert_eq!(with("[::1]:18303"), None);
     }
 }
