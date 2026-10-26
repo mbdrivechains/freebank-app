@@ -13,8 +13,11 @@
 //!   very file that was checked, checked again (FreeBank, that version, a macOS this Mac has), and exchanged with the
 //!   running bundle in one step where the disk allows it (two renames elsewhere, the old bundle put back if the second
 //!   fails); the app then restarts.
-//! - **The Debian package** can't replace itself: Software Updater updates it when FreeBank's apt repository is set up,
-//!   and otherwise the release page has the new .deb.
+//! - **The Debian package** (v0.6.6): the new .deb is downloaded and checked against its signed line like the others,
+//!   then installed through the computer's password prompt (pkexec; `admin::deb_install_script` takes the checked file
+//!   on its stdin, writes it where only root can change it, checks it again and hands it to apt); the app then restarts
+//!   from /usr/bin/freebank, now the new version. Software Updater still updates it too, when FreeBank's apt repository is set up. Without pkexec: Software
+//!   Updater or the release page.
 //! - **Anything else** (a developer's build, a Mac app run from the disk image or from where macOS put a download
 //!   aside, a folder this user can't change or others could): the release page.
 //!
@@ -103,13 +106,16 @@ pub struct Check {
     /// repository set up: Software Updater), "deb" (the Debian package without it: the release page), or "download"
     /// (anything else: the release page; `why` says why).
     pub how: &'static str,
+    /// "apt" or "deb", and Update and restart can install the new package here (through the password prompt; the
+    /// release has its .deb).
+    pub prompt: bool,
     pub why: Option<String>,
     /// The latest release's page.
     pub page: Option<String>,
     pub error: Option<String>,
 }
 
-/// The update under way: stages signature, download, verify, replace, restart.
+/// The update under way: stages signature, download, verify, replace (the Debian package: install), restart.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Progress {
     pub running: bool,
@@ -193,6 +199,11 @@ fn newer(latest: &str, current: &str) -> bool {
     matches!((parse_version(latest), parse_version(current)), (Some(l), Some(c)) if l > c)
 }
 
+/// The Debian package of a release, for a computer where it can be installed.
+fn deb_asset(version: &str) -> Option<String> {
+    cfg!(all(target_os = "linux", target_arch = "x86_64")).then(|| format!("freebank_{version}_amd64.deb"))
+}
+
 /// The package this system updates from.
 fn asset(version: &str) -> Option<String> {
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
@@ -211,8 +222,9 @@ enum Install {
     AppImage(PathBuf),
     /// A Mac app bundle (…/FreeBank.app), swapped in place.
     Bundle(PathBuf),
-    /// The Debian package; `apt`: FreeBank's apt repository is set up.
-    Deb { apt: bool },
+    /// The Debian package; `apt`: FreeBank's apt repository is set up; `prompt`: pkexec is there to ask for the password,
+    /// so Update and restart can install the new package.
+    Deb { apt: bool, prompt: bool },
     /// Anything else, and why it can't update itself.
     Other(String),
 }
@@ -225,7 +237,7 @@ async fn install_kind() -> Install {
 }
 
 fn this_install() -> Install {
-    let Ok(exe) = std::env::current_exe() else {
+    let Ok(exe) = current_exe() else {
         return Install::Other("FreeBank couldn't find its own program.".into());
     };
     if cfg!(target_os = "macos") {
@@ -240,9 +252,23 @@ fn this_install() -> Install {
         };
     }
     if exe == Path::new("/usr/bin/freebank") {
-        return Install::Deb { apt: apt_repository_set_up(Path::new("/etc/apt")) };
+        return Install::Deb { apt: apt_repository_set_up(Path::new("/etc/apt")), prompt: crate::admin::pkexec().is_some() };
     }
     Install::Other("This copy of FreeBank wasn't installed from a release package, so it can't update itself.".into())
+}
+
+/// This program's path, as installed: what `std::env::current_exe` says, but read as the package's program once apt has
+/// put a new version in its place (Linux then names the running one "/usr/bin/freebank (deleted)"). For anything that
+/// starts this program again or names it.
+pub(crate) fn current_exe() -> std::io::Result<PathBuf> {
+    std::env::current_exe().map(running_path)
+}
+
+fn running_path(exe: PathBuf) -> PathBuf {
+    match exe.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
+        Some(p) => PathBuf::from(p),
+        None => exe,
+    }
 }
 
 /// The bundle a Mac app runs from (…/FreeBank.app/Contents/MacOS/freebank), if it can be replaced.
@@ -322,10 +348,13 @@ fn page(version: &str) -> String {
 fn check_result(found: Result<Option<Release>, String>, how: &Install) -> Check {
     let (mut how_name, mut why) = match how {
         Install::AppImage(_) | Install::Bundle(_) => ("self", None),
-        Install::Deb { apt: true } => ("apt", None),
-        Install::Deb { apt: false } => ("deb", None),
+        Install::Deb { apt: true, .. } => ("apt", None),
+        Install::Deb { apt: false, .. } => ("deb", None),
         Install::Other(why) => ("download", Some(why.clone())),
     };
+    // The Debian package updates from here when pkexec can ask for the password and the release has its .deb.
+    let prompt = matches!(how, Install::Deb { prompt: true, .. })
+        && matches!(&found, Ok(Some(r)) if deb_asset(&r.version).is_some_and(|a| install::listed_hash(&r.sums, &a).is_some()));
     // A release without this system's update package (a build that failed, say) is offered as a download.
     if let Ok(Some(r)) = &found {
         if how_name == "self" && !asset(&r.version).is_some_and(|a| install::listed_hash(&r.sums, &a).is_some()) {
@@ -343,6 +372,7 @@ fn check_result(found: Result<Option<Release>, String>, how: &Install) -> Check 
         page: latest.as_deref().map(page),
         latest,
         how: how_name,
+        prompt,
         why,
         error,
     }
@@ -368,7 +398,7 @@ pub async fn app_update_check(upd: State<'_, Arc<AppUpdater>>, force: bool) -> R
 /// to ask for the password.
 #[tauri::command]
 pub async fn apt_updates_offer() -> bool {
-    matches!(install_kind().await, Install::Deb { apt: false })
+    matches!(install_kind().await, Install::Deb { apt: false, .. })
         && Path::new(crate::admin::APT_KEYRING).is_file()
         && crate::admin::pkexec().is_some()
 }
@@ -519,16 +549,24 @@ async fn update(
     current: &str,
     go_on: &(dyn Fn() -> Result<(), String> + Sync),
 ) -> Result<String, String> {
+    let deb = matches!(how, Install::Deb { .. });
     let target = match how {
-        Install::AppImage(t) | Install::Bundle(t) => t,
-        Install::Deb { .. } => return Err("The Debian package is updated by Software Updater or a new .deb.".into()),
+        Install::AppImage(t) | Install::Bundle(t) => t.clone(),
+        // Downloaded to the temporary folder; the install reads it from the open file, never by its name.
+        Install::Deb { prompt: true, .. } => std::env::temp_dir().join("freebank.deb"),
+        Install::Deb { .. } => {
+            return Err("This computer has no pkexec to ask for your password, so FreeBank can't install the new \
+                        package: Software Updater or the release page has it."
+                .into())
+        }
         Install::Other(why) => return Err(why.clone()),
     };
     let release = latest(http, src).await?.ok_or("The latest release isn't signed yet. Try again later.")?;
     if !newer(&release.version, current) {
         return Err(format!("FreeBank {current} is already the newest version."));
     }
-    let name = asset(&release.version).ok_or("FreeBank has no update for this system.")?;
+    let name = if deb { deb_asset(&release.version) } else { asset(&release.version) };
+    let name = name.ok_or("FreeBank has no update for this system.")?;
     let want = install::listed_hash(&release.sums, &name)
         .ok_or_else(|| format!("{name} isn't in the release's signed checksums."))?;
     set(p, |s| {
@@ -536,7 +574,7 @@ async fn update(
         s.version = Some(release.version.clone());
     });
 
-    let (tmp, mut file) = fresh_beside(target, "")?;
+    let (tmp, mut file) = fresh_beside(&target, if deb { ".deb" } else { "" })?;
     let url = format!("{}/v{}/{}", src.by_tag, release.version, name);
     let got = download_to(http, &url, &mut file, |bytes, total| {
         set(p, |s| {
@@ -559,13 +597,19 @@ async fn update(
     let result = match checked.and_then(|()| go_on()) {
         Err(e) => Err(e),
         Ok(()) => {
-            set(p, |s| s.stage = "replace".into());
-            // The checked file goes on by its handle, not by its name; the file work runs off the async threads.
+            set(p, |s| s.stage = if deb { "install" } else { "replace" }.into());
+            // The checked file goes on by its handle, not by its name (the .deb as the root script's stdin, checked
+            // again there); the file work runs off the async threads.
             let (how, new, version) = (how.clone(), tmp.clone(), release.version.clone());
             tokio::task::spawn_blocking(move || match how {
                 Install::AppImage(image) => replace_file(file, &new, &image),
                 Install::Bundle(bundle) => swap_bundle(file, &bundle, &version, mac_os_version()),
-                _ => Err("This copy of FreeBank can't update itself.".into()),
+                Install::Deb { .. } => {
+                    let script = crate::admin::deb_install_script(&want, &version)?;
+                    std::io::Seek::rewind(&mut file).map_err(|e| format!("Couldn't read the download again: {e}"))?;
+                    crate::admin::run_as_root_with(&script, file.into())
+                }
+                Install::Other(_) => Err("This copy of FreeBank can't update itself.".into()),
             })
             .await
             .unwrap_or_else(|e| Err(format!("The update stopped: {e}")))
@@ -762,13 +806,18 @@ fn mac_os_version() -> Option<(u32, u32, u32)> {
     loose_version(std::str::from_utf8(&out.stdout).ok()?)
 }
 
-/// At start: what an interrupted update left beside the app (`.freebank-update-…`, `.freebank-old-….app`) goes, once
-/// an hour old. Only those names, only this user's, never through a link.
+/// At start: what an interrupted update left beside the app (`.freebank-update-…`, `.freebank-old-….app`), or for the
+/// Debian package in the temporary folder (`.freebank-update-….deb`), goes, once an hour old. Only those names, only
+/// this user's, never through a link.
 pub fn sweep_leftovers() {
-    if let Install::AppImage(target) | Install::Bundle(target) = this_install() {
-        if let Some(dir) = target.parent() {
-            sweep(dir, Duration::from_secs(3600));
+    match this_install() {
+        Install::AppImage(target) | Install::Bundle(target) => {
+            if let Some(dir) = target.parent() {
+                sweep(dir, Duration::from_secs(3600));
+            }
         }
+        Install::Deb { .. } => sweep(&std::env::temp_dir(), Duration::from_secs(3600)),
+        Install::Other(_) => {}
     }
 }
 
@@ -776,7 +825,7 @@ fn leftover_name(name: &str) -> bool {
     let Some(rest) = name.strip_prefix(".freebank-update-").or_else(|| name.strip_prefix(".freebank-old-")) else {
         return false;
     };
-    let hex = rest.strip_suffix(".app").unwrap_or(rest);
+    let hex = rest.strip_suffix(".app").or_else(|| rest.strip_suffix(".deb")).unwrap_or(rest);
     hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -1249,6 +1298,13 @@ mod tests {
     }
 
     #[test]
+    fn the_package_is_still_the_package_after_apt_replaced_it() {
+        assert_eq!(running_path("/usr/bin/freebank (deleted)".into()), Path::new("/usr/bin/freebank"));
+        assert_eq!(running_path("/usr/bin/freebank".into()), Path::new("/usr/bin/freebank"));
+        assert_eq!(running_path("/home/a/FreeBank.AppImage".into()), Path::new("/home/a/FreeBank.AppImage"));
+    }
+
+    #[test]
     fn a_mac_app_runs_from_a_bundle_it_can_replace() {
         assert_eq!(
             mac_bundle(Path::new("/private/var/folders/x/AppTranslocation/ABC/d/FreeBank.app/Contents/MacOS/freebank")),
@@ -1285,8 +1341,20 @@ mod tests {
         assert!(c.available && c.how == "self" && c.error.is_none());
         assert_eq!(c.page.as_deref(), Some("https://github.com/mbdrivechains/freebank-app/releases/tag/v9.0.0"));
         assert!(!check_result(r(VERSION), &Install::AppImage("/x".into())).available);
-        assert_eq!(check_result(r("9.0.0"), &Install::Deb { apt: true }).how, "apt");
-        assert_eq!(check_result(r("9.0.0"), &Install::Deb { apt: false }).how, "deb");
+        assert_eq!(check_result(r("9.0.0"), &Install::Deb { apt: true, prompt: false }).how, "apt");
+        assert_eq!(check_result(r("9.0.0"), &Install::Deb { apt: false, prompt: false }).how, "deb");
+        // The Debian package updates from here only with the password prompt and the release's .deb.
+        let with_deb = |v: &str| {
+            let deb = deb_asset(v).map(|a| format!("{}  {a}\n", sha(b"d"))).unwrap_or_default();
+            Ok(Some(Release { version: v.into(), sums: format!("{}{deb}", sums(v)) }))
+        };
+        let can = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+        let c = check_result(with_deb("9.0.0"), &Install::Deb { apt: true, prompt: true });
+        assert_eq!((c.how, c.prompt, c.available), ("apt", can, true));
+        assert_eq!(check_result(with_deb("9.0.0"), &Install::Deb { apt: false, prompt: true }).prompt, can);
+        assert!(!check_result(with_deb("9.0.0"), &Install::Deb { apt: true, prompt: false }).prompt);
+        assert!(!check_result(r("9.0.0"), &Install::Deb { apt: true, prompt: true }).prompt, "no .deb in the release");
+        assert!(!check_result(with_deb("9.0.0"), &Install::AppImage("/x".into())).prompt);
         let other = check_result(r("9.0.0"), &Install::Other("why".into()));
         assert_eq!((other.how, other.why.as_deref()), ("download", Some("why")));
         // A release without this system's package: the release page instead.
@@ -1551,7 +1619,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".freebank-old-0123456789abcdef.app/Contents")).unwrap();
         std::fs::write(dir.join(".freebank-update-0123456789abcdef"), b"half a download").unwrap();
+        std::fs::write(dir.join(".freebank-update-0011223344556677.deb"), b"a .deb never installed").unwrap();
         std::fs::write(dir.join(".freebank-update-xyz"), b"not ours").unwrap();
+        std::fs::write(dir.join(".freebank-update-xyz.deb"), b"not ours either").unwrap();
         std::fs::write(dir.join("FreeBank_0.2.4_amd64.AppImage"), b"the app").unwrap();
         let outside = dir.join("outside");
         std::fs::create_dir_all(&outside).unwrap();
@@ -1560,15 +1630,15 @@ mod tests {
         std::os::unix::fs::symlink(&outside, dir.join(".freebank-update-fedcba9876543210")).unwrap();
         // Too young: nothing goes.
         sweep(&dir, Duration::from_secs(3600));
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), if cfg!(unix) { 6 } else { 5 });
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), if cfg!(unix) { 8 } else { 7 });
         sweep(&dir, Duration::ZERO);
         let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         left.sort();
-        let mut want = vec![".freebank-update-xyz", "FreeBank_0.2.4_amd64.AppImage", "outside"];
+        let mut want = vec![".freebank-update-xyz", ".freebank-update-xyz.deb", "FreeBank_0.2.4_amd64.AppImage", "outside"];
         if cfg!(unix) {
             want.insert(0, ".freebank-update-fedcba9876543210");
         }
-        assert_eq!(left, want, "only the two leftovers went; never through a link");
+        assert_eq!(left, want, "only the three leftovers went; never through a link");
         assert!(outside.join("keep").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }

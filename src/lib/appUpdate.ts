@@ -1,6 +1,7 @@
 // The app updates itself (v0.2.4; src-tauri/src/app_update.rs). A release is offered only once its SHA256SUMS is
-// signed with FreeBank's release key. An AppImage or a Mac app replaces itself and restarts; the Debian package is
-// updated by Software Updater (FreeBank's apt repository) or with the new .deb from the release page.
+// signed with FreeBank's release key. An AppImage or a Mac app replaces itself and restarts; the Debian package
+// installs the new .deb through the computer's password prompt and restarts (v0.6.6), and Software Updater (FreeBank's
+// apt repository) or the release page still work too.
 
 import { writable } from "svelte/store";
 import { tauriInvoke } from "./api";
@@ -13,6 +14,8 @@ export interface AppUpdateCheck {
   /** "self" (replaces itself and restarts), "apt" (Debian package, apt repository set up), "deb" (Debian package
    *  without it), "download" (anything else; `why` says why). */
   how: "self" | "apt" | "deb" | "download";
+  /** "apt" or "deb", and Update and restart installs the new package here, through the password prompt. */
+  prompt: boolean;
   why: string | null;
   /** The latest release's page. */
   page: string | null;
@@ -21,7 +24,7 @@ export interface AppUpdateCheck {
 
 export interface AppUpdateProgress {
   running: boolean;
-  /** signature, download, verify, replace, restart */
+  /** signature, download, verify, replace (the Debian package: install), restart */
   stage: string;
   version: string | null;
   bytes: number;
@@ -119,6 +122,7 @@ const STAGES: Record<string, string> = {
   download: "Downloading",
   verify: "Checking the download against the signed checksums…",
   replace: "Putting the new version in place…",
+  install: "Installing it: enter your password when the computer asks. If another install is running, this waits for it…",
   restart: "Restarting FreeBank…",
 };
 

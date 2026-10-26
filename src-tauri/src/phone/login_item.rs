@@ -29,7 +29,7 @@ fn item_path() -> Option<PathBuf> {
 
 /// This program, as a login item should name it.
 fn program() -> Result<PathBuf, String> {
-    let current = std::env::current_exe().map_err(|e| format!("Couldn't find FreeBank's program: {e}"))?;
+    let current = crate::app_update::current_exe().map_err(|e| format!("Couldn't find FreeBank's program: {e}"))?;
     let exe = running_appimage(&current).unwrap_or(current);
     if exe.to_string_lossy().contains("/AppTranslocation/") {
         return Err("Move FreeBank to your Applications folder and open it from there first: macOS runs it from a \

@@ -94,15 +94,22 @@
         {#if p.stage === "download" && p.total}
           <span class="bar"><span class="bar-fill" style="width:{(p.bytes / p.total) * 100}%"></span></span>
         {/if}
-      {:else if c.how === "self"}
-        <p class="hint">FreeBank closes and opens again on the new version.</p>
+      {:else if c.how === "self" || c.prompt}
+        <p class="hint">
+          {c.prompt
+            ? "FreeBank asks for your password, installs the new version, then closes and opens again on it."
+            : "FreeBank closes and opens again on the new version."}
+        </p>
         <div class="row-actions">
           <button on:click={update}>Update and restart</button>
           {#if c.page}<button class="secondary" on:click={() => openUrl(c?.page ?? "")}>What's new</button>{/if}
           {#if notice}<button class="ghost" on:click={() => appUpdateLater.set(true)}>Later</button>{/if}
         </div>
       {:else if c.how === "apt"}
-        <p class="hint">Software Updater offers it, from FreeBank's apt repository.</p>
+        <p class="hint">
+          Software Updater offers it from FreeBank's apt repository once it has looked for updates, about once a day. To
+          update now, in a terminal: <code>{"sudo apt update && sudo apt install freebank"}</code>
+        </p>
         <div class="row-actions">
           {#if c.page}<button class="secondary" on:click={() => openUrl(c?.page ?? "")}>What's new</button>{/if}
           {#if notice}<button class="ghost" on:click={() => appUpdateLater.set(true)}>Later</button>{/if}
@@ -148,6 +155,9 @@
           Off unless you turn it on. When on, FreeBank fetches a new signed version in the background (also while its
           window is closed, if it keeps your phone connected), checks it, and puts it in place; it runs the next time
           you open FreeBank.
+        {:else if c?.how === "apt" || c?.how === "deb"}
+          The .deb needs your password for each update, so it doesn't update by itself: Update and restart does it
+          when you choose. So this does nothing here.
         {:else}
           This copy of FreeBank can't replace itself (only the Mac app in your Applications folder and the AppImage
           can), so this does nothing here.

@@ -368,7 +368,7 @@ fn screen_caches(app: &AppHandle) -> Vec<obliterate::Cache> {
     // WebKitGTK names its cache and HSTS list after the program: ~/.cache/freebank and
     // ~/.local/share/freebank. Such a folder is listed only if it holds nothing but WebKit's files.
     #[cfg(target_os = "linux")]
-    if let Some(program) = std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_owned())) {
+    if let Some(program) = crate::app_update::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_owned())) {
         for (id, dir) in [("webkit-cache", path.cache_dir().ok()), ("webkit-data", path.data_dir().ok())] {
             caches.push(dir.map(|d| obliterate::Cache {
                 id,

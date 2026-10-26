@@ -71,7 +71,7 @@ pub fn requested(args: &[String]) -> Option<(PathBuf, bool)> {
 pub fn spawn(app_dir: &Path, pass: Option<Zeroizing<String>>) -> Result<u32, String> {
     let exe = match std::env::var_os("APPIMAGE").map(PathBuf::from).filter(|p| p.is_file()) {
         Some(appimage) => appimage,
-        None => std::env::current_exe().map_err(|e| format!("Couldn't find FreeBank's program: {e}"))?,
+        None => crate::app_update::current_exe().map_err(|e| format!("Couldn't find FreeBank's program: {e}"))?,
     };
     spawn_with(&exe, app_dir, pass)
 }

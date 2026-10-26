@@ -926,7 +926,7 @@ pub struct RemoveApp {
 }
 
 pub fn how_to_remove_app() -> RemoveApp {
-    let exe = std::env::current_exe().ok();
+    let exe = crate::app_update::current_exe().ok();
     let show = |p: &Path| Some(p.to_string_lossy().into_owned());
     if cfg!(target_os = "macos") {
         let real = exe.as_deref().map(|e| std::fs::canonicalize(e).unwrap_or_else(|_| e.to_path_buf()));
