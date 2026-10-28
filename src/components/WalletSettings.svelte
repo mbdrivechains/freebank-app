@@ -26,6 +26,7 @@
     walletSeed,
     when,
     type BackupFile,
+    type Checked,
     type MovePlan,
     type WalletInfo,
   } from "../lib/walletSeed";
@@ -57,7 +58,7 @@
     }
   }
 
-  type Open = "change" | "words" | "xprv" | "file" | null;
+  type Open = "change" | "words" | "xprv" | "file" | "address" | "check-words" | null;
   let open: Open = null;
   const reveals: { which: "words" | "xprv"; title: string; text: string }[] = [
     { which: "words", title: "Show recovery words", text: `The ${WORD_COUNT} words FreeBank keeps, locked with your passphrase.` },
@@ -152,6 +153,56 @@
     shownWords = [];
     shownXprv = "";
     matches = null;
+    wordsInput = "";
+    wordsResult = null;
+    addrFields?.clear();
+  }
+
+  // ---- Is this address mine? Check my words (v0.6.8) ----
+  let addrInput = "";
+  let addrFields: PassphraseFields;
+  let addrPass = "";
+  let addrPassOk = false;
+  let addrResult: Checked | null = null;
+  let addrError = "";
+  let checkingAddr = false;
+  // An eCash address is looked for among the ones the words make, which the passphrase opens.
+  $: addrIsEcash = /^(bc1|tb1|bcrt1)/i.test(addrInput.trim());
+  // A FreeBank address needs no passphrase: none is kept for it.
+  $: if (!addrIsEcash) addrPass = "";
+  async function checkAddress() {
+    checkingAddr = true;
+    addrError = "";
+    addrResult = null;
+    const asked = addrInput.trim();
+    try {
+      const r = await walletSeed.addressMine(asked, addrIsEcash ? addrPass : undefined);
+      // Only for the address still in the box.
+      if (addrInput.trim() === asked) addrResult = r;
+    } catch (e) {
+      addrError = nice(e);
+    }
+    addrFields?.clear();
+    addrPass = "";
+    checkingAddr = false;
+  }
+  let wordsInput = "";
+  let wordsResult: Checked | null = null;
+  let wordsError = "";
+  let checkingWords = false;
+  async function checkWords() {
+    checkingWords = true;
+    wordsError = "";
+    wordsResult = null;
+    const typed = wordsInput;
+    // Off the screen as soon as they are sent.
+    wordsInput = "";
+    try {
+      wordsResult = await walletSeed.wordsMatch(typed);
+    } catch (e) {
+      wordsError = nice(e);
+    }
+    checkingWords = false;
   }
   function onVisibility() {
     if (document.hidden) hideSecrets();
@@ -364,6 +415,86 @@
             </div>
           {/if}
         {/each}
+
+        <!-- v0.6.8: two checks that change nothing. -->
+        <div class="maint">
+          <div class="maint-text">
+            <strong>Is this address mine?</strong>
+            <span class="muted small">Paste a FreeBank or eCash address: FreeBank says whether this wallet's words make it.</span>
+          </div>
+          <button class="secondary" on:click={() => toggle("address")} disabled={open === "address"}>Check…</button>
+        </div>
+        {#if open === "address"}
+          <div class="confirm-box">
+            <form class="reveal-form" on:submit|preventDefault={checkAddress}>
+              <label>
+                Address
+                <input
+                  type="text"
+                  bind:value={addrInput}
+                  on:input={() => { addrResult = null; addrError = ""; }}
+                  disabled={checkingAddr}
+                  placeholder="X…, bc1… or tb1…"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-testid="address-mine-input"
+                />
+              </label>
+              {#if addrIsEcash}
+                <!-- It appears as the address is typed: the focus stays in the address box. -->
+                <PassphraseFields bind:this={addrFields} bind:value={addrPass} bind:valid={addrPassOk} twice={false} autofocus={false} label="Your wallet's passphrase" />
+                <p class="hint">
+                  An eCash address is looked for among the addresses your recovery words make, for your eCash wallet and
+                  your bidding wallet. The passphrase opens FreeBank's copy of the words; nothing is shown or changed.
+                </p>
+              {/if}
+              {#if addrResult}<p class="hint" class:ok-note={addrResult.yes} data-testid="address-mine-result">{addrResult.said}</p>{/if}
+              {#if addrError}<p class="soft-error" role="alert">{addrError}</p>{/if}
+              <div class="row-actions">
+                <button type="submit" disabled={!addrInput.trim() || checkingAddr || (addrIsEcash && !addrPassOk)} data-testid="address-mine-check">
+                  {checkingAddr ? "Looking…" : "Check"}
+                </button>
+                <button type="button" class="secondary" on:click={() => toggle(null)} disabled={checkingAddr}>Close</button>
+              </div>
+            </form>
+          </div>
+        {/if}
+
+        <div class="maint">
+          <div class="maint-text">
+            <strong>Check my words</strong>
+            <span class="muted small">Type in the {WORD_COUNT} words you wrote down: FreeBank says whether they are this wallet's. Nothing is restored or changed.</span>
+          </div>
+          <button class="secondary" on:click={() => toggle("check-words")} disabled={open === "check-words"}>Check…</button>
+        </div>
+        {#if open === "check-words"}
+          <div class="confirm-box">
+            <form class="reveal-form" on:submit|preventDefault={checkWords}>
+              <label>
+                Your {WORD_COUNT} words, in order
+                <textarea
+                  rows="4"
+                  bind:value={wordsInput}
+                  on:input={() => { wordsResult = null; wordsError = ""; }}
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  data-testid="check-words-input"
+                ></textarea>
+              </label>
+              <p class="hint">Type them only here, never into a website. They leave the screen as soon as you press Check.</p>
+              {#if wordsResult}
+                <p class={wordsResult.yes ? "hint ok-note" : "soft-error"} data-testid="check-words-result">{wordsResult.said}</p>
+              {/if}
+              {#if wordsError}<p class="soft-error" role="alert">{wordsError}</p>{/if}
+              <div class="row-actions">
+                <button type="submit" disabled={!wordsInput.trim() || checkingWords} data-testid="check-words-check">{checkingWords ? "Checking…" : "Check"}</button>
+                <button type="button" class="secondary" on:click={() => toggle(null)} disabled={checkingWords}>Close</button>
+              </div>
+            </form>
+          </div>
+        {/if}
       {/if}
 
       {#if plan && plan.coins > 0}
@@ -421,11 +552,12 @@
       Your {WORD_COUNT} recovery words cover this wallet and the app's eCash wallets, every address made from them (not keys
       added by hand).
       {#if coverageMore}
-        The eCash wallets are standard BIP84 wallets (accounts 0 and 1), so any BIP84 wallet finds them from the words.
-        Other wallets can't read FreeBank's addresses from the words directly, but a BIP85 tool can rebuild this wallet
-        from them: its "WIF" for these words at index 0 (the HD-Seed WIF application,
-        <span class="mono">{info.bip85_path}</span>) is this wallet's seed, which a FreeBank node takes with
-        <span class="mono">sethdseed</span>.
+        Other wallets can't read these addresses from the words directly, but a BIP85 tool can rebuild them from the
+        words. Its "WIF" at index 0 (the HD-Seed WIF application, <span class="mono">{info.bip85_path}</span>) is this
+        wallet's seed, which a FreeBank node takes with <span class="mono">sethdseed</span>. Its "XPRV" at index 0 is the
+        eCash wallets' own key: under it they are standard BIP84 wallets (accounts 0 and 1), which any BIP84 wallet
+        connected to eCash finds. (The eCash keys aren't those of a Bitcoin wallet made from the same words: on purpose,
+        so that a Bitcoin wallet's words typed in here can't put its keys at risk.)
       {:else}
         <button class="link-btn inline" on:click={() => (coverageMore = true)}>More</button>
       {/if}

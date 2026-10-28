@@ -1,8 +1,9 @@
 //! The desktop side against the shared interop vectors (testdata/phone/kk-v1.json, a copy of
 //! freebank-phone's relay/testvectors/kk-v1.json, written by the phone page's generator), and
 //! pairing, revoke, the limit ledger, held sends (expiry, held.json, restarts) and phone sends from
-//! an encrypted wallet, with a mocked node. The end-to-end run against the real relay is
-//! `relay_e2e`, and `page_host` serves the real phone page (both ignored; they need FB_RELAY_URL).
+//! an encrypted wallet, with a mocked node. `page_host` serves the real phone page over Nostr (ignored; it needs
+//! FB_NOSTR_RELAY). The frames go on channels below `carrier::CH_BASE` here, straight into `handle_frame`, with no
+//! Nostr key to bind: the link over Nostr itself is `tests/nostr_link.rs`.
 
 use super::crypto::{self, Direction};
 use super::*;
@@ -547,7 +548,7 @@ fn allow_the_one(h: &H) {
 }
 
 async fn paired(h: &mut H, sim: &mut Sim, ch: u64) {
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     h.feed(ch, sim.pair_frame(&h.d_pub(), &code_of(&url), "Test phone"));
     allow_the_one(h);
     assert_eq!(h.next().await["d"]["t"], "paired");
@@ -602,7 +603,6 @@ fn vector_code(v: &Value) -> String {
 fn vectors_crypto() {
     let v: Value = serde_json::from_str(VECTORS).unwrap();
     let (d, p, e, ep, ed) = (vkey(&v, "D"), vkey(&v, "P"), vkey(&v, "E"), vkey(&v, "eP"), vkey(&v, "eD"));
-    assert_eq!(crypto::room(&d.public_key()), v["room"]["room"]);
 
     // Pairing: the desktop's key, and the phone's ciphertext opens to its plaintext.
     let c = b(&v["pair"]["c"]);
@@ -627,15 +627,6 @@ fn vectors_crypto() {
     assert_eq!(crypto::b64u(&k_pd), s["k_pd"]);
     assert_eq!(crypto::b64u(&k_dp), s["k_dp"]);
 
-    // The host proof (P4): the same D signs "fb-relay-proof-v1" || n; p256 signs deterministically
-    // (RFC 6979), so the signature is the vector's own.
-    let pv = &v["proof"];
-    assert_eq!(pv["context"], "fb-relay-proof-v1");
-    let n = b(&pv["n"]);
-    assert_eq!(hex::encode(&n), pv["n_hex"]);
-    assert_eq!(hex::encode([crypto::PROOF_LABEL, &n].concat()), pv["msg_hex"]);
-    assert_eq!(crypto::b64u(&crypto::proof(&d, &n)), pv["sig"]);
-
     // Framing, both directions, counters from 0.
     let mut rx = Direction::new(k32(&s["k_pd"]));
     for m in s["phone_to_desktop"].as_array().unwrap() {
@@ -656,12 +647,7 @@ async fn vectors_through_the_desktop() {
     let v: Value = serde_json::from_str(VECTORS).unwrap();
     let (d, ed) = (vkey(&v, "D"), vkey(&v, "eD"));
     let mut h = harness(Some(&d));
-    assert_eq!(h.phone.room, v["room"]["room"]);
     assert_eq!(h.phone.d_pub, v["room"]["d_pub"]);
-    // The relay's challenge answered with the vector's proof frame.
-    let challenge = &v["proof"]["challenge_frame"];
-    assert_eq!(challenge["t"], "challenge");
-    assert_eq!(h.phone.proof_frame(challenge["n"].as_str().unwrap()).unwrap(), v["proof"]["frame"]);
 
     h.phone.test_code(b(&v["pair"]["c"]).try_into().unwrap());
     h.feed(4, v["pair"]["frame"].clone());
@@ -707,39 +693,32 @@ fn link_of(url: &str) -> Value {
 #[tokio::test]
 async fn pairing_url_shape() {
     let h = harness(None);
-    // The public relay by default: the page at app.ecxfreebank.com, naming that same relay (the
-    // page refuses a link whose relay isn't its own host).
-    assert_eq!(h.phone.relay_url(), "wss://app.ecxfreebank.com/ws");
-    let (url, exp) = h.phone.pair_start(false).unwrap();
+    // On the phone page at app.ecxfreebank.com, naming the Nostr relays and this desktop's Nostr key (v2; v1 named the
+    // old relay and its room, until v0.6.8).
+    let (url, exp) = h.phone.pair_start().unwrap();
     assert!(url.starts_with("https://app.ecxfreebank.com/#pair="), "{url}");
     assert_eq!(exp, h.at() + PAIR_TTL_SECS);
     let link = link_of(&url);
-    assert_eq!(link["v"], 1);
-    assert_eq!(link["relay"], "wss://app.ecxfreebank.com/ws");
-    assert_eq!(link["room"], h.phone.room.as_str());
+    assert_eq!(link["v"], 2);
+    assert_eq!(link["r"], json!(store::DEFAULT_NOSTR_RELAYS));
+    assert_eq!(link["n"], h.phone.nkey.pubkey());
     assert_eq!(link["d"], h.phone.d_pub.as_str());
+    assert_eq!(link["x"], exp);
+    assert!(link.get("relay").is_none() && link.get("room").is_none(), "{link}");
     assert_eq!(code_of(&url).len(), 16);
-
-    // The override the tests use: a local relay over ws://, its page over http://, same host.
-    h.phone.set_relay("ws://127.0.0.1:18480/ws").unwrap();
-    let (url, _) = h.phone.pair_start(false).unwrap();
-    assert!(url.starts_with("http://127.0.0.1:18480/#pair="), "{url}");
-    assert_eq!(link_of(&url)["relay"], "ws://127.0.0.1:18480/ws");
-    h.phone.set_relay("wss://relay.example.org/ws").unwrap();
-    let (url, _) = h.phone.pair_start(false).unwrap();
-    assert!(url.starts_with("https://relay.example.org/#pair="), "{url}");
-    assert!(h.phone.set_relay("https://x/ws").is_err());
-    assert!(h.phone.wanted(), "an open pairing wants the link");
-    assert_eq!(h.phone.store.load_config().relay_url, "wss://relay.example.org/ws");
+    assert!(h.phone.nostr_wanted(), "an open pairing wants the link");
+    // A config written before v0.6.8 still loads: its relay URL is no longer read.
+    std::fs::write(h.dir.join("phone/config.json"), r#"{"relay_url":"wss://relay.example.org/ws","page_url":"https://p.example"}"#).unwrap();
+    assert_eq!(h.phone.store.load_config().page_url, "https://p.example");
 }
 
 #[tokio::test]
 async fn pairing_expires() {
     let mut h = harness(None);
     let sim = Sim::new();
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     h.later(PAIR_TTL_SECS);
-    assert!(!h.phone.wanted(), "an expired pairing doesn't keep the link up");
+    assert!(!h.phone.nostr_wanted(), "an expired pairing doesn't keep the link up");
     h.feed(1, sim.pair_frame(&h.d_pub(), &code_of(&url), "late"));
     assert_eq!(h.next().await, json!({"ch": 1, "d": {"t": "pair-refused"}}));
     assert!(h.ev.named(EV_PAIR).is_empty());
@@ -753,7 +732,7 @@ async fn pairing_expires() {
 async fn pairing_shows_each_request_with_its_own_code() {
     let mut h = harness(None);
     let (intruder, owner) = (Sim::new(), Sim::new());
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     let c = code_of(&url);
     let (f1, intruder_code) = intruder.pair_frame_and_code(&h.d_pub(), &c, "Owner's iPhone");
     let (f2, owner_code) = owner.pair_frame_and_code(&h.d_pub(), &c, "Owner's iPhone");
@@ -792,7 +771,7 @@ async fn pairing_shows_each_request_with_its_own_code() {
 #[tokio::test]
 async fn pair_requests_are_bounded_and_one_per_channel() {
     let mut h = harness(None);
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     let c = code_of(&url);
     let sim = Sim::new();
     // A second request on the same channel replaces the first.
@@ -814,11 +793,11 @@ async fn pair_requests_are_bounded_and_one_per_channel() {
 #[tokio::test]
 async fn pair_requests_end_with_their_code() {
     let mut h = harness(None);
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     h.feed(1, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), "slow"));
-    assert!(h.phone.wanted());
+    assert!(h.phone.nostr_wanted());
     // A new code: requests for the old one are refused.
-    let (url2, _) = h.phone.pair_start(false).unwrap();
+    let (url2, _) = h.phone.pair_start().unwrap();
     assert_eq!(h.next().await, json!({"ch": 1, "d": {"t": "pair-refused"}}));
     assert!(h.phone.pair_pending().is_empty());
     h.feed(2, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), "old code"));
@@ -849,7 +828,7 @@ async fn pair_requests_end_with_their_code() {
 async fn pairing_wrong_code_and_deny() {
     let mut h = harness(None);
     let sim = Sim::new();
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     // Wrong code: refused, and the right code still works.
     h.feed(1, sim.pair_frame(&h.d_pub(), &[0u8; 16], "x"));
     assert_eq!(h.next().await["d"]["t"], "pair-refused");
@@ -872,7 +851,7 @@ async fn pairing_wrong_code_and_deny() {
 async fn pairing_phone_leaves_before_the_answer() {
     let mut h = harness(None);
     let sim = Sim::new();
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     h.feed(5, sim.pair_frame(&h.d_pub(), &code_of(&url), "gone"));
     let id = h.phone.pair_pending()[0].id.clone();
     h.phone.handle_frame(json!({"t": "closed", "ch": 5}));
@@ -917,7 +896,7 @@ async fn idle_channels_are_closed_after_30_seconds() {
     assert!(h.phone.online(&h.phone.devices()[0].id), "the paired phone's session stays");
 
     // A waiting pair request keeps its channel while it waits; once answered, 30 s to go.
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     h.feed(11, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), "waiting"));
     h.later(60);
     h.phone.expire();
@@ -967,7 +946,7 @@ fn device_names_are_cleaned() {
 #[tokio::test]
 async fn names_are_cleaned_before_they_are_shown_or_stored() {
     let mut h = harness(None);
-    let (url, _) = h.phone.pair_start(false).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     let dirty = format!("Bank\u{202E}lagel\u{200B} {}", "y".repeat(60));
     h.feed(1, Sim::new().pair_frame(&h.d_pub(), &code_of(&url), &dirty));
     let ask = h.phone.pair_pending().pop().unwrap();
@@ -982,21 +961,6 @@ async fn names_are_cleaned_before_they_are_shown_or_stored() {
     h.phone.store.save_devices(&devs).unwrap();
     h.restart();
     assert_eq!(h.phone.devices()[0].name, "Oldname");
-}
-
-/// P4: the relay's challenge is 32 bytes; the proof signs the context string and it.
-#[tokio::test]
-async fn proof_frame_wants_a_32_byte_challenge() {
-    use p256::ecdsa::signature::Verifier;
-    let h = harness(None);
-    assert!(h.phone.proof_frame(&crypto::b64u(&[1u8; 31])).is_err());
-    assert!(h.phone.proof_frame("not base64url!").is_err());
-    let n = [5u8; 32];
-    let f = h.phone.proof_frame(&crypto::b64u(&n)).unwrap();
-    assert_eq!(f["t"], "proof");
-    let sig = p256::ecdsa::Signature::from_slice(&crypto::unb64u(f["sig"].as_str().unwrap()).unwrap()).unwrap();
-    let vk = p256::ecdsa::VerifyingKey::from(&h.d_pub());
-    vk.verify(&[b"fb-relay-proof-v1".as_slice(), &n].concat(), &sig).unwrap();
 }
 
 // ----- sessions and revoke -------------------------------------------------------------------
@@ -1113,7 +1077,7 @@ async fn revoke_cuts_the_phone_off() {
     h.feed(3, hello);
     assert_eq!(h.next().await, json!({"ch": 3, "d": {"t": "denied"}}));
     assert!(h.phone.store.load_devices().devices.is_empty());
-    assert!(!h.phone.wanted());
+    assert!(!h.phone.nostr_wanted());
     assert!(h.phone.revoke(&id).is_err());
 }
 
@@ -1785,197 +1749,6 @@ async fn the_passphrase_stays_in_memory() {
     assert!(!h.phone.phone_send_is_on(), "and a restart starts with phone sends off");
 }
 
-/// Revoking the last phone leaves the link nothing to do, but the phone hears `denied` and the
-/// relay the channel's close before the link goes. (On the real relay, 2026-09-29, the link once
-/// left first, and the phone showed "Desktop offline" instead of "This phone was removed".) The
-/// link's select picks at random, so several rounds.
-#[tokio::test]
-async fn revoking_the_last_phone_tells_it_before_the_link_goes() {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}/ws", listener.local_addr().unwrap());
-    // The relay, played here: each connection does the host handshake, then passes frames on.
-    let (link_said, mut heard) = mpsc::unbounded_channel::<Value>();
-    let (say, to_link) = mpsc::unbounded_channel::<Value>();
-    let to_link = Arc::new(tokio::sync::Mutex::new(to_link));
-    async fn next_json<S>(rx: &mut S) -> Option<Value>
-    where
-        S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
-    {
-        loop {
-            match rx.next().await {
-                Some(Ok(Message::Text(t))) => return Some(serde_json::from_str(t.as_str()).unwrap()),
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return None,
-                _ => {}
-            }
-        }
-    }
-    let relay = tokio::spawn(async move {
-        loop {
-            let (sock, _) = listener.accept().await.unwrap();
-            let (mut tx, mut rx) = tokio_tungstenite::accept_async(sock).await.unwrap().split();
-            let host = next_json(&mut rx).await.unwrap();
-            assert_eq!(host["t"], "host");
-            let n: [u8; 32] = rand::random();
-            tx.send(Message::text(json!({"t": "challenge", "n": crypto::b64u(&n)}).to_string())).await.unwrap();
-            let proof = next_json(&mut rx).await.unwrap();
-            assert_eq!(proof["t"], "proof");
-            // As the relay checks it (P4): over "fb-relay-proof-v1" || n, never the bare n.
-            {
-                use p256::ecdsa::signature::Verifier;
-                let d = crypto::parse_pub(host["d"].as_str().unwrap()).unwrap();
-                let vk = p256::ecdsa::VerifyingKey::from(&d);
-                let sig = crypto::unb64u(proof["sig"].as_str().unwrap()).unwrap();
-                let sig = p256::ecdsa::Signature::from_slice(&sig).unwrap();
-                vk.verify(&[b"fb-relay-proof-v1".as_slice(), &n].concat(), &sig).expect("the P4 proof");
-                assert!(vk.verify(&n, &sig).is_err());
-            }
-            tx.send(Message::text(json!({"t": "ready"}).to_string())).await.unwrap();
-            let mut to_link = to_link.lock().await;
-            loop {
-                tokio::select! {
-                    f = next_json(&mut rx) => match f {
-                        Some(f) => { let _ = link_said.send(f); }
-                        None => { let _ = link_said.send(json!({"gone": true})); break; }
-                    },
-                    Some(f) = to_link.recv() => { tx.send(Message::text(f.to_string())).await.unwrap(); }
-                }
-            }
-        }
-    });
-    let mut h = harness(None);
-    h.phone.set_relay(&url).unwrap();
-    let rx = std::mem::replace(&mut h.rx, mpsc::unbounded_channel().1);
-    tokio::spawn(link::run(h.phone.clone(), rx));
-    for round in 0..8u64 {
-        let (pair_url, _) = h.phone.pair_start(false).unwrap();
-        assert!(link::wait_for(&h.phone, "online", Duration::from_secs(5)).await, "round {round}");
-        let mut sim = Sim::new();
-        let (pch, sch) = (100 + 2 * round, 101 + 2 * round);
-        say.send(json!({"ch": pch, "d": sim.pair_frame(&h.d_pub(), &code_of(&pair_url), "Only phone")})).unwrap();
-        for _ in 0..250 {
-            if !h.phone.pair_pending().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        allow_the_one(&h);
-        let f = tokio::time::timeout(Duration::from_secs(5), heard.recv()).await.unwrap().unwrap();
-        assert_eq!(f, json!({"ch": pch, "d": {"t": "paired"}}));
-        say.send(json!({"ch": sch, "d": sim.hello()})).unwrap();
-        let f = tokio::time::timeout(Duration::from_secs(5), heard.recv()).await.unwrap().unwrap();
-        assert_eq!(f["d"]["t"], "hello-ok", "round {round}");
-        let id = h.phone.devices()[0].id.clone();
-        h.phone.revoke(&id).unwrap();
-        let mut got = vec![];
-        loop {
-            let f = tokio::time::timeout(Duration::from_secs(5), heard.recv()).await.unwrap().unwrap();
-            if f["gone"] == true {
-                break;
-            }
-            got.push(f);
-        }
-        assert!(got.contains(&json!({"ch": sch, "d": {"t": "denied"}})), "round {round}: {got:?}");
-        assert!(got.contains(&json!({"t": "close", "ch": sch})), "round {round}: {got:?}");
-        assert!(link::wait_for(&h.phone, "off", Duration::from_secs(5)).await);
-        assert!(heard.try_recv().is_err());
-    }
-    relay.abort();
-}
-
-// ----- end to end, against the real relay ----------------------------------------------------
-
-/// Run with a relay listening, e.g. `fb-relay --listen 127.0.0.1:18480` and
-/// `FB_RELAY_URL=ws://127.0.0.1:18480/ws cargo test -j2 relay_e2e -- --ignored --nocapture`.
-#[tokio::test]
-#[ignore]
-async fn relay_e2e() {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-    let url = std::env::var("FB_RELAY_URL").expect("FB_RELAY_URL");
-    let mut h = harness(None);
-    h.phone.set_relay(&url).unwrap();
-    let rx = std::mem::replace(&mut h.rx, mpsc::unbounded_channel().1);
-    let phone = h.phone.clone();
-    tokio::spawn(link::run(phone.clone(), rx));
-
-    // Nothing paired and no pairing open: the link stays off.
-    assert!(link::wait_for(&phone, "off", Duration::from_secs(3)).await);
-    let (pair_url, _) = phone.pair_start(false).unwrap();
-    assert!(link::wait_for(&phone, "online", Duration::from_secs(10)).await, "{}", phone.status().detail);
-    eprintln!("link online, pairing open");
-
-    let d_pub = crypto::parse_pub(&phone.d_pub).unwrap();
-    let mut sim = Sim::new();
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    let (mut tx, mut wrx) = ws.split();
-    async fn recv<S>(r: &mut S) -> Value
-    where
-        S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
-    {
-        loop {
-            let m = tokio::time::timeout(Duration::from_secs(5), r.next()).await.expect("frame").unwrap().unwrap();
-            if let Message::Text(t) = m {
-                return serde_json::from_str(t.as_str()).unwrap();
-            }
-        }
-    }
-    let text = |v: Value| Message::text(v.to_string());
-    tx.send(text(json!({"t": "join", "room": phone.room}))).await.unwrap();
-    assert_eq!(recv(&mut wrx).await["t"], "joined");
-
-    // Pair.
-    tx.send(text(sim.pair_frame(&d_pub, &code_of(&pair_url), "e2e phone"))).await.unwrap();
-    for _ in 0..250 {
-        if !phone.pair_pending().is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(h.ev.named(EV_PAIR)[0]["name"], "e2e phone");
-    let (_, code) = sim.pair_frame_and_code(&d_pub, &code_of(&pair_url), "unused");
-    assert_eq!(code.len(), 7);
-    allow_the_one(&h);
-    assert_eq!(recv(&mut wrx).await, json!({"t": "paired"}));
-
-    // Session and requests.
-    tx.send(text(sim.hello())).await.unwrap();
-    let ok = recv(&mut wrx).await;
-    sim.hello_ok(&d_pub, &ok);
-    tx.send(text(sim.req(1, "balance", json!({})))).await.unwrap();
-    let r = sim.open(&recv(&mut wrx).await);
-    assert_eq!(r["ok"]["confirmed"], 1.5);
-    eprintln!("balance through the relay: {r}");
-    tx.send(text(sim.req(2, "send", json!({"address": TO, "amount": 0.5})))).await.unwrap();
-    let r = sim.open(&recv(&mut wrx).await);
-    let confirm = r["ok"]["pending"].as_str().expect("held").to_string();
-    assert_eq!(r["ok"]["why"], "limit");
-    phone.confirm_send(&confirm, true, None).await.unwrap();
-    let r = sim.open(&recv(&mut wrx).await);
-    assert_eq!(r["id"], 2);
-    assert_eq!(r["pending"], confirm.as_str());
-    assert!(r["ok"]["txid"].is_string());
-    eprintln!("held send confirmed through the relay: {r}");
-
-    // Revoke: denied, then the relay drops the phone.
-    phone.revoke(&phone.devices()[0].id).unwrap();
-    assert_eq!(recv(&mut wrx).await, json!({"t": "denied"}));
-    let end = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match wrx.next().await {
-                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return true,
-                Some(Ok(Message::Text(t))) => eprintln!("after revoke: {t}"),
-                _ => {}
-            }
-        }
-    })
-    .await;
-    assert!(end.unwrap_or(false), "the relay closed the revoked phone");
-    // No phone left: the link goes off.
-    assert!(link::wait_for(&phone, "off", Duration::from_secs(5)).await);
-}
-
 // ----- a host for the real phone page --------------------------------------------------------
 
 /// The wallet passphrase from FB_PASS_FILE (a 0600 file). Never printed.
@@ -2013,7 +1786,7 @@ async fn host_command(phone: &Arc<Phone>, line: &str, pass_file: Option<&str>) -
     let r: Result<Value, String> = async {
         match verb.as_str() {
             "pair" => {
-                let (url, expires) = phone.pair_start(false)?;
+                let (url, expires) = phone.pair_start()?;
                 Ok(json!({"url": url, "expires": expires}))
             }
             "send-on" => {
@@ -2167,9 +1940,10 @@ impl super::hosted::Maker for ExternalMaker {
 }
 
 /// The desktop side as a host for driving the real phone page, by hand or from a browser script
-/// (scripts/phone-real-node.sh runs it against a real FreeBank node). It connects to the relay and
-/// opens a pairing. Env:
-/// - FB_RELAY_URL (required): the relay, e.g. ws://127.0.0.1:18480/ws.
+/// (scripts/phone-real-node.sh ran it against a real FreeBank node over the old relay; see there). It connects to the
+/// Nostr relay and opens a pairing. Env:
+/// - FB_NOSTR_RELAY (required): a Nostr relay, e.g. ws://127.0.0.1:7447 (`phone/e2e/test-relay.mjs`).
+/// - FB_PAGE_URL: the phone page the pairing link opens (default https://app.ecxfreebank.com).
 /// - FB_NODE_URL and FB_NODE_COOKIE: a real freebankd's RPC URL and its `.cookie` file (read
 ///   again if the node restarts). Without them the node is the mock.
 /// - FREEBANK_APP_DIR: the app folder the phone folder goes in (default: a fresh temp folder).
@@ -2194,7 +1968,7 @@ impl super::hosted::Maker for ExternalMaker {
 async fn page_host() {
     use std::path::PathBuf;
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    let url = env("FB_RELAY_URL").expect("FB_RELAY_URL");
+    let relay = env("FB_NOSTR_RELAY").expect("FB_NOSTR_RELAY");
     let secs: u64 = env("FB_HOST_SECS").and_then(|s| s.parse().ok()).unwrap_or(120);
     let real = env("FB_NODE_URL").zip(env("FB_NODE_COOKIE"));
     let auto_confirm = env("FB_AUTO_CONFIRM").map(|v| v == "1").unwrap_or(real.is_none());
@@ -2204,7 +1978,11 @@ async fn page_host() {
         Some(d) => (PathBuf::from(d), false),
         None => (temp_dir("host"), true),
     };
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("phone")).unwrap();
+    // The phone page to pair on (FB_PAGE_URL, e.g. a local build at http://localhost:5173), if not the public one.
+    if let Some(page) = env("FB_PAGE_URL") {
+        std::fs::write(dir.join("phone/config.json"), json!({"page_url": page}).to_string()).unwrap();
+    }
     let mock_now = Arc::new(AtomicU64::new(unix_now()));
     let rpc: Arc<dyn Rpc> = match &real {
         Some((node, cookie)) => {
@@ -2233,11 +2011,17 @@ async fn page_host() {
         phone.set_maker(Arc::new(ExternalMaker { client: tokio::sync::Mutex::new(c), restart }));
         tokio::spawn(phone.clone().resume_hosted());
     }
-    phone.set_relay(&url).unwrap();
-    tokio::spawn(link::run(phone.clone(), rx));
+    phone.set_nostr_relays(&[relay]).unwrap();
+    tokio::spawn(carrier::run(phone.clone(), rx));
     tokio::spawn(phone.clone().expire_forever());
-    let (pair_url, _) = phone.pair_start(false).unwrap();
-    assert!(link::wait_for(&phone, "online", Duration::from_secs(10)).await, "{}", phone.status().detail);
+    let (pair_url, _) = phone.pair_start().unwrap();
+    for _ in 0..500 {
+        if phone.nostr_status().state == "online" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(phone.nostr_status().state, "online", "{}", phone.nostr_status().detail);
     if let Some(f) = env("FB_PAIR_FILE") {
         std::fs::write(&f, &pair_url).unwrap();
     }
@@ -2249,8 +2033,7 @@ async fn page_host() {
         put(c, "pair-url", &pair_url);
     }
     eprintln!(
-        "host online: room {}, node {}, app folder {}, held sends expire after {} s{}",
-        phone.room,
+        "host online over Nostr: node {}, app folder {}, held sends expire after {} s{}",
         if real.is_some() { "real" } else { "mock" },
         dir.display(),
         phone.held_ttl(),
@@ -2291,7 +2074,7 @@ async fn page_host() {
                     .map(|d| json!({"id": d.id, "name": d.name, "online": phone.online(&d.id), "limit": to_ecx(d.limit_sats)}))
                     .collect();
                 let state = json!({
-                    "link": phone.status().state, "devices": devices, "held": phone.held(),
+                    "link": phone.nostr_status().state, "devices": devices, "held": phone.held(),
                     "phone_send": phone.phone_send_is_on(), "asks": phone.pair_pending(),
                     "hosted": phone.hosted_list(), "hosted_asks": phone.hosted_pending(),
                     "moved_events": events.named(EV_HOSTED_MOVED).len(),

@@ -15,7 +15,9 @@ export interface NetworkInfo {
   faucet: boolean;
   /** The app can install this network's eCash node and enforcer itself. */
   stack: boolean;
-  /** Every network: [id, name, offered]. */
+  /** The network has closed, since when ("26 October 2026"; v0.6.8: beta): the screens say so and offer easynet. */
+  closed: string | null;
+  /** Every network: [id, name, offered]. A closed one is listed only while the app is on it. */
   all: [string, string, boolean][];
 }
 
@@ -27,6 +29,7 @@ export const BETA: NetworkInfo = {
   explorer: "https://explorer.ecxfreebank.com",
   faucet: false,
   stack: false,
+  closed: null,
   all: [["beta", "Beta", true]],
 };
 

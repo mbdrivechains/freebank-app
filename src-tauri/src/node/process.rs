@@ -15,8 +15,47 @@ use std::time::Duration;
 /// FreeBank's node running after I close the app" on, the node starts in its own session, so it
 /// outlives the app; otherwise (on Linux) the kernel stops it if the app dies.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
+    let unclean = stopped_uncleanly(Path::new(&mgr.settings.lock().await.datadir));
     ensure_stack(mgr).await?;
+    if unclean {
+        wait_after_unclean(mgr).await?;
+    }
     start_opts(mgr, false).await
+}
+
+/// How long a start after an unclean stop waits for the eCash node to catch up (`stack::wait_caught_up`).
+const UNCLEAN_WAIT_SECS: u64 = 600;
+
+/// freebankd removes its pid file as it shuts down cleanly: one left behind while no process holds the data folder's
+/// lock means it stopped uncleanly (a power cut, a crash), so its next start replays its last blocks. (Not the pid
+/// itself: after a reboot that number may be another program's.)
+pub(crate) fn stopped_uncleanly(datadir: &Path) -> bool {
+    datadir.join("freebankd.pid").is_file() && lock::in_use(datadir, &[]).is_none()
+}
+
+/// What the screens say while a start waits (`NodeManager::l1_wait`).
+const WAITING_FOR_L1: &str =
+    "FreeBank's node stopped uncleanly last time (a power cut?), so it waits for its eCash node to catch up before it starts…";
+
+/// After an unclean stop the node replays its last blocks against the eCash view as it starts, and a view still behind
+/// marks good blocks invalid (2026-10-25). So it waits for the app's own eCash node to catch up first, up to
+/// UNCLEAN_WAIT_SECS; past that it starts anyway, and `recheck` checks such a block again later (v0.6.8). The screens
+/// show the wait, and anything else asked of the node meanwhile (Stop, a network switch, an update: `busy`) ends it,
+/// and this start with it.
+async fn wait_after_unclean(mgr: &NodeManager) -> Result<(), String> {
+    crate::activity::note("node: it stopped uncleanly last time; its start waits for the eCash node to catch up");
+    *mgr.l1_wait.lock().unwrap() = Some(WAITING_FOR_L1.into());
+    let r = tokio::select! {
+        caught_up = crate::stack::wait_caught_up(mgr, UNCLEAN_WAIT_SECS) => {
+            if !caught_up {
+                crate::activity::note("node: the eCash node hasn't caught up; starting anyway (a block marked invalid meanwhile is checked again later)");
+            }
+            Ok(())
+        }
+        _ = mgr.l1_wait_end.notified() => Err("FreeBank's node didn't start: something else was asked of it while it waited.".to_string()),
+    };
+    *mgr.l1_wait.lock().unwrap() = None;
+    r
 }
 
 /// The app's own eCash node and enforcer first, when it runs them (v0.5.0): the FreeBank node needs both. Before the
@@ -542,6 +581,8 @@ pub struct NodeStatus {
     pub versions: Versions,
     /// The eCash node and enforcer are the app's own (v0.5.0, stack.rs): it starts and stops them.
     pub own_stack: bool,
+    /// Blocks the node marked invalid while its eCash view was behind, checked again (v0.6.8, `recheck`), in words.
+    pub rechecked: Option<String>,
 }
 
 /// "FreeBank app 0.1.0 · node v0.2.15 (843ccae)"
@@ -660,9 +701,11 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
             ..Default::default()
         },
         own_stack: s.stack.as_ref().is_some_and(|st| st.in_use(&s)),
+        rechecked: mgr.recheck.lock().unwrap().said.clone(),
     };
-    // Mid-operation the node may not answer for a while; say what is happening instead.
-    let activity = mgr.activity.lock().unwrap().clone();
+    // Mid-operation the node may not answer for a while; say what is happening instead. A start waiting for the eCash
+    // node after an unclean stop says so too (v0.6.8).
+    let activity = mgr.activity.lock().unwrap().clone().or_else(|| mgr.l1_wait.lock().unwrap().clone());
     if let Some(a) = activity {
         st.state = detect::RpcState::Busy;
         st.activity = Some(a);

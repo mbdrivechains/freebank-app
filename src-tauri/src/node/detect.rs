@@ -50,6 +50,14 @@ pub async fn l1_blocks(http: &reqwest::Client, rest: &str) -> Option<u64> {
         .as_u64()
 }
 
+/// Another program's eCash node has its headers' blocks and is out of its first download, by its REST (no peers there to
+/// ask about: `stack::caught_up` does better for the app's own).
+pub async fn l1_caught_up(http: &reqwest::Client, rest: &str) -> bool {
+    get_json(http, &format!("http://{}/rest/chaininfo.json", rest)).await.is_some_and(|v| {
+        v["blocks"].as_u64().is_some_and(|b| Some(b) == v["headers"].as_u64()) && v["initialblockdownload"] == false
+    })
+}
+
 pub async fn check_stack(http: &reqwest::Client, rest: &str, enforcer: &str) -> StackCheck {
     let rest_ok_blocks = l1_blocks(http, rest).await;
     let rest_ok = rest_ok_blocks.is_some();

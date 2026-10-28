@@ -1,8 +1,9 @@
-//! What the phone relay keeps on disk, all under `<app data>/phone/`, each file mode 0600:
+//! What the phone link keeps on disk, all under `<app data>/phone/`, each file mode 0600:
 //! - `desktop.key`: the desktop static key D (32-byte scalar, hex);
 //! - `nostr.key`: the desktop's Nostr key nD for the link over Nostr (v0.6.0; secp256k1, hex), never the user's own;
 //! - `devices.json`: allowed phones (name, P_pub, added, last seen, daily limit, today's spend);
-//! - `config.json`: the relay URL, the Nostr relays and the phone page's address;
+//! - `config.json`: the Nostr relays and the phone page's address (and, written before v0.6.8, the old relay's URL,
+//!   no longer read);
 //! - `held.json`: sends waiting for the desktop, and the notices owed to phones for held sends a
 //!   restart cancelled;
 //! - `sends.log`: one JSON line per phone send (sent, held, declined, failed, expired, cancelled).
@@ -15,9 +16,6 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The public relay; it also serves the phone page at https://app.ecxfreebank.com/. Settings can
-/// point a desktop at another (ws:// only for local testing).
-pub const DEFAULT_RELAY: &str = "wss://app.ecxfreebank.com/ws";
 /// The phone page, for pairing links over Nostr and Face ID (`rp.id` is its host).
 pub const DEFAULT_PAGE: &str = "https://app.ecxfreebank.com";
 /// The public Nostr relays the link over Nostr uses unless Settings says otherwise (the Truthcoin app's). One working
@@ -128,7 +126,8 @@ pub struct Device {
     /// Face ID: the phone's passkey, once it added one (PROTOCOL.md, "Face ID: passkeys").
     #[serde(default)]
     pub passkey: Option<Passkey>,
-    /// Paired over Nostr (v0.6.0): the phone's Nostr key, the only one its sessions may come from. None: the relay.
+    /// Paired over Nostr (v0.6.0): the phone's Nostr key, the only one its sessions may come from. None: paired over the
+    /// old relay, gone since v0.6.8, so it can't connect (or, in the tests, the simulated phone on a direct channel).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub np: Option<String>,
 }
@@ -202,7 +201,6 @@ impl Devices {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub relay_url: String,
     /// The link over Nostr (v0.6.0): its relays, and the phone page's address.
     #[serde(default = "default_nostr_relays")]
     pub nostr_relays: Vec<String>,
@@ -236,7 +234,6 @@ pub struct Scheduled {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            relay_url: DEFAULT_RELAY.into(),
             nostr_relays: default_nostr_relays(),
             nostr_relays_prev: Vec::new(),
             nostr_prev_until: 0,

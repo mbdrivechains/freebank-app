@@ -178,7 +178,7 @@ async fn desktop(relay: &str) -> (H, Value) {
     h.phone.set_nostr_relays(&[relay.to_string()]).unwrap();
     let rx = std::mem::replace(&mut h.rx, mpsc::unbounded_channel().1);
     tokio::spawn(carrier::run(h.phone.clone(), rx));
-    let (url, _) = h.phone.pair_start(true).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     assert!(url.starts_with("https://app.ecxfreebank.com/#pair="), "{url}");
     let link = link_of(&url);
     for _ in 0..250 {
@@ -248,8 +248,6 @@ async fn a_phone_pairs_and_asks_over_nostr() {
     let reply = sim.open(&np.next(5).await.unwrap());
     assert_eq!(reply["id"], 1);
     assert!(reply["ok"]["confirmed"].is_number(), "{reply}");
-    // The phone link over the relay stays off: nothing is paired over it.
-    assert_eq!(h.phone.status().state, "off");
 }
 
 #[tokio::test]
@@ -276,7 +274,7 @@ async fn sessions_come_only_from_the_phones_own_nostr_key() {
     let (h, link) = desktop(&relay).await;
     let (_np, sim) = pair_and_open(&h, &link, &relay).await;
     // A second phone paired over Nostr, whose key then says hello with the first phone's device key: denied.
-    let (url2, _) = h.phone.pair_start(true).unwrap();
+    let (url2, _) = h.phone.pair_start().unwrap();
     let (mut b, _) = pair_and_open(&h, &link_of(&url2), &relay).await;
     b.new_channel();
     let mut twin = sim.twin();
@@ -284,7 +282,7 @@ async fn sessions_come_only_from_the_phones_own_nostr_key() {
     b.send(hello).await;
     assert_eq!(b.next(5).await.unwrap()["t"], "denied");
     // A stranger's key with it, even while a pairing is open: no channel at all (review M1).
-    let _ = h.phone.pair_start(true).unwrap();
+    let _ = h.phone.pair_start().unwrap();
     let mut other = NPhone::connect(&relay, link["n"].as_str().unwrap(), NostrKey::random()).await;
     let hello = sim.twin().hello();
     other.send(hello).await;
@@ -398,7 +396,7 @@ async fn nostr_page_e2e() {
     let (h, _) = desktop(&relay).await;
     // The page checks the link's expiry against its own clock: the harness's runs at today's time here.
     h.now.store(unix_now(), Ordering::SeqCst);
-    let (url, _) = h.phone.pair_start(true).unwrap();
+    let (url, _) = h.phone.pair_start().unwrap();
     std::fs::write(&out, format!("link {url}\n")).unwrap();
     let t0 = std::time::Instant::now();
     let mut allowed = false;

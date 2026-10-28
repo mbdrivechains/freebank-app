@@ -1,23 +1,22 @@
-//! The desktop side of the FreeBank phone relay (relay/PROTOCOL.md in mbdrivechains/freebank-phone):
-//! the desktop key D and its room, pairing, the KK session handshake, the narrow door (balance,
-//! history, receive, send, status), held sends, phone sends from an encrypted wallet, and the
-//! outbound link to the relay.
+//! The desktop side of the FreeBank phone link (relay/PROTOCOL.md in mbdrivechains/freebank-phone):
+//! the desktop key D, pairing, the KK session handshake, the narrow door (balance, history, receive,
+//! send, status), held sends, and phone sends from an encrypted wallet.
 //!
-//! `Phone` is the whole state and knows nothing of Tauri or WebSockets: frames from the relay go
-//! into `handle_frame`, frames for the relay come out of the channel `new` returns, the node is
-//! reached through `Rpc` and the screen through `Events`. `link` runs the WebSocket; `commands`
-//! are what the Settings screen calls.
+//! `Phone` is the whole state and knows nothing of Tauri or the network: frames from the phones go
+//! into `handle_frame`, frames for them come out of the channel `new` returns, the node is reached
+//! through `Rpc` and the screen through `Events`. `carrier` carries the frames over Nostr (PROTOCOL.md,
+//! "Over Nostr"); `commands` are what the Settings screen calls.
 //!
-//! v0.6.0: the same frames also travel over Nostr (`carrier`; PROTOCOL.md, "Over Nostr"). Its
-//! channels are numbered from `carrier::CH_BASE`; a phone paired over Nostr keeps its Nostr key (`Device::np`), and its
-//! sessions come only over Nostr, from that key. Both links run side by side.
+//! Its channels are numbered from `carrier::CH_BASE`; a phone keeps the Nostr key it paired with (`Device::np`), and
+//! its sessions come only from that key. v0.6.8 took out the old relay (fb-relay's WebSocket), the other link since
+//! v0.6.0: channels below `CH_BASE` were its. Nothing carries them now (`handle_frame` drops them); only the tests'
+//! simulated phone still drives the protocol on them directly, without a Nostr key to bind.
 
 pub mod background;
 pub mod carrier;
 pub mod commands;
 pub mod crypto;
 pub mod hosted;
-pub mod link;
 pub mod login_item;
 pub mod nostr;
 pub mod relays;
@@ -43,7 +42,7 @@ use zeroize::Zeroizing;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Bitcoin Core's JSON-RPC error codes the phone relay acts on.
+/// Bitcoin Core's JSON-RPC error codes the phone link acts on.
 pub const RPC_WALLET_INSUFFICIENT_FUNDS: i64 = -6;
 pub const RPC_WALLET_UNLOCK_NEEDED: i64 = -13;
 pub const RPC_WALLET_PASSPHRASE_INCORRECT: i64 = -14;
@@ -135,10 +134,10 @@ pub fn unix_now() -> u64 {
 pub const PAIR_TTL_SECS: u64 = 300;
 pub const HISTORY_MAX: u64 = 50;
 pub const NAME_MAX: usize = 40;
-/// Pair requests that can wait for one pairing code at once (the relay lets 8 phones in a room).
+/// Pair requests that can wait for one pairing code at once (eight, as the old relay let into a room).
 pub const MAX_ASKS: usize = 8;
 /// A phone channel that hasn't completed `hello` or a pair request this long after its first
-/// frame is closed, so a stranger with the room id can't hold the room's phone slots (P5).
+/// frame is closed, so a stranger can't hold the phone channels (P5; the old relay's room had slots).
 pub const IDLE_CHANNEL_SECS: u64 = 30;
 /// After a change of the Nostr relays, the old ones are listened to this long (v0.6.0, M5).
 pub const NOSTR_PREV_SECS: u64 = 7 * 86_400;
@@ -258,8 +257,6 @@ struct Code {
     c: [u8; 16],
     expires: u64,
     state: CodeState,
-    /// Its link names the Nostr relays (v0.6.0), not the relay.
-    nostr: bool,
 }
 
 /// A pair request waiting for "Allow this phone?". Several can wait on one pairing code (whoever
@@ -400,10 +397,10 @@ pub struct Cancelled {
     pub req_id: Value,
 }
 
-/// The link to the relay, as the Settings screen shows it.
+/// The link over Nostr, as the Settings screen shows it.
 #[derive(Clone, Serialize, Default)]
 pub struct LinkStatus {
-    /// "off" (no phone paired and no pairing open), "connecting", "online", "retrying"
+    /// "off" (no phone paired and no pairing open), "waiting" (the background part has it), "connecting", "online"
     pub state: String,
     pub detail: String,
 }
@@ -506,11 +503,10 @@ pub struct Phone {
     pub store: Store,
     d: SecretKey,
     pub d_pub: String,
-    pub room: String,
     devices: Mutex<Devices>,
     config: Mutex<Config>,
     pairing: Mutex<Pairing>,
-    /// Live sessions by relay channel: the session and the device it belongs to.
+    /// Live sessions by channel: the session and the device it belongs to.
     chans: Mutex<HashMap<u64, (Session, String)>>,
     /// Channels with neither a session nor a waiting pair request, since when (IDLE_CHANNEL_SECS).
     idle: Mutex<HashMap<u64, u64>>,
@@ -539,7 +535,6 @@ pub struct Phone {
     /// Keeps every `walletpassphrase` clear of the node's relock (`crate::wallet::RelockGuard`).
     /// Its own until the app hands it the one the screens use (`share_relock_guard`).
     relock: Mutex<Arc<crate::wallet::RelockGuard>>,
-    status: Mutex<LinkStatus>,
     /// Approvals the desktop is waiting for, by id ("Approve sends on my phone").
     approvals: Mutex<HashMap<String, Approval>>,
     approve_secs: AtomicU64,
@@ -556,9 +551,8 @@ pub struct Phone {
     hosted_asks: Mutex<Vec<hosted::HostedAsk>>,
     maker: Mutex<Option<Arc<dyn hosted::Maker>>>,
     out: mpsc::UnboundedSender<Value>,
-    /// Wakes the link: the relay URL changed, or it has (or no longer has) something to do.
-    pub wake: tokio::sync::Notify,
-    /// The same for the link over Nostr (`carrier`), and that link's state; and the desktop's Nostr key.
+    /// Wakes the link over Nostr (`carrier`): it has (or no longer has) something to do. That link's state; and the
+    /// desktop's Nostr key.
     pub wake_nostr: tokio::sync::Notify,
     nostr_status: Mutex<LinkStatus>,
     pub nkey: nostr::NostrKey,
@@ -776,9 +770,9 @@ fn plausible_address(a: &str) -> bool {
 }
 
 impl Phone {
-    /// Load (or make) the desktop key, the device list and the relay setting from `app_dir/phone`.
+    /// Load (or make) the desktop key, the device list and the link's settings from `app_dir/phone`.
     /// Sends still held when the app last stopped are cancelled here, never paid.
-    /// Frames for the relay come out of the returned receiver; `link::run` takes it.
+    /// Frames for the phones come out of the returned receiver; `carrier::run` takes it.
     pub fn new(
         app_dir: &Path,
         rpc: Arc<dyn Rpc>,
@@ -789,7 +783,6 @@ impl Phone {
         let d = store.desktop_key()?;
         let nkey = store.nostr_key()?;
         let d_pub = crypto::pub_b64u(&d.public_key());
-        let room = crypto::room(&d.public_key());
         let mut devices = store.load_devices();
         // Names stored by an earlier version are cleaned the same way before they are shown.
         for d in devices.devices.iter_mut() {
@@ -806,7 +799,6 @@ impl Phone {
             store,
             d,
             d_pub,
-            room,
             devices: Mutex::new(devices),
             config: Mutex::new(config),
             pairing: Mutex::default(),
@@ -824,7 +816,6 @@ impl Phone {
             pass: Mutex::new(None),
             wallet_gate: tokio::sync::Mutex::new(()),
             relock: Mutex::new(Arc::default()),
-            status: Mutex::new(LinkStatus { state: "off".into(), detail: String::new() }),
             approvals: Mutex::default(),
             approve_secs: AtomicU64::new(APPROVE_SECS),
             grants: Mutex::default(),
@@ -835,7 +826,6 @@ impl Phone {
             hosted_asks: Mutex::default(),
             maker: Mutex::new(None),
             out,
-            wake: tokio::sync::Notify::new(),
             wake_nostr: tokio::sync::Notify::new(),
             nostr_status: Mutex::new(LinkStatus { state: "off".into(), detail: String::new() }),
             nkey,
@@ -869,52 +859,23 @@ impl Phone {
 
     // ----- the link's view -------------------------------------------------------------------
 
-    pub fn relay_url(&self) -> String {
-        self.config.lock().unwrap().relay_url.clone()
-    }
-
-    /// The first frame to the relay.
-    pub fn host_frame(&self) -> Value {
-        json!({"t": "host", "room": self.room, "d": self.d_pub})
-    }
-
-    /// The answer to the relay's challenge: proof that this desktop holds D.
-    pub fn proof_frame(&self, challenge_b64u: &str) -> Result<Value, String> {
-        let n = crypto::unb64u(challenge_b64u)?;
-        if n.len() != 32 {
-            return Err("the relay's challenge isn't 32 bytes".into());
-        }
-        Ok(json!({"t": "proof", "sig": crypto::b64u(&crypto::proof(&self.d, &n))}))
-    }
-
-    /// Whether the relay link should be up: a phone paired over it, or a pairing open on it.
-    pub fn wanted(&self) -> bool {
-        self.wanted_on(false)
-    }
-
-    /// The same for the link over Nostr.
+    /// Whether the link over Nostr should be up: a phone paired over it (or revoked lately), hosted phones or invites,
+    /// or a pairing open on it.
     pub fn nostr_wanted(&self) -> bool {
-        self.wanted_on(true)
-    }
-
-    fn wanted_on(&self, nostr: bool) -> bool {
-        if self.devices.lock().unwrap().devices.iter().any(|d| d.np.is_some() == nostr) || self.hosting_wanted(nostr) {
+        if self.devices.lock().unwrap().devices.iter().any(|d| d.np.is_some()) || self.hosting_wanted(true) {
             return true;
         }
-        if nostr {
-            let now = self.now();
-            if self.gone_np.lock().unwrap().values().any(|until| now < *until) {
-                return true;
-            }
+        let now = self.now();
+        if self.gone_np.lock().unwrap().values().any(|until| now < *until) {
+            return true;
         }
         let p = self.pairing.lock().unwrap();
-        p.asks.iter().any(|a| carrier::is_nostr(a.ch) == nostr)
-            || p.code.as_ref().is_some_and(|c| c.nostr == nostr && c.state == CodeState::Live && self.now() < c.expires)
+        p.asks.iter().any(|a| carrier::is_nostr(a.ch))
+            || p.code.as_ref().is_some_and(|c| c.state == CodeState::Live && now < c.expires)
     }
 
-    /// Wake both links: something they may have to do (or stop doing) changed.
+    /// Wake the link: something it may have to do (or stop doing) changed.
     fn wake_links(&self) {
-        self.wake.notify_one();
         self.wake_nostr.notify_one();
     }
 
@@ -964,7 +925,7 @@ impl Phone {
     /// request may be among them.
     pub fn nostr_pairing_open(&self) -> bool {
         let now = self.now();
-        self.pairing.lock().unwrap().code.as_ref().is_some_and(|c| c.nostr && c.state == CodeState::Live && now < c.expires)
+        self.pairing.lock().unwrap().code.as_ref().is_some_and(|c| c.state == CodeState::Live && now < c.expires)
             || self.invites.lock().unwrap().iter().any(|i| i.nostr && !i.used && now < i.expires)
     }
 
@@ -1005,26 +966,7 @@ impl Phone {
         self.nostr_status.lock().unwrap().clone()
     }
 
-    pub fn set_status(&self, state: &str, detail: &str) {
-        let mut s = self.status.lock().unwrap();
-        if s.state != state || s.detail != detail {
-            *s = LinkStatus { state: state.into(), detail: detail.into() };
-            drop(s);
-            crate::activity::note(&format!("phone link: {state}: {detail}"));
-            self.events.emit(EV_CHANGED, json!({}));
-        }
-    }
-
-    pub fn status(&self) -> LinkStatus {
-        self.status.lock().unwrap().clone()
-    }
-
-    /// The relay link dropped: every channel with it, and the pair requests that came on them.
-    pub fn clear_channels(&self) {
-        self.clear_where(|ch| !carrier::is_nostr(ch));
-    }
-
-    /// The same for the link over Nostr.
+    /// The link over Nostr dropped: every channel with it, and the pair requests that came on them.
     pub fn clear_nostr_channels(&self) {
         self.clear_where(carrier::is_nostr);
     }
@@ -1064,8 +1006,12 @@ impl Phone {
         self.chans.lock().unwrap().iter().filter(|(_, (_, d))| d == device).map(|(c, _)| *c).collect()
     }
 
-    /// One frame from the relay (anything after the host handshake).
+    /// One frame from a phone, or a channel's end (`closed`), from the carrier.
     pub fn handle_frame(self: &Arc<Self>, f: Value) {
+        // Channels below CH_BASE were the old relay's: nothing carries them since v0.6.8 but the tests' simulated phone.
+        if !cfg!(test) && !f["ch"].as_u64().is_some_and(carrier::is_nostr) {
+            return;
+        }
         if f["t"] == "closed" {
             if let Some(ch) = f["ch"].as_u64() {
                 self.chans.lock().unwrap().remove(&ch);
@@ -1108,7 +1054,7 @@ impl Phone {
         }
     }
 
-    /// Ask the relay to drop a phone channel.
+    /// Drop a phone channel (over Nostr, the carrier says `bye` on it).
     fn close_channel(&self, ch: u64) {
         self.idle.lock().unwrap().remove(&ch);
         let _ = self.out.send(json!({"t": "close", "ch": ch}));
@@ -1116,14 +1062,14 @@ impl Phone {
 
     // ----- pairing ---------------------------------------------------------------------------
 
-    /// Open a pairing: a fresh one-use code for 5 minutes (any earlier code stops working).
+    /// Open a pairing over Nostr: a fresh one-use code for 5 minutes (any earlier code stops working).
     /// Returns the URL the QR code shows and when it expires.
-    pub fn pair_start(&self, nostr: bool) -> Result<(String, u64), String> {
+    pub fn pair_start(&self) -> Result<(String, u64), String> {
         let c = rand16();
         let expires = self.now() + PAIR_TTL_SECS;
-        let url = self.pair_url(nostr, &c, expires, None)?;
+        let url = self.pair_url(&c, expires, None)?;
         let mut p = self.pairing.lock().unwrap();
-        p.code = Some(Code { c, expires, state: CodeState::Live, nostr });
+        p.code = Some(Code { c, expires, state: CodeState::Live });
         // Requests for an earlier code are refused: that code stops working.
         let old: Vec<Ask> = p.asks.drain(..).collect();
         drop(p);
@@ -1132,40 +1078,20 @@ impl Phone {
         Ok((url, expires))
     }
 
-    /// A pairing (or invite, with `h`) link: over the relay, v1 naming it and its room; over Nostr, v2 naming the
-    /// relays and this desktop's Nostr key, on the phone page's own address (PHONE_LINK_NOSTR.md §2).
-    fn pair_url(&self, nostr: bool, c: &[u8; 16], expires: u64, h: Option<Value>) -> Result<String, String> {
-        let (page, mut link) = if nostr {
-            let relays = self.nostr_relays();
-            if relays.is_empty() {
-                return Err("No Nostr relays are set: add one under Settings › Phone.".into());
-            }
-            let page = self.page();
-            webauthn::origin_for_page(&page).ok_or(format!("The phone page's address {page} isn't usable."))?;
-            (page, json!({"v": 2, "r": relays, "n": self.nkey.pubkey(), "d": self.d_pub, "c": crypto::b64u(c), "x": expires}))
-        } else {
-            (self.page_url()?, json!({"v": 1, "relay": self.relay_url(), "room": self.room, "d": self.d_pub, "c": crypto::b64u(c)}))
-        };
+    /// A pairing (or invite, with `h`) link, v2: the Nostr relays and this desktop's Nostr key, on the phone page's own
+    /// address (PHONE_LINK_NOSTR.md §2). (v1 named the old relay and its room, until v0.6.8.)
+    pub(super) fn pair_url(&self, c: &[u8; 16], expires: u64, h: Option<Value>) -> Result<String, String> {
+        let relays = self.nostr_relays();
+        if relays.is_empty() {
+            return Err("No Nostr relays are set: add one under Settings › Phone.".into());
+        }
+        let page = self.page();
+        webauthn::origin_for_page(&page).ok_or(format!("The phone page's address {page} isn't usable."))?;
+        let mut link = json!({"v": 2, "r": relays, "n": self.nkey.pubkey(), "d": self.d_pub, "c": crypto::b64u(c), "x": expires});
         if let Some(h) = h {
             link["h"] = h;
         }
         Ok(format!("{page}/#pair={}", crypto::b64u(link.to_string().as_bytes())))
-    }
-
-    /// The phone page's address: the relay's host, over https (http for a local ws:// relay).
-    fn page_url(&self) -> Result<String, String> {
-        let relay = self.relay_url();
-        let u = url::Url::parse(&relay).map_err(|_| format!("The relay address {relay} isn't a URL."))?;
-        let page_scheme = match u.scheme() {
-            "wss" => "https",
-            "ws" => "http",
-            _ => return Err("The relay address must start with ws:// or wss://.".into()),
-        };
-        let host = u.host_str().ok_or("The relay address has no host.")?;
-        Ok(match u.port() {
-            Some(p) => format!("{page_scheme}://{host}:{p}"),
-            None => format!("{page_scheme}://{host}"),
-        })
     }
 
     /// Tell these phones no, and let their channels go idle.
@@ -1183,7 +1109,7 @@ impl Phone {
     #[cfg(test)]
     fn test_code(&self, c: [u8; 16]) {
         let mut p = self.pairing.lock().unwrap();
-        p.code = Some(Code { c, expires: self.now() + PAIR_TTL_SECS, state: CodeState::Live, nostr: false });
+        p.code = Some(Code { c, expires: self.now() + PAIR_TTL_SECS, state: CodeState::Live });
         p.asks.clear();
     }
 
@@ -1351,7 +1277,7 @@ impl Phone {
             self.chans.lock().unwrap().remove(&ch);
             self.auth.lock().unwrap().remove(&ch);
             self.send_clear(ch, json!({"t": "denied"}));
-            // And the relay drops its connection.
+            // And the carrier ends the channel.
             self.close_channel(ch);
         }
         let dropped: Vec<Held> = {
@@ -1399,21 +1325,6 @@ impl Phone {
         let mut devs = self.devices.lock().unwrap();
         devs.get_mut(id).ok_or("No such phone.")?.limit_sats = sats;
         self.store.save_devices(&devs)
-    }
-
-    pub fn set_relay(&self, url: &str) -> Result<(), String> {
-        let url = url.trim();
-        let u = url::Url::parse(url).map_err(|_| "That isn't a URL.".to_string())?;
-        if !matches!(u.scheme(), "ws" | "wss") || u.host_str().is_none() {
-            return Err("The relay address must look like wss://host/ws (or ws:// for testing).".into());
-        }
-        let mut c = self.config.lock().unwrap();
-        c.relay_url = url.to_string();
-        let r = self.store.save_config(&c);
-        drop(c);
-        // Sessions and pairings belong to the old relay's room.
-        self.wake_links();
-        r
     }
 
     /// The Nostr relays (v0.6.0): `wss://` addresses (or `ws://` on this computer), at most five, one at least.
@@ -1652,6 +1563,9 @@ impl Phone {
                     return Err(crate::recovery::WALLET_NOT_SET_UP.into());
                 }
                 let r = self.rpc.call("getnewaddress", vec![json!(""), json!("legacy")]).await?;
+                if let (Some(app_dir), Some(a)) = (self.store.dir.parent(), r.as_str()) {
+                    crate::given::record(app_dir, "freebank", a, None, &format!("phone: {}", self.device_name(dev)));
+                }
                 // And the wallet's member addresses, for being paid in a members-only house's notes (v0.2.8).
                 let rpc = self.rpc.clone();
                 let members = hosted::member_addresses(move |m, p| {
@@ -1736,14 +1650,10 @@ impl Phone {
         self.devices.lock().unwrap().devices.iter().find(|d| d.id == dev).and_then(|d| d.np.clone())
     }
 
-    /// The origin and relying party a phone's Face ID belongs to: the page it paired on (over Nostr, the phone page's
-    /// address; over the relay, the relay's host).
-    fn origin_of(&self, dev: &str) -> Option<(String, String)> {
-        if self.np_of(dev).is_some() {
-            webauthn::origin_for_page(&self.page())
-        } else {
-            webauthn::origin_for(&self.relay_url())
-        }
+    /// The origin and relying party a phone's Face ID belongs to: the page it paired on, the phone page's address. (Over
+    /// the old relay, until v0.6.8, it was the relay's host; a phone paired there can't connect now.)
+    fn page_origin(&self) -> Option<(String, String)> {
+        webauthn::origin_for_page(&self.page())
     }
 
     fn passkey_of(&self, dev: &str) -> Option<store::Passkey> {
@@ -1870,7 +1780,7 @@ impl Phone {
         if self.now() > until {
             return Err(ERR_AUTH_FAILED.into());
         }
-        let (origin, rp_id) = self.origin_of(dev).ok_or(ERR_AUTH_FAILED)?;
+        let (origin, rp_id) = self.page_origin().ok_or(ERR_AUTH_FAILED)?;
         let part = |k: &str| crypto::unb64u(x[k].as_str().unwrap_or("")).map_err(|_| ERR_AUTH_FAILED.to_string());
         let (ad, cdj, sig) = (part("ad")?, part("cdj")?, part("sig")?);
         let check = |pk: &[u8], stored: u32| {
@@ -1884,7 +1794,7 @@ impl Phone {
 
     /// An assertion over `challenge` by `dev`'s stored passkey; its signature counter is kept.
     fn check_stored(&self, dev: &str, challenge: &[u8; 32], x: &Value) -> Result<u32, String> {
-        let (origin, rp_id) = self.origin_of(dev).ok_or(ERR_AUTH_FAILED)?;
+        let (origin, rp_id) = self.page_origin().ok_or(ERR_AUTH_FAILED)?;
         let part = |k: &str| crypto::unb64u(x[k].as_str().unwrap_or("")).map_err(|_| ERR_AUTH_FAILED.to_string());
         let (ad, cdj, sig) = (part("ad")?, part("cdj")?, part("sig")?);
         if let Some(hid) = hosted::hosted_id(dev) {
@@ -2206,7 +2116,7 @@ impl Phone {
         let held: Vec<Held> = self.held.lock().unwrap().iter().filter(|h| !h.busy).cloned().collect();
         let cancelled = self.cancelled.lock().unwrap().clone();
         if let Err(e) = self.store.save_held(&HeldFile { held, cancelled }) {
-            eprintln!("phone relay: {e}");
+            eprintln!("phone link: {e}");
         }
     }
 
@@ -2519,7 +2429,7 @@ impl Phone {
     async fn lock_wallet(&self) {
         if let Err(e) = self.rpc.call("walletlock", vec![]).await {
             // Its short unlock runs out on its own.
-            eprintln!("phone relay: walletlock failed: {}", e.message);
+            eprintln!("phone link: walletlock failed: {}", e.message);
         }
     }
 
@@ -2649,8 +2559,14 @@ impl Phone {
     }
 
     /// A phone is paired: closing the app may keep it connected (background.rs).
+    /// A paired phone that can reach this desktop: since v0.6.8 one paired over the old relay (no Nostr key) can't, so
+    /// it counts for nothing here (the tests' simulated phone has no Nostr key either, and does).
+    fn reachable(d: &Device) -> bool {
+        d.np.is_some() || cfg!(test)
+    }
+
     pub fn has_phones(&self) -> bool {
-        !self.devices.lock().unwrap().devices.is_empty()
+        self.devices.lock().unwrap().devices.iter().any(Self::reachable)
     }
 
     /// For the background part only (background.rs): a copy of the phone-send passphrase, if on.
@@ -2699,7 +2615,7 @@ impl Phone {
     }
 
     fn approver_ids(&self) -> Vec<String> {
-        self.devices.lock().unwrap().devices.iter().filter(|d| d.passkey.is_some()).map(|d| d.id.clone()).collect()
+        self.devices.lock().unwrap().devices.iter().filter(|d| d.passkey.is_some() && Self::reachable(d)).map(|d| d.id.clone()).collect()
     }
 
     /// What the desktop paid within the day's amount in the last 24 hours (sats); older payments are forgotten.

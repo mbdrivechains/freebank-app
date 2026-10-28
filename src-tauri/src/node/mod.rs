@@ -9,6 +9,7 @@ pub mod install;
 pub mod lock;
 pub mod obliterate;
 pub mod process;
+pub mod recheck;
 pub mod release_key;
 #[cfg(all(test, unix))]
 pub mod testnode;
@@ -233,6 +234,12 @@ pub struct NodeManager {
     pub app_updating: AtomicBool,
     /// When the app last looked for its node from an earlier launch.
     pub adopt_tried: std::sync::Mutex<Option<Instant>>,
+    /// Blocks marked invalid while the eCash view was behind, and their second look (v0.6.8).
+    pub recheck: std::sync::Mutex<recheck::Recheck>,
+    /// A start waiting for the eCash node after an unclean stop: what the screens say meanwhile; and what ends the wait
+    /// when anything else is asked of the node (`busy`). v0.6.8.
+    pub l1_wait: std::sync::Mutex<Option<String>>,
+    pub l1_wait_end: tokio::sync::Notify,
 }
 
 /// Holds `NodeManager::activity` for one long operation; clears it when dropped.
@@ -280,6 +287,9 @@ impl NodeManager {
             close_asked: std::sync::Mutex::new(None),
             adopt_tried: std::sync::Mutex::new(None),
             app_updating: AtomicBool::new(false),
+            recheck: std::sync::Mutex::new(Default::default()),
+            l1_wait: std::sync::Mutex::new(None),
+            l1_wait_end: tokio::sync::Notify::new(),
         }
     }
 
@@ -298,6 +308,8 @@ impl NodeManager {
             return Err(format!("Please wait: {}", other));
         }
         *a = Some(what.to_string());
+        // Whatever it is, it goes first: a start still waiting for the eCash node gives way (v0.6.8).
+        self.l1_wait_end.notify_waiters();
         Ok(Busy(self))
     }
 

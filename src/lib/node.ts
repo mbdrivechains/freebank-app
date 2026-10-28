@@ -144,6 +144,8 @@ export interface NodeStatus {
   peers_local?: boolean;
   /** v0.5.0: the eCash node and enforcer are the app's own; it starts and stops them. */
   own_stack?: boolean;
+  /** v0.6.8: blocks the node marked invalid while its eCash view was behind, checked again, in words. */
+  rechecked?: string | null;
   versions: Versions;
 }
 

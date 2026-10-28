@@ -9,6 +9,7 @@ mod ecash;
 mod faucet;
 mod feedback;
 mod front;
+mod given;
 mod house;
 mod house_watch;
 mod network;
@@ -21,6 +22,7 @@ mod seed;
 mod send;
 mod stack;
 mod wallet;
+mod wallet_check;
 mod wallets;
 mod withdraw;
 
@@ -195,6 +197,8 @@ pub fn run() {
             ecash::bmm::spawn(mgr.clone());
             // The app's own eCash node stops itself before its disk fills (v0.5.1).
             stack::spawn_watch(mgr.clone());
+            // Blocks marked invalid while the eCash view was behind are checked again once it catches up (v0.6.8).
+            node::recheck::spawn(mgr.clone());
             let updater = Arc::new(app_update::AppUpdater::new(mgr.http.clone()));
             // Automatic updates (v0.4.2): nothing happens unless Settings > App updates turns them on.
             app_update::spawn_auto(updater.clone(), mgr.clone());
@@ -288,6 +292,10 @@ pub fn run() {
             recovery::commands::wallet_setup_words,
             recovery::commands::wallet_words_confirmed,
             recovery::commands::seed_check_words,
+            wallet_check::wallet_address_mine,
+            given::addresses_given,
+            given::addresses_note,
+            wallet_check::wallet_words_match,
             recovery::commands::wallet_reveal,
             clipboard::copy_words,
             clipboard::words_own_copy,
@@ -357,6 +365,7 @@ pub fn run() {
             ecash::commands::ecash_setup,
             ecash::commands::ecash_receive,
             ecash::commands::ecash_history,
+            ecash::commands::ecash_history_csv,
             ecash::commands::ecash_send_prepare,
             ecash::commands::ecash_send_confirm,
             ecash::commands::deposit_prepare,
@@ -393,7 +402,6 @@ pub fn run() {
             phone::commands::phone_set_limit,
             phone::commands::phone_confirm_send,
             phone::commands::phone_relay_status,
-            phone::commands::phone_set_relay,
             phone::commands::phone_set_nostr_relays,
             phone::commands::phone_recent_sends,
             phone::commands::phone_wallet,

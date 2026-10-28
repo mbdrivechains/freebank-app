@@ -297,8 +297,8 @@
         <strong>Obliterate: remove everything</strong>
         <span class="muted small">
           {#if $network.id !== "beta"}
-            Removes everything FreeBank put on this computer for {$network.name}, your {$network.name} wallet included. Beta isn't
-            touched. It can't be undone.
+            Removes everything FreeBank put on this computer for {$network.name}, your {$network.name} wallet included. Other
+            networks' wallets aren't touched. It can't be undone.
           {:else}
             Removes everything FreeBank put on this computer, your wallet included. It can't be undone.
           {/if}

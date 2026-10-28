@@ -60,7 +60,7 @@
       hostedAsks = (await phone.hosted().catch(() => null))?.asks ?? [];
       approvals = (await phone.approveInfo()).waiting;
     } catch {
-      // The phone relay isn't available; nothing to show.
+      // The phone link isn't available; nothing to show.
       return;
     }
     try {

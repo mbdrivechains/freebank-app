@@ -70,7 +70,7 @@ pub fn apply(s: &Settings, client: &mut FreeBankClient) {
     client.set_wallet(active);
 }
 
-fn client_for(mgr: &NodeManager, s: &Settings, wallet: Option<&str>, timeout: Duration) -> Result<FreeBankClient, String> {
+pub(crate) fn client_for(mgr: &NodeManager, s: &Settings, wallet: Option<&str>, timeout: Duration) -> Result<FreeBankClient, String> {
     let mut c = crate::recovery::local_client(mgr, s, timeout)?;
     c.set_wallet(wallet.map(String::from));
     Ok(c)

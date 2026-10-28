@@ -53,7 +53,11 @@ macOS.
 - **The passphrase:** `src-tauri/src/wallet.rs` unlocks and locks the node's wallet. Every screen that signs goes
   through `withUnlock` (`src/lib/wallet.ts`): it asks in `UnlockPrompt.svelte`, unlocks for 30 seconds, then locks
   again. `src-tauri/src/recovery/` sets it (`encryptwallet`), changes it (`walletpassphrasechange`), opens `seed.enc`
-  with it to show the words or the xprv, and restores from the words or a backup file.
+  with it to show the words or the xprv, and restores from the words or a backup file. "Is this address mine?" opens
+  `seed.enc` with it to look for an eCash address among the words' addresses, showing nothing else
+  (`src-tauri/src/wallet_check.rs`, v0.6.8); "Check my words" needs no passphrase (it compares key ids).
+- **The addresses you gave out** (v0.6.8): `<app data>/wallet/addresses.json`, readable by your user only: each
+  address Receive handed out, when, where, and your note (`src-tauri/src/given.rs`). No keys.
 - **The node's RPC login:** its `.cookie` file, or `rpcuser` and `rpcpassword` from `freebank.conf`
   (`src-tauri/src/node/detect.rs`), or the password typed in the connect form. It is kept in memory only
   (`src-tauri/src/rpc/`) and sent to the node as HTTP Basic auth.
@@ -61,9 +65,10 @@ macOS.
   app is open. `src-tauri/src/phone/background.rs` hands it over a pipe to the background part that keeps your phone
   connected after the window closes.
 - **The phone link's keys:** `<app data>/phone/`, readable by your user only. It holds `desktop.key`, the desktop's
-  pairing key (P-256, not encrypted with the passphrase), each paired phone's public keys (`devices.json`), the
-  relay's address (`config.json`), held sends (`held.json`) and the log of phone sends (`sends.log`). The crypto is
-  in `src-tauri/src/phone/crypto.rs` (P-256 ECDH and ECDSA, HKDF-SHA256, AES-256-GCM). Face ID passkeys are checked
+  pairing key (P-256, not encrypted with the passphrase), `nostr.key`, the desktop's own Nostr key for the link (never
+  yours), each paired phone's public keys (`devices.json`), the Nostr relays and the phone page's address
+  (`config.json`), held sends (`held.json`) and the log of phone sends (`sends.log`). The crypto is in
+  `src-tauri/src/phone/crypto.rs` (P-256 ECDH, HKDF-SHA256, AES-256-GCM). Face ID passkeys are checked
   on the desktop, in `src-tauri/src/phone/webauthn.rs`.
 - **Approve sends on my phone** (v0.2.5): `src-tauri/src/phone/mod.rs`, "Approve on my phone". `config.json` keeps the
   amount, the day's counted payments and a change the recovery words made that waits its day. What asks: `send.rs`
@@ -194,13 +199,16 @@ macOS.
 - **explorer.ecxfreebank.com:** the chain's tip height, for Setup's sync progress and the Node tab
   (`src-tauri/src/node/process.rs`, `mod.rs`). On easynet there is no explorer: the tip comes from the headers the
   node has checked.
+- **Public Nostr relays** (`relay.damus.io`, `nos.lol` and `relay.primal.net`, or the ones set in Settings > Phone >
+  Nostr relays): the phone link, over WebSocket, only while a phone is paired or you are pairing one
+  (`src-tauri/src/phone/carrier.rs`, `relays.rs`, `Phone::nostr_wanted` in `mod.rs`). Messages are end-to-end
+  encrypted: the relays only pass sealed messages along, between the desktop's own Nostr key and each phone's. Until
+  v0.6.8 the link could also go through a relay at `wss://app.ecxfreebank.com/ws`; the app no longer uses it.
 - **app.ecxfreebank.com:**
-  - the phone relay (`wss://app.ecxfreebank.com/ws`, or another set in Settings > Phone > Relay), over WebSocket,
-    only while a phone is paired or you are pairing one (`src-tauri/src/phone/link.rs`, `Phone::wanted` in
-    `mod.rs`). Messages are end-to-end encrypted: the relay only passes sealed messages along. The relay and the
-    phone page are in [mbdrivechains/freebank-phone](https://github.com/mbdrivechains/freebank-phone). The page uses
-    the phone's camera only to read a FreeBank pairing QR code, when you tap Scan the code on your desktop; the
-    pictures stay on the phone (`phone/src/lib/scan.ts` there);
+  - the phone page, which your phone opens (the desktop only names it in the pairing link); it is in
+    [mbdrivechains/freebank-phone](https://github.com/mbdrivechains/freebank-phone). The page uses the phone's camera
+    only to read a FreeBank pairing QR code, when you tap Scan the code on your desktop; the pictures stay on the
+    phone (`phone/src/lib/scan.ts` there);
   - the report desk (`POST /feedback`), only when you send a report (`src-tauri/src/feedback.rs`). If you tick
     "Include recent activity", the report also carries the latest lines of the app's own log
     (`<app data>/logs/app.log`) and chosen lines of the node's `debug.log` (progress, start and stop, errors: never
@@ -360,9 +368,9 @@ The `.deb`'s hash must be the one in the release's `SHA256SUMS`, and the program
 - **Releases before v0.2.0** have neither a signature nor an attestation.
 - **The FreeBank node** (`freebankd`) is a separate program. The app installs it only if its signature checks; to
   verify it yourself, see "Verify your download" in [mbdrivechains/freebank](https://github.com/mbdrivechains/freebank).
-- **The relay's own binary** at app.ecxfreebank.com can't be checked yet; the page it serves can (above). The relay
-  only passes sealed messages along, and the desktop decides everything a phone may do (its daily limit, your
-  approval, Face ID).
+- **The Nostr relays** are other people's servers; they only pass sealed messages along, and the desktop decides
+  everything a phone may do (its daily limit, your approval, Face ID). The server at app.ecxfreebank.com can't be
+  checked yet; the page it serves can (above).
 - **The eCash node and enforcer the app installs on easynet and on beta** are mbdrivechains' builds of eCash's node and
   LayerTwo Labs' enforcer. The app checks they are the files this release names, not how they were built: their
   release notes at `github.com/mbdrivechains/bitcoin/releases` say how each was built (betanet-965000-1's Linux build is

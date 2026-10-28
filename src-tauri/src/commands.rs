@@ -102,9 +102,9 @@ pub async fn get_balance(client: State<'_, ClientState>) -> Result<f64, String> 
     result.as_f64().ok_or_else(|| "Invalid balance response".to_string())
 }
 
-/// Generate a new receiving address
+/// Generate a new receiving address, kept in the list of addresses given out (v0.6.8, `given`).
 #[tauri::command]
-pub async fn get_new_address(client: State<'_, ClientState>) -> Result<String, String> {
+pub async fn get_new_address(client: State<'_, ClientState>, mgr: State<'_, Arc<crate::node::NodeManager>>) -> Result<String, String> {
     let mut c = client.lock().await;
     let result = c
         .call_ui(
@@ -112,10 +112,14 @@ pub async fn get_new_address(client: State<'_, ClientState>) -> Result<String, S
             vec![serde_json::json!(""), serde_json::json!("legacy")],
         )
         .await?;
-    result
+    let a = result
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "Invalid address response".to_string())
+        .ok_or_else(|| "Invalid address response".to_string())?;
+    let wallet = c.wallet().map(String::from);
+    drop(c);
+    crate::given::record(&mgr.app_dir, "freebank", &a, wallet.as_deref(), "app");
+    Ok(a)
 }
 
 /// The screens' wallet's member addresses (v0.2.8): one per members-only or redeem-only house where it is a member,

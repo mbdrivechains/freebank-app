@@ -221,7 +221,52 @@ pub async fn ecash_setup(mgr: State<'_, Arc<NodeManager>>, passphrase: String) -
 #[tauri::command]
 pub async fn ecash_receive(mgr: State<'_, Arc<NodeManager>>) -> Result<String, String> {
     let (c, r) = ready(&mgr).await?;
-    wallet::new_address(&c, &r.main_name, &r.public(Account::Main)?).await
+    let a = wallet::new_address(&c, &r.main_name, &r.public(Account::Main)?).await?;
+    crate::given::record(&mgr.app_dir, "ecash", &a, None, "app");
+    Ok(a)
+}
+
+/// The eCash wallets' payments as a CSV file, as Home's history exports FreeBank's (v0.6.8): in Documents, else the home
+/// folder.
+#[tauri::command]
+pub async fn ecash_history_csv(app: tauri::AppHandle, mgr: State<'_, Arc<NodeManager>>) -> Result<crate::send::CsvSaved, String> {
+    let (c, r) = ready(&mgr).await?;
+    let list = wallet::history_n(&c, &r, 100_000).await?;
+    let text = history_csv_text(&list, &crate::given::notes(&mgr.app_dir));
+    let folder = crate::send::export_folder(&app, &mgr)?;
+    let file = crate::send::save_csv_as(&folder, "freebank-ecash-history", &text, &crate::send::today())?;
+    Ok(crate::send::CsvSaved { path: file.to_string_lossy().into_owned(), rows: list.len() })
+}
+
+fn history_csv_text(list: &[wallet::Tx], notes: &std::collections::HashMap<String, String>) -> String {
+    use crate::send::{csv_text, ecx, iso_utc};
+    let mut s = String::from("txid,time,wallet,category,amount,fee,confirmations,address,note\n");
+    for t in list {
+        let fields = [
+            csv_text(&t.txid),
+            iso_utc(t.time as i64),
+            if t.wallet == "bids" { "bidding" } else { "eCash" }.to_string(),
+            csv_text(&t.category),
+            ecx(t.sats),
+            if t.fee > 0 { ecx(t.fee as i64) } else { String::new() },
+            t.confirmations.to_string(),
+            csv_text(t.address.as_deref().unwrap_or("")),
+            csv_text(t.address.as_deref().and_then(|a| notes.get(a)).map_or("", |n| n.as_str())),
+        ];
+        s.push_str(&fields.join(","));
+        s.push('\n');
+    }
+    s
+}
+
+/// The main eCash wallet's address book with what each address received (`listreceivedbyaddress`, empty ones too), for
+/// Settings › Wallet's list of addresses given out (v0.6.8).
+pub(crate) async fn received_by_address(mgr: &NodeManager) -> Result<serde_json::Value, String> {
+    let (c, r) = ready(mgr).await?;
+    c.wallet(&r.main_name)
+        .call_typed("listreceivedbyaddress", vec![serde_json::json!(0), serde_json::json!(true), serde_json::json!(true)])
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -808,4 +853,30 @@ pub async fn deposit_list(
     }
     views.reverse();
     Ok(views)
+}
+
+#[cfg(test)]
+mod csv_tests {
+    use super::*;
+
+    #[test]
+    fn the_ecash_export() {
+        let t = |wallet, category: &str, sats, fee, address: Option<&str>| wallet::Tx {
+            wallet,
+            txid: "ab".repeat(32),
+            category: category.into(),
+            sats,
+            fee,
+            confirmations: 3,
+            time: 1_790_000_000,
+            address: address.map(String::from),
+        };
+        let list = [t("main", "receive", 5_000_000, 0, Some("tb1qa")), t("bids", "send", -1_000, 226, None)];
+        let notes = std::collections::HashMap::from([("tb1qa".to_string(), "=from the faucet".to_string())]);
+        let text = history_csv_text(&list, &notes);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "txid,time,wallet,category,amount,fee,confirmations,address,note");
+        assert_eq!(lines[1], format!("{},2026-09-21T14:13:20Z,eCash,receive,0.05000000,,3,tb1qa,'=from the faucet", "ab".repeat(32)));
+        assert_eq!(lines[2], format!("{},2026-09-21T14:13:20Z,bidding,send,-0.00001000,0.00000226,3,,", "ab".repeat(32)));
+    }
 }

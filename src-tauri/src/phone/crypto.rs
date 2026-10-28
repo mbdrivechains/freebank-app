@@ -1,14 +1,13 @@
-//! The phone relay's crypto (relay/PROTOCOL.md in mbdrivechains/freebank-phone, "Keys and crypto",
-//! "Pairing", "The comparison code", "Session handshake", "The relay"): P-256 ECDH, HKDF-SHA256,
-//! AES-256-GCM, SHA-256, and ECDSA for the relay proof. Every function takes its keys explicitly so
-//! the test vectors can drive it.
+//! The phone link's crypto (relay/PROTOCOL.md in mbdrivechains/freebank-phone, "Keys and crypto",
+//! "Pairing", "The comparison code", "Session handshake"): P-256 ECDH, HKDF-SHA256, AES-256-GCM and
+//! SHA-256. Every function takes its keys explicitly so the test vectors can drive it. (The old relay's
+//! room and host proof went with it in v0.6.8.)
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hkdf::Hkdf;
-use p256::ecdsa::signature::Signer;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
@@ -17,9 +16,6 @@ pub const PAIR_INFO: &[u8] = b"fb-pair-v1";
 pub const KK_LABEL: &[u8] = b"fb-kk-v1";
 pub const SESSION_INFO: &[u8] = b"fb-session-v1";
 pub const SAS_LABEL: &[u8] = b"fb-pair-sas-v1";
-/// What the relay proof signs, before the challenge: D is also the desktop's ECDH key, so its
-/// signatures carry a context and can't be passed off as anything else.
-pub const PROOF_LABEL: &[u8] = b"fb-relay-proof-v1";
 
 pub fn b64u(b: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(b)
@@ -67,11 +63,6 @@ pub fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8], out: &mut [u8]) {
 
 pub fn sha256(b: &[u8]) -> [u8; 32] {
     Sha256::digest(b).into()
-}
-
-/// room = b64u(SHA-256(D_pub))[0..22]
-pub fn room(d_pub: &PublicKey) -> String {
-    b64u(&sha256(&pub_bytes(d_pub)))[..22].to_string()
 }
 
 pub fn seal(key: &[u8; 32], nonce: &[u8; 12], pt: &[u8]) -> Vec<u8> {
@@ -170,18 +161,6 @@ fn split64(ikm: &[u8], th: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     (a, b)
 }
 
-/// The relay's challenge proof: ECDSA-P256-SHA256 over "fb-relay-proof-v1" || the challenge's
-/// bytes, fixed 64-byte r||s.
-pub fn proof(d: &SecretKey, challenge: &[u8]) -> [u8; 64] {
-    let sk = p256::ecdsa::SigningKey::from(d);
-    let mut msg = PROOF_LABEL.to_vec();
-    msg.extend_from_slice(challenge);
-    let sig: p256::ecdsa::Signature = sk.sign(&msg);
-    let mut out = [0u8; 64];
-    out.copy_from_slice(&sig.to_bytes());
-    out
-}
-
 /// One direction of a session: counter nonces from 0, strictly in order.
 pub struct Direction {
     key: [u8; 32],
@@ -237,19 +216,6 @@ mod tests {
         let phone = phone_session_keys(&p, &ep, &d.public_key(), &ed.public_key());
         assert_eq!(desk, phone);
         assert_ne!(desk.0, desk.1);
-    }
-
-    #[test]
-    fn proof_verifies_over_the_label_and_the_challenge() {
-        use p256::ecdsa::signature::Verifier;
-        let d = random_secret();
-        let n = [7u8; 32];
-        let sig = proof(&d, &n);
-        let vk = p256::ecdsa::VerifyingKey::from(&d.public_key());
-        let sig = p256::ecdsa::Signature::from_slice(&sig).unwrap();
-        vk.verify(&[b"fb-relay-proof-v1".as_slice(), &n].concat(), &sig).unwrap();
-        // Not over the bare challenge (the form the relay now refuses).
-        assert!(vk.verify(&n, &sig).is_err());
     }
 
     #[test]

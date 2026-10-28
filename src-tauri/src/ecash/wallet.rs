@@ -302,11 +302,16 @@ fn signed_sats(v: &Value) -> i64 {
 
 /// Both wallets' newest payments, newest first.
 pub async fn history(conn: &Conn, r: &Record) -> Result<Vec<Tx>, String> {
+    history_n(conn, r, 100).await
+}
+
+/// The same, up to `count` from each wallet (the export takes them all, v0.6.8).
+pub async fn history_n(conn: &Conn, r: &Record, count: u32) -> Result<Vec<Tx>, String> {
     let mut all = Vec::new();
     for (a, tag) in [(Account::Main, "main"), (Account::Bids, "bids")] {
         let list = conn
             .wallet(r.name(a))
-            .call_typed("listtransactions", vec![json!("*"), json!(100), json!(0), json!(true)])
+            .call_typed("listtransactions", vec![json!("*"), json!(count), json!(0), json!(true)])
             .await
             .map_err(say)?;
         for t in list.as_array().into_iter().flatten() {

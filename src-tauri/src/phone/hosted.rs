@@ -378,7 +378,8 @@ impl Phone {
         Ok(())
     }
 
-    /// Whether a link (over Nostr or the relay) has hosted phones to serve or invites open.
+    /// Whether the link over Nostr (`nostr`; false only for the tests' direct channels) has hosted phones to serve or
+    /// invites open.
     pub(super) fn hosting_wanted(&self, nostr: bool) -> bool {
         let now = self.now();
         self.hosted.lock().unwrap().phones.iter().any(|h| !h.remove && h.np.is_some() == nostr)
@@ -443,7 +444,7 @@ impl Phone {
         // The shopkeeper's phone pairs over the link the inviting phone uses.
         let nostr = super::carrier::is_nostr(ch);
         let h = json!({"house": house, "name": house_name, "by": by_name});
-        let url = self.pair_url(nostr, &c, now + INVITE_TTL_SECS, Some(h))?;
+        let url = self.pair_url(&c, now + INVITE_TTL_SECS, Some(h))?;
         {
             let mut inv = self.invites.lock().unwrap();
             inv.retain(|i| !i.used && now < i.expires);

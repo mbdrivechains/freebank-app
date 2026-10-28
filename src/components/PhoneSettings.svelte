@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Settings, "Phone": pair a phone over Nostr (v0.6.0; or, for this release, through the old relay): a QR code it opens in Safari or Firefox,
-  // the phones allowed in, each with its own daily limit and Revoke, "Let my phone send while
-  // FreeBank is open" for a wallet with a passphrase, the relay address and link state, and the
+  // Settings, "Phone": pair a phone over Nostr (v0.6.0; the old relay went in v0.6.8): a QR code it opens in Safari or
+  // Firefox, the phones allowed in, each with its own daily limit and Revoke, "Let my phone send while
+  // FreeBank is open" for a wallet with a passphrase, the Nostr relays and link state, and the
   // latest sends phones made. "Allow this phone?" and held sends are answered in PhoneAlerts,
   // which shows over any screen.
   import { onDestroy, onMount } from "svelte";
@@ -30,9 +30,6 @@
   let devices: PhoneDevice[] = [];
   let sends: PhoneSend[] = [];
   let error = "";
-  let relayInput = "";
-  let relayDirty = false;
-  let relayNote = "";
   // The link over Nostr's relays, one per line (v0.6.0).
   let nostrInput = "";
   let nostrDirty = false;
@@ -87,7 +84,6 @@
     phone.hosted().then((h) => (hosted = h.phones), () => (hosted = []));
     try {
       [status, devices, sends] = await Promise.all([phone.status(), phone.devices(), phone.recentSends()]);
-      if (!relayDirty) relayInput = status.url;
       if (!nostrDirty) nostrInput = status.nostr_relays.join("\n");
       for (const d of devices) if (!(d.id in limits)) limits[d.id] = String(d.limit);
       error = "";
@@ -313,11 +309,11 @@
     clearInterval(tick);
   });
 
-  async function startPairing(over?: "relay") {
+  async function startPairing() {
     error = "";
     copied = false;
     try {
-      pair = await phone.pairStart(over);
+      pair = await phone.pairStart();
       left = Math.max(0, pair.expires - Math.floor(Date.now() / 1000));
       load();
     } catch (e) {
@@ -329,19 +325,6 @@
     if (!pair) return;
     await navigator.clipboard.writeText(pair.url);
     copied = true;
-  }
-
-  async function saveRelay() {
-    relayNote = "";
-    try {
-      await phone.setRelay(relayInput);
-      relayDirty = false;
-      relayNote = "Saved.";
-      pair = null;
-      load();
-    } catch (e) {
-      relayNote = String(e);
-    }
   }
 
   async function saveNostrRelays() {
@@ -420,12 +403,6 @@
     load();
   }
 
-  const STATE_TEXT: Record<string, string> = {
-    off: "Not connected.",
-    connecting: "Connecting to the old relay…",
-    online: "Connected to the old relay.",
-    retrying: "Can't reach the old relay.",
-  };
   const NOSTR_TEXT: Record<string, string> = {
     off: "Not connected.",
     connecting: "Connecting to the Nostr relays…",
@@ -474,20 +451,11 @@
   </p>
 
   {#if status}
-    {#if status.nostr.state !== "off" || status.state === "off"}
-      <div class="phone-link" data-testid="nostr-link">
-        <span class="dot" class:ok={status.nostr.state === "online"} class:bad={status.nostr.state === "connecting" && status.nostr.detail.startsWith("No relay")}></span>
-        <span>{NOSTR_TEXT[status.nostr.state] ?? status.nostr.state}{status.nostr.state === "online" ? ` (${status.nostr.detail}).` : ""}</span>
-        {#if status.nostr.state === "connecting" && status.nostr.detail.startsWith("No relay")}<span class="muted small">{status.nostr.detail}</span>{/if}
-      </div>
-    {/if}
-    {#if status.state !== "off"}
-      <div class="phone-link">
-        <span class="dot" class:ok={status.state === "online"} class:bad={status.state === "retrying"}></span>
-        <span>{STATE_TEXT[status.state] ?? status.state}</span>
-        {#if status.state === "retrying" && status.detail}<span class="muted small">{status.detail}</span>{/if}
-      </div>
-    {/if}
+    <div class="phone-link" data-testid="nostr-link">
+      <span class="dot" class:ok={status.nostr.state === "online"} class:bad={status.nostr.state === "connecting" && status.nostr.detail.startsWith("No relay")}></span>
+      <span>{NOSTR_TEXT[status.nostr.state] ?? status.nostr.state}{status.nostr.state === "online" ? ` (${status.nostr.detail}).` : ""}</span>
+      {#if status.nostr.state === "connecting" && status.nostr.detail.startsWith("No relay")}<span class="muted small">{status.nostr.detail}</span>{/if}
+    </div>
   {/if}
 
   {#if pair}
@@ -525,12 +493,14 @@
     </div>
   {:else}
     <div class="row-actions">
-      <button on:click={() => startPairing()}>Pair a phone</button>
+      <button on:click={startPairing}>Pair a phone</button>
     </div>
-    <p class="hint">
-      Pairs over Nostr. Phones paired before keep the old relay until you pair them again;
-      <button class="link-btn inline" on:click={() => startPairing("relay")}>pair over the old relay</button> instead.
-    </p>
+    {#if devices.some((d) => !d.nostr)}
+      <p class="hint" data-testid="old-relay-phones">
+        A phone marked "old relay" was paired before v0.6.0, through a relay FreeBank no longer uses: it can't connect.
+        Remove it below and pair it again.
+      </p>
+    {/if}
   {/if}
 
   {#if devices.length}
@@ -561,7 +531,7 @@
             {#if d.online}<span class="pill pill-ok">connected</span>{/if}
             {#if d.face_id}<span class="pill" title="The phone asks for Face ID{d.face_id_sends ? ' when it opens and before each send' : ' when it opens'}">Face ID</span>{/if}
             {#if d.face_id && approving}<span class="pill" title="It approves this computer's payments over the day's amount">approves</span>{/if}
-            {#if !d.nostr}<span class="pill" title="Paired before v0.6.0: it uses the old relay. Pair it again to move it to Nostr.">old relay</span>{/if}
+            {#if !d.nostr}<span class="pill" title="Paired before v0.6.0, through a relay FreeBank no longer uses: remove it and pair it again.">old relay</span>{/if}
           </div>
           <span class="muted small">
             Last seen {when(d.last_seen)} ·
@@ -859,31 +829,6 @@
         <button class="secondary" on:click={saveNostrRelays} disabled={!nostrDirty}>Save</button>
       </div>
       {#if nostrNote}<p class="hint">{nostrNote}</p>{/if}
-    </div>
-  </details>
-
-  <details class="advanced">
-    <summary>Old relay</summary>
-    <div class="adv-body">
-      <label>
-        Relay address
-        <input
-          type="text"
-          bind:value={relayInput}
-          on:input={() => { relayDirty = true; relayNote = ""; }}
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-        />
-      </label>
-      <p class="hint">
-        Phones already paired keep the relay they were paired with; pair them again after changing this.
-        {#if status}Room <code>{status.room}</code>.{/if}
-      </p>
-      <div class="adv-actions">
-        <button class="secondary" on:click={saveRelay} disabled={!relayDirty}>Save</button>
-      </div>
-      {#if relayNote}<p class="hint">{relayNote}</p>{/if}
     </div>
   </details>
 

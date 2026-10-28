@@ -234,9 +234,9 @@
   // which other programs hold the defaults) and the install's progress.
   let own: StackStatus | null = null;
   let ownProg: StackProgress | null = null;
-  // On beta, easynet is offered too (it needs no BitWindow); on easynet, beta, for someone who runs BitWindow there.
+  // On beta, easynet is offered (beta has closed, v0.6.8; before, as the way that needs no BitWindow). Easynet's own
+  // offer of beta went with it.
   $: easynetOffered = $network.id === "beta" && $network.all.some(([id, , offered]) => id === "easynet" && offered);
-  $: betaOffered = $network.id === "easynet" && $network.all.some(([id, , offered]) => id === "beta" && offered);
   $: ownStages = stackStages(ownProg?.snapshot);
   $: ownStage = ownProg ? ownStages.findIndex(([id]) => id === ownProg!.stage) : -1;
   // Beta's (v0.5.1): the whole chain (about 890 GB), from a snapshot when one answers (looked for first),
@@ -384,13 +384,21 @@
   $: if (prog && (prog.rpc.state === "down" || prog.reindexing || prog.exited)) lastUp = null;
   $: view = prog?.rpc.state === "warming" && prog.rpc.busy && lastUp ? { ...lastUp, log_line: prog.log_line } : prog;
 
+  // What the node's start says while it waits before starting (v0.6.8: after an unclean stop, for the eCash node).
+  let startWords = "";
   async function startNode() {
     startError = "";
     startedHere = true;
+    const said = setInterval(async () => {
+      startWords = (await node.status().catch(() => null))?.activity ?? "";
+    }, 2000);
     try {
       await node.start();
     } catch (e) {
       startError = String(e);
+    } finally {
+      clearInterval(said);
+      startWords = "";
     }
     watchNode();
   }
@@ -529,8 +537,13 @@
   {:else if screen === "checking"}
     <div class="hero">
       <div class="spinner big" aria-hidden="true"></div>
-      <h2>Looking for {$network.l1}</h2>
-      <p class="lede">Checking this computer for an eCash node and enforcer.</p>
+      {#if startWords}
+        <h2>Starting FreeBank</h2>
+        <p class="lede" data-testid="setup-start-words">{startWords}</p>
+      {:else}
+        <h2>Looking for {$network.l1}</h2>
+        <p class="lede">Checking this computer for an eCash node and enforcer.</p>
+      {/if}
     </div>
 
   {:else if screen === "unsupported"}
@@ -551,7 +564,14 @@
     {:else}
       <div class="hero">
         <div class="mark" aria-hidden="true">☉</div>
-        {#if newcomer && $network.faucet}
+        {#if $network.closed}
+          <h2>FreeBank's {$network.name.toLowerCase()} has closed</h2>
+          <p class="lede" data-testid="setup-network-closed">
+            It closed on {$network.closed}: its seed node, houses and block makers are off, so it gets no new FreeBank
+            blocks. Your {$network.name.toLowerCase()} wallet stays on this computer, with its words. FreeBank's test
+            network is now <strong>easynet</strong>.
+          </p>
+        {:else if newcomer && $network.faucet}
           <h2>Welcome to FreeBank</h2>
           <p class="lede" data-testid="welcome-easynet">
             Try it on <strong>{$network.name}</strong>, a small public test network on eCash's rules. FreeBank sets it all
@@ -574,7 +594,7 @@
       </div>
 
       <div class="setup-cards">
-      {#if $network.stack}
+      {#if $network.stack && !$network.closed}
         <div class="card steps" data-testid="own-stack">
           <h3>{bigChain ? `Let FreeBank run ${$network.l1}'s node` : "Let FreeBank set it up"}</h3>
           {#if bigChain}
@@ -700,6 +720,7 @@
         </div>
       {/if}
       <!-- Last, after the other networks' card (v0.6.2): few newcomers have one. -->
+      {#if !$network.closed}
       <div class="card steps" data-testid="remote-stack" style:order={1}>
         <h3>Or use another computer's</h3>
         <p>
@@ -754,38 +775,24 @@
           payments through it. It never opens that node's other wallets.
         </p>
       </div>
+      {/if}
       {#if easynetOffered}
         <!-- A newcomer's first card (v0.6.2: it took the demo's place). -->
         <div class="card steps" data-testid="try-easynet" style:order={newcomer ? -1 : 0}>
-          <h3>{newcomer ? "Just trying it? Use easynet" : "Or try easynet"}</h3>
+          <h3>{$network.closed ? "Use easynet" : newcomer ? "Just trying it? Use easynet" : "Or try easynet"}</h3>
           <p>
             easynet is a small test network on eCash's rules, with no value. FreeBank installs its eCash node and enforcer
             itself, and it syncs in a few minutes, with no BitWindow. Its faucet gives you test coins.
           </p>
           <div class="row-actions">
-            <button class:secondary={!newcomer} on:click={() => switchNetwork("easynet").catch((e) => (startError = String(e)))} disabled={checking}>
+            <button class:secondary={!newcomer && !$network.closed} on:click={() => switchNetwork("easynet").catch((e) => (startError = String(e)))} disabled={checking}>
               Switch to easynet
             </button>
           </div>
-          <p class="hint">FreeBank restarts on easynet. Beta stays as it is, and you can switch back in Settings.</p>
+          <p class="hint">FreeBank restarts on easynet. Your beta wallet stays on this computer.</p>
         </div>
       {/if}
-      {#if betaOffered}
-        <div class="card steps" data-testid="use-beta">
-          <h3>Or use eCash beta</h3>
-          <p>
-            FreeBank's beta runs alongside eCash beta's full node and its enforcer: BitWindow's, your own, or one FreeBank
-            runs for you (the whole chain is about 890 GB). Its coins are kept apart from easynet's.
-          </p>
-          <div class="row-actions">
-            <button class="secondary" on:click={() => switchNetwork("beta").catch((e) => (startError = String(e)))} disabled={checking}>
-              Switch to beta
-            </button>
-          </div>
-          <p class="hint">FreeBank restarts on beta. easynet stays as it is, and you can switch back in Settings.</p>
-        </div>
-      {/if}
-      {#if $network.id === "beta"}
+      {#if $network.id === "beta" && !$network.closed}
       <div class="card steps">
         <h3>{newcomer ? "With your own eCash node" : "The easiest way"}</h3>
         <ol>

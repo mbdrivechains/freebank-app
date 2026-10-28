@@ -25,6 +25,11 @@
 # only fees are spent) and each receipt's txid is checked with the node; with an empty wallet
 # each must fail with "Not enough ECX in your desktop wallet for this payment and its fee."
 set -euo pipefail
+# v0.6.8 took out the old relay's link: the desktop side (the page_host test) now pairs over Nostr (FB_NOSTR_RELAY,
+# FB_PAGE_URL), while this run and its browser script still drive the page through fb-relay's /ws and v1 links. Until
+# they move to a Nostr relay (the distribution repo's phone/e2e/test-relay.mjs), it stops here.
+echo "$(basename "$0"): not yet moved to the link over Nostr (v0.6.8 took out the relay link)" >&2
+exit 2
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 die() { echo "phone-real-node: $*" >&2; exit 1; }

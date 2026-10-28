@@ -7,6 +7,9 @@
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import QrCode from "./QrCode.svelte";
   import FaucetAsk from "./FaucetAsk.svelte";
+  import AddressNote from "./AddressNote.svelte";
+  import PathText from "./PathText.svelte";
+  import type { CsvSaved } from "../lib/send";
   import { network } from "../lib/network";
   import { L1_TICKER } from "../lib/brand";
   import { ecxInput, fmtEcx, parseEcx } from "../lib/amount";
@@ -18,6 +21,7 @@
     ecashBidsWithdrawConfirm,
     ecashConfirm,
     ecashHistory,
+    ecashHistoryCsv,
     ecashPrepare,
     ecashReceive,
     ecashSetup,
@@ -130,6 +134,22 @@
     } catch (e) {
       error = say(e);
     }
+  }
+
+  // Payments as a CSV file (v0.6.8), as Home's history exports FreeBank's.
+  let exporting = false;
+  let csvSaved: CsvSaved | null = null;
+  let csvError = "";
+  async function exportCsv() {
+    exporting = true;
+    csvError = "";
+    csvSaved = null;
+    try {
+      csvSaved = await ecashHistoryCsv();
+    } catch (e) {
+      csvError = say(e);
+    }
+    exporting = false;
   }
 
   async function copy(text: string) {
@@ -377,6 +397,7 @@
           <p class="mono small ec-addr">{address}</p>
           <button class="link-btn" on:click={() => copy(address)}>{copied === address ? "Copied" : "Copy"}</button>
         </div>
+        <AddressNote {address} kind="ecash" />
         {#if $network.faucet}<FaucetAsk {address} coin="ECX" />{/if}
       {/if}
 
@@ -425,7 +446,18 @@
     </div>
 
     <div class="card">
-      <h3>Payments</h3>
+      <div class="ec-pay-head">
+        <h3>Payments</h3>
+        {#if history.length}
+          <button type="button" class="link-btn" on:click={exportCsv} disabled={exporting} data-testid="ecash-export">{exporting ? "Exporting…" : "Export CSV"}</button>
+        {/if}
+      </div>
+      {#if csvSaved}
+        <p class="hint ec-saved" data-testid="ecash-export-saved">
+          Saved {csvSaved.rows.toLocaleString()} payment{csvSaved.rows === 1 ? "" : "s"} to <span class="mono"><PathText path={csvSaved.path} /></span>
+        </p>
+      {/if}
+      {#if csvError}<p class="soft-error">{csvError}</p>{/if}
       {#if history.length === 0}
         <p class="muted small">None yet.</p>
       {:else}
@@ -548,6 +580,15 @@
 </div>
 
 <style>
+  .ec-saved {
+    margin-bottom: 10px;
+  }
+  .ec-pay-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
   .ecash {
     display: flex;
     flex-direction: column;

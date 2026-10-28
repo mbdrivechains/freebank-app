@@ -1,10 +1,10 @@
-//! The phone link over Nostr (v0.6.0; PROTOCOL.md, "Over Nostr", in mbdrivechains/freebank-phone): the relay link's frames,
-//! carried in Nostr events between this desktop's Nostr key and each phone's, through public relays. Nobody hosts
-//! anything for it.
+//! The phone link over Nostr (v0.6.0; PROTOCOL.md, "Over Nostr", in mbdrivechains/freebank-phone): the protocol's
+//! frames, carried in Nostr events between this desktop's Nostr key and each phone's, through public relays. Nobody
+//! hosts anything for it. Since v0.6.8 it is the only link: the old relay's WebSocket is gone.
 //!
 //! The protocol above it is v1 unchanged (pairing, the KK session, the narrow door, Face ID, approvals, hosted
-//! wallets): this side turns events into the frames `Phone::handle_frame` takes from the relay link, and the frames
-//! `Phone` sends into events. Each phone connection is a channel: 16 random bytes the phone picks, mapped to a channel
+//! wallets): this side turns events into the frames `Phone::handle_frame` takes, and the frames `Phone` sends into
+//! events. Each phone connection is a channel: 16 random bytes the phone picks, mapped to a channel
 //! number from `CH_BASE` up. Frames carry a sequence number per channel and direction, since several relays deliver
 //! out of order and a session ends at any frame out of order: early ones wait (up to `GAP_SECS`), a gap that doesn't
 //! fill closes the channel, as a dropped WebSocket does. Frames too big for one event go in parts.
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-/// Channels over Nostr are numbered from here; the relay's are far below (it counts from at most 2^32).
+/// Channels over Nostr are numbered from here; the old relay's were far below (it counted from at most 2^32).
 pub const CH_BASE: u64 = 1 << 52;
 /// A frame longer than this (its JSON text) goes in parts, so no event's content passes the relays' usual limits.
 const PART: usize = 24_000;
@@ -31,7 +31,7 @@ const MAX_PARTS: u64 = 16;
 /// Early frames wait this long for the one before them.
 const GAP_SECS: u64 = 10;
 const MAX_EARLY: usize = 64;
-/// A channel with nothing either way for this long is forgotten (the relay's idle timeout).
+/// A channel with nothing either way for this long is forgotten (the old relay's idle timeout).
 const IDLE_SECS: u64 = 600;
 /// Channels at once, per paired phone key (the oldest gives way to a new one, review M2) and in all.
 const PER_KEY: usize = 8;
@@ -52,9 +52,9 @@ pub fn is_nostr(ch: u64) -> bool {
 }
 
 /// A sealed message's plaintext, padded with spaces (JSON ignores them) to 1, 4 or 16 KiB, and over Nostr (where big
-/// frames go in parts) to a multiple of 16 KiB: relays see a few sizes, not each message's. Over the relay nothing is
-/// padded past 16 KiB, so no frame passes its 64 KiB limit that didn't before (review L3). Ends that don't pad still read
-/// padded ones.
+/// frames go in parts) to a multiple of 16 KiB: relays see a few sizes, not each message's. On the tests' direct
+/// channels (the old relay's, whose 64 KiB limit this kept to, review L3) nothing is padded past 16 KiB. Ends that don't
+/// pad still read padded ones.
 pub fn padded(msg: &Value, nostr: bool) -> Vec<u8> {
     let mut b = msg.to_string().into_bytes();
     let to = match b.len() {
@@ -69,7 +69,7 @@ pub fn padded(msg: &Value, nostr: bool) -> Vec<u8> {
 }
 
 /// Only one FreeBank process answers over Nostr with this desktop's key: the app or its background part, whichever
-/// holds `phone/nostr.lock` (review M3; fb-relay's one host per room did this for the relay link). Held while the
+/// holds `phone/nostr.lock` (review M3; the old relay's one host per room did this for its link). Held while the
 /// process runs.
 #[cfg(unix)]
 fn take_lock(dir: &std::path::Path) -> Option<std::fs::File> {
@@ -85,27 +85,9 @@ fn take_lock(dir: &std::path::Path) -> Option<std::fs::File> {
     std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("nostr.lock")).ok()
 }
 
-/// Both links, fed from the phone's one outbox: frames for channels over Nostr go to `run_nostr`, the rest to the
-/// relay link. Ends when the relay link does (the background part gives the link back to the app then, L1).
+/// The link over Nostr, fed from the phone's one outbox: while a phone paired over it (or a pairing or invite over it
+/// is open), the relay pool, and the channels.
 pub async fn run(phone: Arc<Phone>, mut out: mpsc::UnboundedReceiver<Value>) {
-    let (to_relay, relay_rx) = mpsc::unbounded_channel();
-    let (to_nostr, nostr_rx) = mpsc::unbounded_channel();
-    let route = async move {
-        while let Some(f) = out.recv().await {
-            let nostr = f["ch"].as_u64().is_some_and(is_nostr);
-            let _ = if nostr { to_nostr.send(f) } else { to_relay.send(f) };
-        }
-    };
-    tokio::select! {
-        _ = super::link::run(phone.clone(), relay_rx) => {}
-        _ = run_nostr(phone, nostr_rx) => {}
-        _ = route => {}
-    }
-}
-
-/// The link over Nostr: while a phone paired over it (or a pairing or invite over it is open), the relay pool, and
-/// the channels.
-pub async fn run_nostr(phone: Arc<Phone>, mut out: mpsc::UnboundedReceiver<Value>) {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let gate = Arc::new(Gate::default());
     let mut lock: Option<std::fs::File> = None;
@@ -121,6 +103,17 @@ pub async fn run_nostr(phone: Arc<Phone>, mut out: mpsc::UnboundedReceiver<Value
         }
         if lock.is_none() {
             lock = take_lock(&phone.store.dir);
+            if lock.is_none() && !phone.is_background() {
+                // The app takes the link back from a background part that started after it (security review L1; the
+                // old relay's link did this when the part took its room).
+                if let Some(app_dir) = phone.store.dir.parent().map(|d| d.to_path_buf()) {
+                    // take_back waits up to 10 s for the part to stop: off the async workers.
+                    let took = tokio::task::spawn_blocking(move || super::background::take_back(&app_dir)).await;
+                    if matches!(took, Ok(Ok(Some(_)))) {
+                        lock = take_lock(&phone.store.dir);
+                    }
+                }
+            }
             if lock.is_none() {
                 phone.set_nostr_status("waiting", "Another FreeBank on this computer (its background part) has the link over Nostr.");
                 while out.try_recv().is_ok() {}
@@ -149,7 +142,7 @@ pub async fn run_nostr(phone: Arc<Phone>, mut out: mpsc::UnboundedReceiver<Value
                     refresh_gate(&phone, &gate);
                     if phone.nostr_listen() != relays || !phone.nostr_wanted() {
                         // What is queued goes first (revoking the last phone queues its "denied" and its close, then
-                        // wakes us), then the pool goes. The pause lets `run`'s router hand those over.
+                        // wakes us), then the pool goes. The pause lets those frames reach the outbox first.
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         while let Ok(f) = out.try_recv() {
                             chans.outgoing(&phone, &pool, &f);
@@ -449,7 +442,7 @@ mod tests {
             assert_eq!(p.len(), want, "{letters}");
             assert_eq!(serde_json::from_slice::<Value>(&p).unwrap(), v);
         }
-        // Over the relay, nothing past 16 KiB is padded (L3): a frame stays under its 64 KiB limit if it was.
+        // On the direct channels (the old relay's), nothing past 16 KiB is padded (L3).
         assert_eq!(padded(&json!({"x": "a".repeat(20_000)}), false).len(), 20_008);
         assert_eq!(padded(&json!({"x": "a".repeat(5000)}), false).len(), 16_384);
     }

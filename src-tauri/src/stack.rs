@@ -351,7 +351,7 @@ async fn enforcer_tip(port: u16) -> Option<u64> {
 /// only when the peer announces its next block (minutes on easynet). At most `secs`; with `while_moving` (an install
 /// from a snapshot) for as long as the node or the enforcer still moves on (23 minutes on beta in our test), and `secs`
 /// once neither does. A full sync takes days, so that install waits `secs` only. True once caught up.
-async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64, while_moving: bool) -> bool {
+async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64, while_moving: bool, patient: bool) -> bool {
     let started = Instant::now();
     let mut until = started + Duration::from_secs(secs);
     let mut last: (u64, Option<u64>) = (0, None);
@@ -388,12 +388,38 @@ async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64, while_moving: boo
             return false;
         }
         // No peer in 30 seconds: this computer is offline, or the network's seed is down. Waiting longer only holds the
-        // FreeBank node back (review finding 7).
-        if Instant::now() > until || (peers == 0 && started.elapsed() > Duration::from_secs(30)) {
+        // FreeBank node back (review finding 7), unless it stopped uncleanly (`patient`, `wait_caught_up`): then its
+        // start waits, as a computer just switched on may take longer to reach its network.
+        if Instant::now() > until || (!patient && peers == 0 && started.elapsed() > Duration::from_secs(30)) {
             return false;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// The app's own eCash node and enforcer, when the FreeBank node uses them: (its settings, its release).
+async fn own_in_use(mgr: &NodeManager) -> Option<(StackSettings, &'static Stack)> {
+    let s = mgr.settings.lock().await.clone();
+    let st = s.stack.clone().filter(|st| st.in_use(&s))?;
+    Some((st, network::current().stack?))
+}
+
+/// The FreeBank node replays its last blocks against the eCash view as it starts after an unclean stop, and a view still
+/// behind marks good blocks invalid (2026-10-25: eleven hours of redialling the seed). So that start waits for the app's
+/// own eCash node and enforcer to catch up with their peers, up to `secs`, however long the peers take to answer
+/// (v0.6.8). True when they have, or when the app runs none of its own.
+pub async fn wait_caught_up(mgr: &NodeManager, secs: u64) -> bool {
+    match own_in_use(mgr).await {
+        Some((st, s)) => wait_synced(&st, s, secs, false, true).await,
+        None => true,
+    }
+}
+
+/// Whether the app's own eCash node and enforcer have caught up with their peers, looked at once; None when the FreeBank
+/// node doesn't use them.
+pub async fn caught_up(mgr: &NodeManager) -> Option<bool> {
+    let (st, s) = own_in_use(mgr).await?;
+    Some(wait_synced(&st, s, 0, false, false).await)
 }
 
 fn spawn_detached(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
@@ -606,8 +632,8 @@ async fn start_inner(mgr: &NodeManager, why: Why) -> Result<(), String> {
         }
     });
     let from_snapshot = st.start.as_deref().is_some_and(|x| x != "full");
-    if !wait_synced(&st, s, if installing { 900 } else { 120 }, installing && from_snapshot).await {
-        crate::activity::note("stack: not caught up yet; FreeBank starts anyway");
+    if !wait_synced(&st, s, if installing { 900 } else { 120 }, installing && from_snapshot, false).await {
+        crate::activity::note("stack: not caught up yet; FreeBank's node starts anyway (unless it stopped uncleanly)");
     }
     Ok(())
 }

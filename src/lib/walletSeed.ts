@@ -84,6 +84,12 @@ export interface WordsCheck {
   astray?: boolean;
 }
 
+/** v0.6.8's two checks in Settings › Wallet: the answer, in words. */
+export interface Checked {
+  yes: boolean;
+  said: string;
+}
+
 export interface Revealed {
   words: string[] | null;
   xprv: string | null;
@@ -193,6 +199,12 @@ export const walletSeed = {
   wordsConfirmed: () => tauriInvoke("wallet_words_confirmed") as Promise<void>,
   checkWords: (words: string) => tauriInvoke("seed_check_words", { words }) as Promise<WordsCheck>,
   reveal: (passphrase: string, what: "words" | "xprv") => tauriInvoke("wallet_reveal", { passphrase, what }) as Promise<Revealed>,
+  /** v0.6.8: whether this wallet makes `address`: a FreeBank one by the node, an eCash one (bc1…, tb1…) from the words,
+   * which the passphrase opens. */
+  addressMine: (address: string, passphrase?: string) =>
+    tauriInvoke("wallet_address_mine", { address, passphrase: passphrase ?? null }) as Promise<Checked>,
+  /** v0.6.8: whether typed words are this wallet's recovery words. Nothing is restored. */
+  wordsMatch: (words: string) => tauriInvoke("wallet_words_match", { words }) as Promise<Checked>,
   /** On the clipboard as a numbered table and as plain words; cleared after 60 s if still there. */
   copyWords: (words: string[]) => tauriInvoke("copy_words", { words }) as Promise<void>,
   /** v0.4.10: the clipboard holds FreeBank's own copy of the words, untouched (Rust looks, not the window). */

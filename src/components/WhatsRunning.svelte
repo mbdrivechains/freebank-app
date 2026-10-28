@@ -1,5 +1,5 @@
 <script lang="ts">
-  // What's running where (v0.2.5 item 14): your phones, the relay, this computer (the app, the phone link, the FreeBank node), the eCash
+  // What's running where (v0.2.5 item 14): your phones, the Nostr relays, this computer (the app, the phone link, the FreeBank node), the eCash
   // node and enforcer, and the FreeBank network. Each with a dot, and what happens to it when you quit.
   import { onDestroy, onMount } from "svelte";
   import type { NodeStatus } from "../lib/node";
@@ -36,7 +36,7 @@
   const here = (addr: string) => ["127.0.0.1", "localhost", "::1"].includes(host(addr));
 
   $: online = devices.filter((d) => d.online).length;
-  $: relayUp = relay?.state === "online";
+  $: relayUp = relay?.nostr.state === "online";
   $: nodeWord =
     st.state === "up" ? "running" : st.state === "warming" || st.state === "busy" ? "starting" : st.state === "locked" ? "running" : "stopped";
   $: nodeAfter = external
@@ -65,7 +65,7 @@
     </li>
     {#if devices.length}
       <li class="link small muted">
-        through the relay at {relay ? host(relay.url) : "…"} · {relayUp ? "connected" : (relay?.state ?? "…")}
+        over Nostr, through {relay ? `${relay.nostr_relays.length} public relays` : "…"} · {relayUp ? "connected" : (relay?.nostr.state ?? "…")}
       </li>
     {:else}
       <li class="link"></li>

@@ -1224,7 +1224,7 @@ pub fn iso_utc(unix: i64) -> String {
 
 /// A CSV field: quoted if it holds a comma, a quote or a line break. Text a spreadsheet would read
 /// as a formula gets a leading apostrophe (amounts are numbers, and never pass through here).
-fn csv_text(f: &str) -> String {
+pub(crate) fn csv_text(f: &str) -> String {
     let f = if f.starts_with(['=', '+', '-', '@']) { format!("'{}", f) } else { f.to_string() };
     if f.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", f.replace('"', "\"\""))
@@ -1233,9 +1233,10 @@ fn csv_text(f: &str) -> String {
     }
 }
 
-/// The CSV for History's export: a header, then one line per transaction.
-pub fn csv(items: &[HistoryItem]) -> String {
-    let mut s = String::from("txid,time,category,amount,fee,confirmations,address,speed,replaced_by\n");
+/// The CSV for History's export: a header, then one line per transaction. `notes`: what the owner noted for addresses
+/// they gave out (v0.6.8, given.rs), by address.
+pub fn csv(items: &[HistoryItem], notes: &HashMap<String, String>) -> String {
+    let mut s = String::from("txid,time,category,amount,fee,confirmations,address,speed,replaced_by,note\n");
     for i in items {
         let fields = [
             csv_text(&i.txid),
@@ -1247,6 +1248,7 @@ pub fn csv(items: &[HistoryItem]) -> String {
             csv_text(i.address.as_deref().unwrap_or("")),
             csv_text(i.speed.map_or("", |s| s.label())),
             csv_text(i.replaced_by.as_deref().unwrap_or("")),
+            csv_text(i.address.as_deref().and_then(|a| notes.get(a)).map_or("", |n| n.as_str())),
         ];
         s.push_str(&fields.join(","));
         s.push('\n');
@@ -1257,8 +1259,13 @@ pub fn csv(items: &[HistoryItem]) -> String {
 /// Save `text` as freebank-history-<day>.csv in `folder` (then -2, -3, …: never over another file),
 /// readable by this user only.
 pub fn save_csv(folder: &Path, text: &str, day: &str) -> Result<PathBuf, String> {
+    save_csv_as(folder, "freebank-history", text, day)
+}
+
+/// The same under another name: `<base>-<day>.csv` (the eCash wallets' payments, v0.6.8).
+pub fn save_csv_as(folder: &Path, base: &str, text: &str, day: &str) -> Result<PathBuf, String> {
     for n in 1..1000 {
-        let name = if n == 1 { format!("freebank-history-{}.csv", day) } else { format!("freebank-history-{}-{}.csv", day, n) };
+        let name = if n == 1 { format!("{}-{}.csv", base, day) } else { format!("{}-{}-{}.csv", base, day, n) };
         let path = folder.join(name);
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -1421,8 +1428,16 @@ pub async fn history_csv(app: AppHandle, client: State<'_, ClientState>, mgr: St
         let mut c = client.lock().await;
         all_history(&mut c, &log).await?
     };
+    let folder = export_folder(&app, &mgr)?;
+    let day = iso_utc(now_unix() as i64);
+    let file = save_csv(&folder, &csv(&items, &crate::given::notes(&mgr.app_dir)), &day[..10])?;
+    Ok(CsvSaved { path: file.to_string_lossy().into_owned(), rows: items.len() })
+}
+
+/// Where an export goes: Documents, else the home folder; a developer's run with FREEBANK_APP_DIR, that folder.
+pub(crate) fn export_folder(app: &AppHandle, mgr: &NodeManager) -> Result<PathBuf, String> {
     let path = app.path();
-    let folder = match std::env::var_os("FREEBANK_APP_DIR") {
+    Ok(match std::env::var_os("FREEBANK_APP_DIR") {
         Some(_) => {
             std::fs::create_dir_all(&mgr.app_dir).map_err(|e| format!("FreeBank couldn't make {}: {}", mgr.app_dir.display(), e))?;
             mgr.app_dir.clone()
@@ -1433,10 +1448,12 @@ pub async fn history_csv(app: AppHandle, client: State<'_, ClientState>, mgr: St
             .filter(|d| d.is_dir())
             .or_else(|| path.home_dir().ok())
             .ok_or("FreeBank couldn't find your Documents folder or your home folder.")?,
-    };
-    let day = iso_utc(now_unix() as i64);
-    let file = save_csv(&folder, &csv(&items), &day[..10])?;
-    Ok(CsvSaved { path: file.to_string_lossy().into_owned(), rows: items.len() })
+    })
+}
+
+/// Today, UTC, as `YYYY-MM-DD`: an export's file name.
+pub(crate) fn today() -> String {
+    iso_utc(now_unix() as i64)[..10].to_string()
 }
 
 #[cfg(test)]
@@ -2275,11 +2292,12 @@ mod tests {
             max: false, change: 5, replaced_by: Some("9".repeat(64)), replaces: None,
         }];
         let items = all_history(&mut c, &log).await.unwrap();
-        let text = csv(&items);
+        let notes = HashMap::from([(TO.to_string(), "rent, October".to_string())]);
+        let text = csv(&items, &notes);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "txid,time,category,amount,fee,confirmations,address,speed,replaced_by");
-        assert_eq!(lines[1], format!("{:064x},2026-09-27T19:06:41Z,send,-0.25000000,0.00000226,1,{},Within an hour,{}", 2, TO, "9".repeat(64)));
-        assert_eq!(lines[2], format!("{:064x},2026-09-27T19:06:40Z,receive,1.50000000,,2,{},,", 1, TO));
+        assert_eq!(lines[0], "txid,time,category,amount,fee,confirmations,address,speed,replaced_by,note");
+        assert_eq!(lines[1], format!("{:064x},2026-09-27T19:06:41Z,send,-0.25000000,0.00000226,1,{},Within an hour,{},\"rent, October\"", 2, TO, "9".repeat(64)));
+        assert_eq!(lines[2], format!("{:064x},2026-09-27T19:06:40Z,receive,1.50000000,,2,{},,,\"rent, October\"", 1, TO));
         assert_eq!(lines.len(), 3);
         // Odd text is quoted, and nothing reads as a formula.
         assert_eq!(csv_text("a,b"), "\"a,b\"");
@@ -2395,7 +2413,7 @@ mod tests {
         let old = h.items.iter().find(|i| i.txid == sent.txid && i.category == "send").expect("the old send in History");
         assert_eq!(old.replaced_by.as_deref(), Some(b.txid.as_str()));
         let all = all_history(&mut c, &log.read().unwrap()).await.unwrap();
-        let text = csv(&all);
+        let text = csv(&all, &HashMap::new());
         assert!(text.lines().any(|l| l.starts_with(&b.txid) && l.contains(",send,") && l.contains("Next block")));
         println!("history: {} on page 0 (more: {}), {} in the CSV", h.items.len(), h.more, all.len());
 

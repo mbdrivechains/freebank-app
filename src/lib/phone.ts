@@ -1,4 +1,4 @@
-// The phone relay (desktop app only): typed wrappers over the Rust phone_* commands and its events.
+// The phone link (desktop app only): typed wrappers over the Rust phone_* commands and its events.
 
 import { tauriInvoke } from "./api";
 import { BASE_TICKER } from "./brand";
@@ -54,7 +54,7 @@ export interface PhoneDevice {
   /** Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too. */
   face_id: boolean;
   face_id_sends: boolean;
-  /** Paired over Nostr (v0.6.0), not the relay. */
+  /** Paired over Nostr (v0.6.0). False: over the old relay, gone since v0.6.8: pair it again. */
   nostr: boolean;
 }
 
@@ -122,15 +122,11 @@ export interface Confirmed {
 }
 
 export interface RelayStatus {
-  url: string;
-  room: string;
-  /** "off" | "connecting" | "online" | "retrying" */
-  state: string;
-  detail: string;
   /** phones waiting for "Allow this phone?", oldest first; allowing one refuses the rest */
   pair_pending: PairAsk[];
   held: HeldSend[];
-  /** The link over Nostr (v0.6.0): its state, relays, and the phone page's address. */
+  /** The link over Nostr (v0.6.0): its state ("off" | "waiting" | "connecting" | "online"), relays, and the phone
+   * page's address. */
   nostr: { state: string; detail: string };
   nostr_relays: string[];
   page: string;
@@ -226,8 +222,8 @@ export const phone = {
   loginSet: (on: boolean) => tauriInvoke("phone_login_set", { on }) as Promise<void>,
   /** The close notice's "Keep the phone connected": start the background part, then close. */
   keepConnectedQuit: () => tauriInvoke("phone_keep_connected_quit") as Promise<void>,
-  /** Over Nostr (v0.6.0) unless `over` is "relay" (the old relay, for this release). */
-  pairStart: (over?: "relay") => tauriInvoke("phone_pair_start", { over: over ?? null }) as Promise<{ url: string; expires: number }>,
+  /** Over Nostr (the old relay went in v0.6.8). */
+  pairStart: () => tauriInvoke("phone_pair_start") as Promise<{ url: string; expires: number }>,
   pairAnswer: (id: string, allow: boolean) => tauriInvoke("phone_pair_answer", { id, allow }) as Promise<void>,
   approveInfo: () => tauriInvoke("phone_approve_info") as Promise<ApproveInfo>,
   /** `over` in sECX (null: off). Off or a higher amount waits for a phone's Face ID; with `words`, it happens a day
@@ -250,7 +246,6 @@ export const phone = {
   sendOn: (passphrase: string) => tauriInvoke("phone_send_on", { passphrase }) as Promise<void>,
   sendOff: () => tauriInvoke("phone_send_off") as Promise<void>,
   status: () => tauriInvoke("phone_relay_status") as Promise<RelayStatus>,
-  setRelay: (url: string) => tauriInvoke("phone_set_relay", { url }) as Promise<void>,
   setNostrRelays: (relays: string[]) => tauriInvoke("phone_set_nostr_relays", { relays }) as Promise<void>,
   recentSends: () => tauriInvoke("phone_recent_sends") as Promise<PhoneSend[]>,
   hosted: () => tauriInvoke("phone_hosted") as Promise<HostedInfo>,

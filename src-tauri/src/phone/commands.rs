@@ -1,5 +1,5 @@
 //! What the Settings screen's Phone section calls, and the Tauri glue: the node RPC behind the
-//! narrow door, events to the screen, and starting the relay link.
+//! narrow door, events to the screen, and starting the link over Nostr.
 
 use super::{
     store::to_ecx, unix_now, Ask, BoxFuture, Confirmed, Events, HeldView, LinkStatus, Phone, Rpc, RpcFail,
@@ -14,12 +14,12 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
-/// The phone relay, or why it couldn't start (e.g. the desktop key couldn't be written).
+/// The phone link, or why it couldn't start (e.g. the desktop key couldn't be written).
 pub struct PhoneState(pub Result<Arc<Phone>, String>);
 
 impl PhoneState {
     pub fn get(&self) -> Result<&Arc<Phone>, String> {
-        self.0.as_ref().map_err(|e| format!("The phone relay isn't available: {e}"))
+        self.0.as_ref().map_err(|e| format!("The phone link isn't available: {e}"))
     }
 
     /// For what "Approve sends on my phone" guards: the phone link, or None when it isn't set up. One that failed to
@@ -79,7 +79,7 @@ impl Events for AppEvents {
     }
 }
 
-/// Load the phone state and start the relay link (it stays idle until a phone is paired) and the
+/// Load the phone state and start the link over Nostr (it stays idle until a phone is paired) and the
 /// clock that expires held sends.
 pub fn start(
     app: &AppHandle,
@@ -215,10 +215,10 @@ pub struct PairStart {
     pub expires: u64,
 }
 
-/// A pairing code. Over Nostr (v0.6.0) unless `over` is "relay": the old relay stays for this release.
+/// A pairing code, over Nostr.
 #[tauri::command]
-pub fn phone_pair_start(phone: State<'_, PhoneState>, over: Option<String>) -> Result<PairStart, String> {
-    let (url, expires) = phone.get()?.pair_start(over.as_deref() != Some("relay"))?;
+pub fn phone_pair_start(phone: State<'_, PhoneState>) -> Result<PairStart, String> {
+    let (url, expires) = phone.get()?.pair_start()?;
     Ok(PairStart { url, expires })
 }
 
@@ -371,7 +371,7 @@ pub struct DeviceView {
     /// Face ID: the phone added a passkey; `face_id_sends`, each send asks for it too.
     pub face_id: bool,
     pub face_id_sends: bool,
-    /// Paired over Nostr (v0.6.0), not the relay.
+    /// Paired over Nostr (v0.6.0). False: over the old relay, gone since v0.6.8: pair it again.
     pub nostr: bool,
 }
 
@@ -462,10 +462,6 @@ pub fn phone_send_off(phone: State<'_, PhoneState>) -> Result<(), String> {
 
 #[derive(Serialize)]
 pub struct RelayStatus {
-    pub url: String,
-    pub room: String,
-    #[serde(flatten)]
-    pub link: LinkStatus,
     /// The link over Nostr (v0.6.0): its state, relays, and the phone page's address.
     pub nostr: LinkStatus,
     pub nostr_relays: Vec<String>,
@@ -480,20 +476,12 @@ pub struct RelayStatus {
 pub fn phone_relay_status(phone: State<'_, PhoneState>) -> Result<RelayStatus, String> {
     let p = phone.get()?;
     Ok(RelayStatus {
-        url: p.relay_url(),
-        room: p.room.clone(),
-        link: p.status(),
         nostr: p.nostr_status(),
         nostr_relays: p.nostr_relays(),
         page: p.page(),
         pair_pending: p.pair_pending(),
         held: p.held(),
     })
-}
-
-#[tauri::command]
-pub fn phone_set_relay(phone: State<'_, PhoneState>, url: String) -> Result<(), String> {
-    phone.get()?.set_relay(&url)
 }
 
 #[tauri::command]

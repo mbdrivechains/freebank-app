@@ -21,11 +21,11 @@ pub enum Refused {
     Counter,
 }
 
-/// The origin and relying party the page has, from the relay URL the desktop uses:
-/// `wss://host/ws` gives ("https://host", "host"); `ws://localhost:8480/ws` gives
-/// ("http://localhost:8480", "localhost"). Parsed as browsers do (punycode, case, default ports,
-/// security review I2), so the origin is the one the page's assertions carry.
-pub fn origin_for(relay_url: &str) -> Option<(String, String)> {
+/// The origin and relying party a page has, from a ws(s):// address (the old relay's URL until v0.6.8;
+/// `origin_for_page` turns the page's own address into one): `wss://host/ws` gives ("https://host", "host");
+/// `ws://localhost:8480/ws` gives ("http://localhost:8480", "localhost"). Parsed as browsers do (punycode, case,
+/// default ports, security review I2), so the origin is the one the page's assertions carry.
+fn origin_for(relay_url: &str) -> Option<(String, String)> {
     let u = url::Url::parse(relay_url).ok()?;
     let scheme = match u.scheme() {
         "wss" => "https",
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn origins_from_relay_urls() {
+    fn origins_of_the_page() {
         assert_eq!(origin_for("wss://app.ecxfreebank.com/ws"), Some(("https://app.ecxfreebank.com".into(), "app.ecxfreebank.com".into())));
         assert_eq!(origin_for("ws://localhost:8480/ws"), Some(("http://localhost:8480".into(), "localhost".into())));
         assert_eq!(origin_for("wss://App.EcxFreeBank.com:443/ws"), Some(("https://app.ecxfreebank.com".into(), "app.ecxfreebank.com".into())));

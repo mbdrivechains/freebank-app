@@ -2,6 +2,7 @@
 // ECX and sECX are at par, so the sECX helpers in amount.ts format and parse them too.
 
 import { tauriInvoke } from "./api";
+import type { CsvSaved } from "./send";
 
 export interface Balance {
   /** Spendable: confirmed, and the wallet's own unconfirmed change. */
@@ -49,6 +50,8 @@ export const ecashStatus = () => tauriInvoke("ecash_status") as Promise<EcashSta
 export const ecashSetup = (passphrase: string) => tauriInvoke("ecash_setup", { passphrase }) as Promise<EcashStatus>;
 export const ecashReceive = () => tauriInvoke("ecash_receive") as Promise<string>;
 export const ecashHistory = () => tauriInvoke("ecash_history") as Promise<EcashTx[]>;
+/** v0.6.8: every payment of both eCash wallets as a CSV file in Documents; says where. */
+export const ecashHistoryCsv = () => tauriInvoke("ecash_history_csv") as Promise<CsvSaved>;
 /** No amount: everything the main wallet can spend, less the fee. */
 export const ecashPrepare = (address: string, amount: string | null, toBids: boolean) =>
   tauriInvoke("ecash_send_prepare", { address, amount, toBids }) as Promise<EcashQuote>;

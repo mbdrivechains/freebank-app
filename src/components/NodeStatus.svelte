@@ -242,6 +242,7 @@
       <p class="hint bg-note">Running in the background since {when(st.background_since)}.</p>
     {/if}
 
+    {#if st.rechecked}<p class="hint rechecked" data-testid="node-rechecked">{st.rechecked}</p>{/if}
     {#if st.state === "up"}
       {#if st.reindexing}<p class="hint">{REBUILDING}</p>{/if}
       <div class="big-stat">
@@ -483,6 +484,9 @@
 {/if}
 
 <style>
+  .rechecked {
+    margin-bottom: 12px;
+  }
   /* A path wraps after a slash (PathText), never mid-name */
   .path-dd {
     word-break: normal;

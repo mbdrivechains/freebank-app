@@ -46,6 +46,8 @@
   import { openReport, reportDraft } from "./lib/report";
   import SecurityAlerts from "./components/SecurityAlerts.svelte";
   import StackAlert from "./components/StackAlert.svelte";
+  import NetworkClosed from "./components/NetworkClosed.svelte";
+  import GivenAddresses from "./components/GivenAddresses.svelte";
   import DepositPanel from "./components/DepositPanel.svelte";
   import WithdrawPanel from "./components/WithdrawPanel.svelte";
   import EcashPanel from "./components/EcashPanel.svelte";
@@ -570,6 +572,7 @@
         }}
       />
     {:else if currentView === "home"}
+      {#if !isPWA}<NetworkClosed />{/if}
       <WalletBanner />
       {#if localNode && !isPWA}<HouseDue />{/if}
       {#if localNode && !isPWA}<StackAlert />{/if}
@@ -609,6 +612,7 @@
       {#if settingsPart === "wallet" && localNode}
         <WalletsCard />
         <WalletSettings />
+        {#if !isPWA}<GivenAddresses />{/if}
       {:else if settingsPart === "phone"}
         {#if !isPWA}<PhoneSettings />{/if}
       {:else if settingsPart === "node"}

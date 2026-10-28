@@ -20,7 +20,7 @@
 //!
 //! It writes `<app data>/phone.pid`. When the app opens, it takes the link back: it stops the
 //! background part (SIGTERM, and only a process whose command line is this one) and waits for it, so
-//! two desktops never take turns at the relay room. "Stop everything and close" stops the node and
+//! two desktops never take turns at the link (`phone/nostr.lock`). "Stop everything and close" stops the node and
 //! starts no background part. Never SIGKILL.
 
 use super::{commands::NodeRpc, unix_now, Events, Phone, RpcFail};
@@ -281,7 +281,7 @@ async fn run(app_dir: PathBuf, pass: Option<Zeroizing<String>>, light: bool) -> 
             }
         });
     }
-    // Until stopped, or until the app takes the relay room back (the link ends then, L1).
+    // Until stopped: the app takes the link back with SIGTERM (`take_back`, L1).
     tokio::select! {
         _ = stopped() => {}
         _ = link => {}

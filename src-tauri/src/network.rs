@@ -107,6 +107,9 @@ pub struct Network {
     pub l1: &'static str,
     /// Offered by the network switch (mainnet: from fork day).
     pub ready: bool,
+    /// The network has closed, since when (in words): it is no longer offered, and an app still on it says so (v0.6.8:
+    /// beta, closed 2026-10-26).
+    pub closed: Option<&'static str>,
     // ---- The FreeBank node
     pub line: Line,
     /// The start of its archives' names: "freebank", or "freebank-easynet" (freebankd's easynet build, the same release).
@@ -173,6 +176,7 @@ pub static BETA: Network = Network {
     name: "Beta",
     l1: "eCash beta",
     ready: true,
+    closed: Some("26 October 2026"),
     line: Line::V02,
     asset: "freebank",
     net_folder: None,
@@ -292,6 +296,7 @@ pub static EASYNET: Network = Network {
     name: "easynet",
     l1: "easynet",
     ready: true,
+    closed: None,
     line: Line::V02,
     asset: "freebank-easynet",
     net_folder: Some("easynet"),
@@ -321,6 +326,7 @@ pub static MAINNET: Network = Network {
     name: "Mainnet",
     l1: "eCash",
     ready: false,
+    closed: None,
     line: Line::V1,
     asset: "freebank",
     net_folder: Some("mainnet"),
@@ -376,9 +382,9 @@ pub fn chosen(top: &Path) -> &'static Network {
     word.as_deref().and_then(by_id).filter(|n| n.ready).unwrap_or_else(|| default_for(top))
 }
 
-/// With nothing chosen: beta where the app has run on beta (its settings are in the top folder), else easynet, where a
-/// newcomer starts from v0.6.2: FreeBank sets it all up in minutes, and the faucet gives test coins (in place of beta's
-/// demo).
+/// With nothing chosen: beta where the app has run on beta (its settings are in the top folder; it says beta has closed
+/// and offers easynet), else easynet, where a newcomer starts from v0.6.2: FreeBank sets it all up in minutes, and the
+/// faucet gives test coins (in place of beta's demo).
 fn default_for(top: &Path) -> &'static Network {
     if present(top, &BETA) {
         &BETA
@@ -438,6 +444,9 @@ pub fn choose(top: &Path, n: &Network) -> Result<(), String> {
     if !n.ready {
         return Err(format!("FreeBank doesn't run on {} yet.", n.name));
     }
+    if let Some(when) = n.closed {
+        return Err(format!("FreeBank's {} closed on {when}.", n.name.to_lowercase()));
+    }
     std::fs::create_dir_all(top).map_err(|e| e.to_string())?;
     let json = serde_json::to_vec_pretty(&Choice { network: n.id.into() }).map_err(|e| e.to_string())?;
     std::fs::write(top.join("network.json"), json).map_err(|e| e.to_string())
@@ -496,12 +505,17 @@ pub struct Info {
     pub faucet: bool,
     /// The app can install this network's eCash node and enforcer itself.
     pub stack: bool,
-    /// Every network, for the switch: (id, name, offered).
+    /// This network has closed, since when (in words): the screens say so and offer easynet.
+    pub closed: Option<&'static str>,
+    /// Every network, for the switch: (id, name, offered). A closed one only while the app is on it, not offered.
     pub all: Vec<(&'static str, &'static str, bool)>,
 }
 
 pub fn info() -> Info {
-    let n = current();
+    info_for(current())
+}
+
+fn info_for(n: &'static Network) -> Info {
     Info {
         id: n.id,
         name: n.name,
@@ -509,7 +523,8 @@ pub fn info() -> Info {
         explorer: n.explorer,
         faucet: n.faucet.is_some(),
         stack: n.stack.is_some(),
-        all: ALL.iter().map(|x| (x.id, x.name, x.ready)).collect(),
+        closed: n.closed,
+        all: ALL.iter().filter(|x| x.closed.is_none() || x.id == n.id).map(|x| (x.id, x.name, x.ready && x.closed.is_none())).collect(),
     }
 }
 
@@ -599,8 +614,10 @@ mod tests {
         let d = std::env::temp_dir().join(format!("fbnet-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(chosen(&d).id, "easynet", "a newcomer starts on easynet (v0.6.2)");
-        choose(&d, &BETA).unwrap();
-        assert_eq!(chosen(&d).id, "beta");
+        assert!(choose(&d, &BETA).unwrap_err().contains("closed"), "beta closed on 26 October 2026 (v0.6.8)");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("network.json"), r#"{"network":"beta"}"#).unwrap();
+        assert_eq!(chosen(&d).id, "beta", "an app on beta opens there and says it has closed");
         choose(&d, &EASYNET).unwrap();
         assert_eq!(chosen(&d).id, "easynet");
         assert!(choose(&d, &MAINNET).is_err(), "mainnet isn't offered before the fork");
@@ -615,6 +632,16 @@ mod tests {
         std::fs::write(d.join("network.json"), r#"{"network":"nowhere"}"#).unwrap();
         assert_eq!(chosen(&d).id, "beta");
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn beta_has_closed() {
+        let on_beta = info_for(&BETA);
+        assert_eq!(on_beta.closed, Some("26 October 2026"));
+        assert_eq!(on_beta.all, vec![("beta", "Beta", false), ("easynet", "easynet", true), ("mainnet", "Mainnet", false)]);
+        let on_easynet = info_for(&EASYNET);
+        assert_eq!(on_easynet.closed, None);
+        assert!(on_easynet.all.iter().all(|(id, ..)| *id != "beta"), "the switch no longer offers beta");
     }
 
     #[test]

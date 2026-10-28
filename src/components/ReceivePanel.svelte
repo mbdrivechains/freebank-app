@@ -6,12 +6,15 @@
   import { writable } from "svelte/store";
   import QrCode from "./QrCode.svelte";
   import FaucetAsk from "./FaucetAsk.svelte";
+  import AddressNote from "./AddressNote.svelte";
   import { network } from "../lib/network";
   import { api, tauriInvoke } from "../lib/api";
   import { BASE_TICKER } from "../lib/brand";
   import { nice } from "../lib/errors";
   import { withUnlock } from "../lib/wallet";
   import { walletList } from "../lib/wallets";
+  // The PWA (a browser on the node) keeps no list of addresses given out.
+  const isPWA = api.isPWA();
 
   export let canShowAddresses = true;
 
@@ -92,6 +95,7 @@
         <code>{address}</code>
         <button on:click={copy}>{copied ? "Copied" : "Copy"}</button>
       </div>
+      {#if !isPWA}<AddressNote {address} kind="freebank" />{/if}
     {:else if busy}
       <p class="muted small">Getting your address…</p>
     {/if}

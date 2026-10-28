@@ -1021,22 +1021,27 @@ pub async fn run(mgr: &NodeManager, places: Places, ticks: Vec<Tick>) -> Result<
 }
 
 /// How the app itself would go, unless another network's data is still on this computer (v0.5.0): then the app stays,
-/// and the screen names that network ("network", its name in `path`). After a network's own Obliterate the app opens on
-/// beta next time.
+/// and the screen names that network ("network", its name in `path`). After a network's own Obliterate the next launch
+/// takes the default (beta where its data is, which says beta has closed, v0.6.8), and the screen names the one that
+/// opens; with no other network's data left, the app can go too.
 fn remove_app_here(app_dir: &Path) -> RemoveApp {
     let here = crate::network::current();
     let top = crate::network::top_of(app_dir);
+    let left: Vec<&'static crate::network::Network> =
+        crate::network::ALL.iter().copied().filter(|n| n.id != here.id && crate::network::present(&top, n)).collect();
     if here.id != crate::network::BETA.id {
-        let _ = crate::network::choose(&top, &crate::network::BETA);
-        return RemoveApp { kind: "network", path: Some(crate::network::BETA.name.into()), can_remove: false };
+        // The next launch takes the default: the network named here, the one it opens on.
+        let _ = std::fs::remove_file(top.join("network.json"));
+        if left.is_empty() {
+            return how_to_remove_app();
+        }
+        let next = crate::network::chosen(&top);
+        let name = if left.iter().any(|n| n.id == next.id) { next.name } else { left[0].name };
+        return RemoveApp { kind: "network", path: Some(name.into()), can_remove: false };
     }
-    let left: Vec<&str> = crate::network::ALL
-        .iter()
-        .filter(|n| n.id != here.id && crate::network::present(&top, n))
-        .map(|n| n.name)
-        .collect();
     if !left.is_empty() {
-        return RemoveApp { kind: "network", path: Some(left.join(" and ")), can_remove: false };
+        let names: Vec<&str> = left.iter().map(|n| n.name).collect();
+        return RemoveApp { kind: "network", path: Some(names.join(" and ")), can_remove: false };
     }
     how_to_remove_app()
 }
