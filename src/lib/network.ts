@@ -182,6 +182,8 @@ export const stack = {
 
 /** What a plain start says while a chosen snapshot waits to load (stack.rs SNAPSHOT_PENDING). */
 export const SNAPSHOT_PENDING_START = "FreeBank's eCash node hasn't loaded its snapshot yet.";
+/** What a start says when FreeBank pins a newer release of the eCash node (stack.rs start_inner); setup offers Update. */
+export const NEWER_NODE_START = "FreeBank has a newer ";
 
 /** "830 GB", "9.4 GB", "327 MB". */
 export function gigabytes(n: number | null | undefined): string {

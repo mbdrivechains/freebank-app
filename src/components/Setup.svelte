@@ -33,6 +33,7 @@
     stackStages,
     switchNetwork,
     SNAPSHOT_PENDING_START,
+    NEWER_NODE_START,
     type Remote,
     type StackProgress,
     type StackStatus,
@@ -191,8 +192,9 @@
           await ownStack.start();
           stack = await node.stackCheck();
         } catch (e) {
-          // A snapshot waiting to load: its card offers Continue (v0.5.1).
-          if (!String(e).startsWith(SNAPSHOT_PENDING_START)) startError = String(e);
+          // A snapshot waiting to load: its card offers Continue (v0.5.1). A newer node pinned: its card offers Update
+          // (v0.6.7; before, this said to update in Settings, at the foot of the screen).
+          if (![SNAPSHOT_PENDING_START, NEWER_NODE_START].some((m) => String(e).startsWith(m))) startError = String(e);
         }
       }
       if (!stack.found && $network.stack) {
@@ -615,6 +617,16 @@
             </p>
             <div class="row-actions">
               <button on:click={() => installOwn(true)} disabled={checking} data-testid="own-stack-continue">Continue</button>
+              <button class="secondary danger-text" on:click={removeOwn} disabled={removing || checking}>{removing ? "Stopping…" : "Stop and delete"}</button>
+            </div>
+          {:else if own?.installed && own.update && !own.node_up}
+            <!-- A newer release pinned (v0.6.7): this one doesn't start, so Update is the way on. -->
+            <p data-testid="own-stack-update">
+              FreeBank has a newer {$network.l1} node, {own.update}. Updating puts it in place of the stopped one and starts
+              it. The blocks it has stay{#if own.used != null}{" "}({gigabytes(own.used)}){/if}.
+            </p>
+            <div class="row-actions">
+              <button on:click={() => installOwn(true)} disabled={checking} data-testid="own-stack-update-go">Update to {own.update}</button>
               <button class="secondary danger-text" on:click={removeOwn} disabled={removing || checking}>{removing ? "Stopping…" : "Stop and delete"}</button>
             </div>
           {:else if own?.installed}

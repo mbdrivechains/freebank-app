@@ -100,7 +100,8 @@ macOS.
   the enforcer listen on 127.0.0.1 only. The node's RPC logs in by its cookie (readable by your user only); the
   enforcer has no login, so it stays on this computer. Before starting them the app looks at which programs hold their
   ports (Linux `/proc`, Mac `lsof`) and takes free ones; it never changes another program's settings. Their data:
-  `<app data>/networks/<id>/stack-data/<chain>/` (on beta `<app data>/stack-data/beta/`).
+  `<app data>/networks/<id>/stack-data/<chain>/` (on beta `<app data>/stack-data/beta/`). On easynet: the
+  `easynet-3.2` node (v0.6.7; `easynet-3.1` before) and easynet-3.1's enforcer, on the chain `easynet-3`.
 - **Beta's own eCash node** (v0.5.1, same file): mbdrivechains' `betanet-965000-1` node (v0.6.3; `betanet-967000-1`
   before) and easynet-3.1's enforcer in its `betanet` preset, without the transaction index (the FreeBank node reads
   deposits from the block itself). The whole chain is about 890 GB. It starts from a UTXO snapshot when one answers: Ava

@@ -129,7 +129,7 @@ pub struct Network {
     pub l1_kind: L1Kind,
     /// eCash's replay stamp on this chain: the nLockTime its node takes as final whatever the height, given an input
     /// below SEQUENCE_FINAL (`IsFinalTx`, src/consensus/tx_verify.cpp). 499999999 on beta (eCash's betanet branch);
-    /// 499999998 on mainnet (eCash master 6e58233) and easynet (easynet-3.1). Each node refuses the other's as
+    /// 499999998 on mainnet (eCash master 6e58233) and easynet (easynet-3.1 and 3.2). Each node refuses the other's as
     /// non-final (both checked on regtest, 2026-10-24).
     pub replay_locktime: u32,
     /// FreeBank's explorer for this network: tx links and the tip. None: the network has none.
@@ -259,16 +259,17 @@ static BETA_STACK: Stack = Stack {
     seeds: &[],
 };
 
-/// easynet-3.1 (reset 3, 2026-10-14): github.com/mbdrivechains/bitcoin, its SHA256SUMS
-/// (ecash/easynet-release/easynet-3.1/SHA256SUMS). Its node and enforcer flags are the easynet installer's
-/// (contrib/easynet/easynet.sh on the `easynet` branch).
+/// easynet (reset 3, 2026-10-14): github.com/mbdrivechains/bitcoin, its SHA256SUMS. Since v0.6.7 the node is
+/// easynet-3.2 (2026-10-27), the same chain with eCash mainnet's difficulty rule from block 4032: a 3.1 node stops at
+/// 4031. The enforcer stays 3.1's (3.2's is the same code under the new name). Its node and enforcer flags are the
+/// easynet installer's (contrib/easynet/easynet.sh on the `easynet` branch, unchanged in 3.2).
 static EASYNET_STACK: Stack = Stack {
-    tag: "easynet-3.1",
+    tag: "easynet-3.2",
     chain: "easynet-3",
     node: Download {
-        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-3.1/bitcoin-easynet-3.1-{platform}.tar.gz",
-        linux: "bec820f7edde1c22c38d100688fc26835ec3d49aaf007906e601fa27e433e842",
-        mac: "f0d41e2c4b36d42e8e3b77c08a17be7bd5008877c9b97184cfb681382586cd78",
+        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-3.2/bitcoin-easynet-3.2-{platform}.tar.gz",
+        linux: "46982500cdadbc37dc15821596cab4ae754cfe352611249d1410a74dcb0f96d9",
+        mac: "e7203a2570c4b9b17ede7033ae73c50cbcfbbc148a7f16d16d89ba68298ad4b9",
     },
     enforcer: ENFORCER_EASYNET_3_1,
     section: "easynet",
@@ -587,7 +588,7 @@ mod tests {
 
     #[test]
     fn each_chain_takes_its_own_replay_stamp() {
-        // IsFinalTx: LOCKTIME_THRESHOLD - 1 on eCash's betanet branch, - 2 on its master and on easynet-3.1.
+        // IsFinalTx: LOCKTIME_THRESHOLD - 1 on eCash's betanet branch, - 2 on its master and on easynet-3.1 and 3.2.
         assert_eq!(BETA.replay_locktime, 499_999_999);
         assert_eq!(EASYNET.replay_locktime, 499_999_998);
         assert_eq!(MAINNET.replay_locktime, 499_999_998);
