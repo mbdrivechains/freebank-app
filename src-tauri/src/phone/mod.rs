@@ -720,6 +720,7 @@ fn history_view(r: &Value) -> Value {
         .unwrap_or(&[])
         .iter()
         .rev()
+        .filter(|t| !crate::node::restart::from_old_chain(t))
         .map(|t| {
             json!({
                 "txid": t["txid"], "category": t["category"], "amount": t["amount"],

@@ -76,6 +76,8 @@ export interface StackStatus {
   enforcer_tip: number | null;
   /** A newer release FreeBank has for this network's eCash node: Update installs it. */
   update: string | null;
+  /** That release is a new chain (a reset): it starts from block 0 (v0.6.9). */
+  update_new_chain?: boolean;
   ports: Ports | null;
   /** Before an install: default ports other programs hold. The app's own node takes free ones instead. */
   clashes: Holder[];

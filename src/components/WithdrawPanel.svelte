@@ -238,13 +238,10 @@
     <div class="wd-warning" role="alert">
       <p><strong>A withdrawal through the peg is very slow.</strong> {ecx(quote.sats)} to {quote.address}.</p>
       <p>
-        FreeBank pays withdrawals out in batches (bundles), and eCash miners must approve each batch: 3 to 6 months or
-        more on mainnet. On the beta, it will probably never complete.
+        FreeBank pays withdrawals out in batches (bundles), and eCash miners must approve each batch, one block at a
+        time: on mainnet that takes at least 6 weeks (6,048 approvals within 12,096 blocks), often longer.
       </p>
-      <p>
-        You can cancel it only until it joins a bundle, which can happen in any block. On the beta, a bundle that can't
-        be paid holds up every other FreeBank withdrawal for about 6 months.
-      </p>
+      <p>You can cancel it only until it joins a bundle, which can happen in any block.</p>
     </div>
     {#if error}<p class="soft-error">{error}</p>{/if}
     <div class="row-actions">

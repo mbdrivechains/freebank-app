@@ -1949,6 +1949,8 @@ pub struct Status {
     pub enforcer_tip: Option<u64>,
     /// A newer release this app has for the network (installing it updates the stack).
     pub update: Option<String>,
+    /// That release is a new chain (a reset): it starts from block 0 in a folder of its own (v0.6.9).
+    pub update_new_chain: bool,
     pub ports: Option<Ports>,
     /// Before an install: the default ports other programs hold, and by whom.
     pub clashes: Vec<Holder>,
@@ -2011,6 +2013,8 @@ pub async fn status(mgr: &NodeManager, with_offers: bool) -> Status {
             out.used = tokio::task::spawn_blocking(move || used_bytes(&st2)).await.ok();
             out.installed = installed(mgr, &st.tag).then(|| st.tag.clone());
             out.update = (st.tag != s.tag).then(|| s.tag.to_string());
+            out.update_new_chain =
+                out.update.is_some() && st.dir != mgr.app_dir.join("stack-data").join(s.chain).to_string_lossy();
             if let Ok(i) = node_call(&st, s, "getblockchaininfo").await {
                 out.node_up = true;
                 out.blocks = i["blocks"].as_u64();
@@ -2677,7 +2681,7 @@ mod tests {
         assert!(a.contains(&"--serve-grpc-addr=127.0.0.1:4".to_string()));
         assert!(a.contains(&"--serve-rpc-addr=127.0.0.1:5".to_string()));
         assert!(a.contains(&"--node-rpc-cookie-path=/d/node/easynet/.cookie".to_string()));
-        assert!(a.contains(&"--network-preset=easynet".to_string()));
+        assert!(a.contains(&"--fork=ecash".to_string()) && !a.iter().any(|x| x.starts_with("--network-")), "{a:?}");
         assert!(!a.iter().any(|x| x.contains("enable-wallet")), "no enforcer wallet: the app's eCash wallet is in the node");
     }
 

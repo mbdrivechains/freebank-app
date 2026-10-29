@@ -175,7 +175,7 @@ pub async fn probe(http: &reqwest::Client, s: &Settings) -> Probe {
 }
 
 /// The eCash block-hash cache entry at the pin height, in display order.
-fn pin_entry(mainblockhash: &Path) -> Option<String> {
+pub(crate) fn pin_entry(mainblockhash: &Path) -> Option<String> {
     let mut f = std::fs::File::open(mainblockhash).ok()?;
     f.seek(SeekFrom::Start(12 + pin_height() * 32)).ok()?;
     let mut b = [0u8; 32];
@@ -252,7 +252,7 @@ pub fn check_datadir(datadir: &Path) -> DatadirCheck {
 
 /// Where a folder is moved aside to: <folder>.old-<unix time>, or with -2, -3… if that is taken
 /// (two moves in one second).
-fn away_path(datadir: &Path) -> String {
+pub(crate) fn away_path(datadir: &Path) -> String {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -1152,6 +1152,9 @@ fn by_txid(log: &[LogEntry]) -> HashMap<&str, &LogEntry> {
 
 fn history_item(e: &Value, log: &HashMap<&str, &LogEntry>) -> Option<HistoryItem> {
     let txid = e["txid"].as_str()?.to_string(); // an account "move" has none
+    if crate::node::restart::from_old_chain(e) {
+        return None;
+    }
     let l = log.get(txid.as_str()).copied();
     let text = |k: &str| e[k].as_str().map(String::from);
     Some(HistoryItem {

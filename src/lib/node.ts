@@ -146,6 +146,7 @@ export interface NodeStatus {
   own_stack?: boolean;
   /** v0.6.8: blocks the node marked invalid while its eCash view was behind, checked again, in words. */
   rechecked?: string | null;
+  restarted?: string | null;
   versions: Versions;
 }
 

@@ -144,7 +144,14 @@
       </div>
     {/if}
     {#if own.update}
-      <p class="small">FreeBank has a newer {$network.l1} node, {own.update}. Updating stops these, puts it in place and starts it.</p>
+      {#if own.update_new_chain}
+        <p class="small">
+          {$network.l1} has started again from its first block, and FreeBank has its new node, {own.update}. Updating
+          stops these, puts it in place and starts it on the new chain; the old chain's blocks stay where they are.
+        </p>
+      {:else}
+        <p class="small">FreeBank has a newer {$network.l1} node, {own.update}. Updating stops these, puts it in place and starts it.</p>
+      {/if}
       <div class="row-actions">
         <button on:click={() => run(install)} disabled={busy || installing}>Update to {own.update}</button>
       </div>

@@ -1,8 +1,8 @@
 //! Withdraw at par (v0.3.0 "In and out"): FreeBank sECX
 //! back to eCash through the peg, with freebankd's own calls (no node change): `createwithdrawal`, `listmywithdrawals`
 //! and `getwithdrawal`, `createwithdrawalrefundrequest`. It is trustless but slow: a withdrawal waits for a bundle, the
-//! bundle for L1 miners' ACKs (13,150 on mainnet, and beta uses the same), so the screen puts a warning first: if
-//! they choose it, they wait. It can be cancelled only while it waits for a bundle.
+//! bundle for L1 miners' ACKs (6,048 within 12,096 blocks on eCash mainnet since L2L's enforcer PR #685), so the screen
+//! puts a warning first: if they choose it, they wait. It can be cancelled only while it waits for a bundle.
 //!
 //! The eCash address is a fresh one of the app's own eCash wallet when it has one; a pasted address is checked by the
 //! eCash node when there is one (and always by freebankd) and gets the lookalike warning on screen: beta uses Bitcoin's
@@ -331,7 +331,8 @@ fn int_sats(v: &Value) -> Option<u64> {
 /// This wallet's withdrawals, newest first: the ones kept here and any others freebankd lists, each with its status.
 #[tauri::command]
 pub async fn withdraw_list(mgr: State<'_, Arc<NodeManager>>, client: State<'_, ClientState>) -> Result<Vec<View>, String> {
-    let mine = load(&mgr.app_dir)?;
+    // Those made on an eCash chain that has since started again went with it (node/restart.rs).
+    let mine: Vec<Record> = load(&mgr.app_dir)?.into_iter().filter(|r| !crate::node::restart::before_move(r.time)).collect();
     let mut c = client.lock().await;
     // Ours, each asked of the wallet it was made from (re-review 7); then any others the node lists.
     let mut ids: Vec<(String, Option<String>)> = mine.iter().map(|r| (r.id.clone(), r.fb_wallet.clone())).collect();

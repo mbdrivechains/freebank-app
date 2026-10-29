@@ -10,6 +10,7 @@ pub mod lock;
 pub mod obliterate;
 pub mod process;
 pub mod recheck;
+pub mod restart;
 pub mod release_key;
 #[cfg(all(test, unix))]
 pub mod testnode;
@@ -240,6 +241,9 @@ pub struct NodeManager {
     /// when anything else is asked of the node (`busy`). v0.6.8.
     pub l1_wait: std::sync::Mutex<Option<String>>,
     pub l1_wait_end: tokio::sync::Notify,
+    /// The eCash chain started again and the old chain's data moved aside at this launch: what the Node tab says
+    /// (restart.rs, v0.6.9).
+    pub restarted: std::sync::Mutex<Option<String>>,
 }
 
 /// Holds `NodeManager::activity` for one long operation; clears it when dropped.
@@ -290,6 +294,7 @@ impl NodeManager {
             recheck: std::sync::Mutex::new(Default::default()),
             l1_wait: std::sync::Mutex::new(None),
             l1_wait_end: tokio::sync::Notify::new(),
+            restarted: std::sync::Mutex::new(None),
         }
     }
 

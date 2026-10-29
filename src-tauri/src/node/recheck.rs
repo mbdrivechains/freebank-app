@@ -38,6 +38,7 @@ pub fn spawn(mgr: Arc<NodeManager>) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
+            super::restart::restart_old(&mgr).await;
             look(&mgr).await;
         }
     });

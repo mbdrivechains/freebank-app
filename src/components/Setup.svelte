@@ -642,8 +642,14 @@
           {:else if own?.installed && own.update && !own.node_up}
             <!-- A newer release pinned (v0.6.7): this one doesn't start, so Update is the way on. -->
             <p data-testid="own-stack-update">
-              FreeBank has a newer {$network.l1} node, {own.update}. Updating puts it in place of the stopped one and starts
-              it. The blocks it has stay{#if own.used != null}{" "}({gigabytes(own.used)}){/if}.
+              {#if own.update_new_chain}
+                {$network.l1} has started again from its first block, and FreeBank has its new node, {own.update}.
+                Updating puts it in place of the stopped one and starts it on the new chain. Your wallets stay; their
+                payments on the old chain are gone. The old chain's blocks stay where they are{#if own.used != null}{" "}({gigabytes(own.used)}){/if}.
+              {:else}
+                FreeBank has a newer {$network.l1} node, {own.update}. Updating puts it in place of the stopped one and starts
+                it. The blocks it has stay{#if own.used != null}{" "}({gigabytes(own.used)}){/if}.
+              {/if}
             </p>
             <div class="row-actions">
               <button on:click={() => installOwn(true)} disabled={checking} data-testid="own-stack-update-go">Update to {own.update}</button>

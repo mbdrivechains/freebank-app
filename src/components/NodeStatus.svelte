@@ -243,6 +243,7 @@
     {/if}
 
     {#if st.rechecked}<p class="hint rechecked" data-testid="node-rechecked">{st.rechecked}</p>{/if}
+    {#if st.restarted}<p class="hint rechecked" data-testid="node-restarted">{st.restarted}</p>{/if}
     {#if st.state === "up"}
       {#if st.reindexing}<p class="hint">{REBUILDING}</p>{/if}
       <div class="big-stat">

@@ -190,6 +190,8 @@ pub fn run() {
                 let (m, c) = (mgr.clone(), app.state::<Arc<Mutex<FreeBankClient>>>().inner().clone());
                 tauri::async_runtime::spawn(async move {
                     let s = m.settings.lock().await.clone();
+                    // The lists leave out the payments of a chain the node moved off (v0.6.9).
+                    node::restart::load_moved(std::path::Path::new(&s.datadir));
                     wallets::apply(&s, &mut *c.lock().await);
                 });
             }

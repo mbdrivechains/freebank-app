@@ -151,6 +151,7 @@ pub async fn get_transactions(
         .as_array()
         .unwrap_or(&vec![])
         .iter()
+        .filter(|tx| !crate::node::restart::from_old_chain(tx))
         .map(|tx| Transaction {
             txid: tx["txid"].as_str().unwrap_or("").to_string(),
             amount: tx["amount"].as_f64().unwrap_or(0.0),

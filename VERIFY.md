@@ -105,8 +105,18 @@ macOS.
   the enforcer listen on 127.0.0.1 only. The node's RPC logs in by its cookie (readable by your user only); the
   enforcer has no login, so it stays on this computer. Before starting them the app looks at which programs hold their
   ports (Linux `/proc`, Mac `lsof`) and takes free ones; it never changes another program's settings. Their data:
-  `<app data>/networks/<id>/stack-data/<chain>/` (on beta `<app data>/stack-data/beta/`). On easynet: the
-  `easynet-3.2` node (v0.6.7; `easynet-3.1` before) and easynet-3.1's enforcer, on the chain `easynet-3`.
+  `<app data>/networks/<id>/stack-data/<chain>/` (on beta `<app data>/stack-data/beta/`). On easynet: easynet-4's node
+  and enforcer (v0.6.9, reset 4; the enforcer is LayerTwo Labs' current one, run with `--fork=ecash`, easynet's
+  installer's flag), on the chain `easynet-4`. Until v0.6.8 it was the `easynet-3.2` node and easynet-3.1's enforcer on
+  `easynet-3`, whose folder the app leaves where it is.
+- **A reset** (v0.6.9, `node/restart.rs`): when the eCash block FreeBank's node pins is no longer the one its data was
+  made on (the pin it was last started with, `.freebank-pin`; else freebankd's `mainblockhash.dat`; else a block older
+  than the reset), the node's chain data moves to `<data folder>.old-<time>` before it starts (inside the folder, as
+  `old-chain-<time>`, when the folder is a disk of its own); nothing is deleted, and Start over knows the folder. A node
+  an older app left running on the old chain is started again for it. The wallets keep their keys, passphrases and
+  addresses; their old-chain payments stay in them, in no balance, and the app's lists leave them out (in no block, and
+  seen before the move, whose time is kept in the folder as `.freebank-moved`; withdrawals recorded before it too). They are not removed: freebankd's `removeprunedfunds` crashes the node at the next
+  `listtransactions` (Core 0.16's dangling pointer, fixed upstream in bitcoin#13437).
 - **Beta's own eCash node** (v0.5.1, same file): mbdrivechains' `betanet-965000-1` node (v0.6.3; `betanet-967000-1`
   before) and easynet-3.1's enforcer in its `betanet` preset, without the transaction index (the FreeBank node reads
   deposits from the block itself). The whole chain is about 890 GB. It starts from a UTXO snapshot when one answers: Ava

@@ -4,7 +4,7 @@
 //! managed like its own child.
 
 use super::background::{self, PidFile};
-use super::{conf_tag, detect, install, lock, pin_hash, pin_height, NodeManager};
+use super::{conf_tag, detect, install, lock, pin_hash, pin_height, restart, NodeManager};
 use serde::Serialize;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -191,6 +191,7 @@ fn exit_reason(mgr: &NodeManager, datadir: &Path) -> Option<String> {
 
 async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
     mgr.still_here()?;
+    restart::load_moved(Path::new(&mgr.settings.lock().await.datadir));
     // The node this app left running when it last closed is the one to use, if it still runs.
     background::adopt_now(mgr).await;
     let mut child = mgr.child.lock().await;
@@ -238,6 +239,14 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
             s.p2p_port
         ));
     }
+    // The eCash chain started again (an easynet reset): the old chain's data moves aside first (restart.rs, v0.6.9).
+    if let Some(away) = restart::settle(mgr, Path::new(&s.datadir))? {
+        // Recorded, so Start over calls it "moved aside by FreeBank" and deletes it too.
+        let mut now = mgr.settings.lock().await.clone();
+        now.moved_aside.push(away);
+        mgr.save_settings(now).await?;
+    }
+    restart::remember(Path::new(&s.datadir));
 
     let logs = mgr.app_dir.join("logs");
     std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
@@ -583,6 +592,8 @@ pub struct NodeStatus {
     pub own_stack: bool,
     /// Blocks the node marked invalid while its eCash view was behind, checked again (v0.6.8, `recheck`), in words.
     pub rechecked: Option<String>,
+    /// The eCash chain started again, and the old chain's data moved aside at this launch (v0.6.9, `restart`).
+    pub restarted: Option<String>,
 }
 
 /// "FreeBank app 0.1.0 · node v0.2.15 (843ccae)"
@@ -702,6 +713,7 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         },
         own_stack: s.stack.as_ref().is_some_and(|st| st.in_use(&s)),
         rechecked: mgr.recheck.lock().unwrap().said.clone(),
+        restarted: mgr.restarted.lock().unwrap().clone(),
     };
     // Mid-operation the node may not answer for a while; say what is happening instead. A start waiting for the eCash
     // node after an unclean stop says so too (v0.6.8).

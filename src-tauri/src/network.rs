@@ -125,6 +125,9 @@ pub struct Network {
     /// The L1 block freebankd is pinned to (-mainchainblockpin): eCash beta's fork block, easynet's genesis.
     pub pin_height: u64,
     pub pin_hash: &'static str,
+    /// When its L1 last started again from its first block (unix time of the new genesis): a FreeBank folder holding a
+    /// block older than this, and no other record of its chain, is the old chain's (node/restart.rs).
+    pub restarted: Option<u64>,
     /// -mainchainchain, the L1 chain name freebankd checks; "" checks none.
     pub l1_chain: &'static str,
     /// The names its eCash node gives its chain (getblockchaininfo's `chain`).
@@ -185,6 +188,7 @@ pub static BETA: Network = Network {
     p2p_port: 8455,
     pin_height: 967_680,
     pin_hash: "00000000000000030101ba5cfea54b22becc79f95dc6040beb76e01dd9d04042",
+    restarted: None,
     l1_chain: "main",
     l1_names: &["main"],
     l1_kind: L1Kind::Main,
@@ -203,6 +207,14 @@ const ENFORCER_EASYNET_3_1: Download = Download {
     url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-3.1/bip300301_enforcer-easynet-3.1-{platform}.tar.gz",
     linux: "324e2eef90704ccb3d3da47f57772284960cd3708bb691176bc58d15501a9706",
     mac: "f83640ad58f5eff94863afec7360705a649ef37826d0925618c19e0e16d01f34",
+};
+
+/// easynet-4's enforcer (reset 4, 2026-10-29): L2L's enforcer v1.0.0 with easynet's 4 commits (tag `easynet-4` in
+/// ecash/l2l/bip300301_enforcer-postfork), built by easynet's release recipe; hashes from easynet-4's SHA256SUMS.
+const ENFORCER_EASYNET_4: Download = Download {
+    url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-4/bip300301_enforcer-easynet-4-{platform}.tar.gz",
+    linux: "a93cc8344b55ab2cf1001812534e18d293fc625503e245433456a8e9f11ca724",
+    mac: "72f6ab8f7c1e032339bb08861190b7e458044e0e6bbc8f041ef6b36a3b8ac5d3",
 };
 
 /// Beta's network bytes: how its node's messages and its snapshots start (`pchMessageStart`, ec a5 b1 04).
@@ -263,19 +275,21 @@ static BETA_STACK: Stack = Stack {
     seeds: &[],
 };
 
-/// easynet (reset 3, 2026-10-14): github.com/mbdrivechains/bitcoin, its SHA256SUMS. Since v0.6.7 the node is
-/// easynet-3.2 (2026-10-27), the same chain with eCash mainnet's difficulty rule from block 4032: a 3.1 node stops at
-/// 4031. The enforcer stays 3.1's (3.2's is the same code under the new name). Its node and enforcer flags are the
-/// easynet installer's (contrib/easynet/easynet.sh on the `easynet` branch, unchanged in 3.2).
+/// easynet (reset 4, 2026-10-29): github.com/mbdrivechains/bitcoin, its SHA256SUMS. A new chain
+/// from block 0 (network bytes ea5e4e04): a fast start, then eCash mainnet's difficulty rule from block 288. Its
+/// enforcer is L2L's current one with easynet's 4 commits, which has no easynet preset: `--fork=ecash`, and it reads the
+/// chain from the node (its data goes in `<data-dir>/ecash/testnet4/`). Its network bytes only matter to its wallet,
+/// which the app leaves off. Flags are the easynet installer's (contrib/easynet/easynet.sh on the `easynet-4` branch). Until v0.6.8 it was reset 3
+/// (easynet-3.2's node, 3.1's enforcer, chain easynet-3), whose data the app leaves where it is.
 static EASYNET_STACK: Stack = Stack {
-    tag: "easynet-3.2",
-    chain: "easynet-3",
+    tag: "easynet-4",
+    chain: "easynet-4",
     node: Download {
-        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-3.2/bitcoin-easynet-3.2-{platform}.tar.gz",
-        linux: "46982500cdadbc37dc15821596cab4ae754cfe352611249d1410a74dcb0f96d9",
-        mac: "e7203a2570c4b9b17ede7033ae73c50cbcfbbc148a7f16d16d89ba68298ad4b9",
+        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-4/bitcoin-easynet-4-{platform}.tar.gz",
+        linux: "def83c5d11e0b39ec57697f5c0a713f84d2c7f10387796367fc9daf8a47f9023",
+        mac: "2c63581284d3de66354813b6057c0f888fd4b13dc4b8158b09b245c75459dd5e",
     },
-    enforcer: ENFORCER_EASYNET_3_1,
+    enforcer: ENFORCER_EASYNET_4,
     section: "easynet",
     folder: "easynet",
     txindex: true,
@@ -286,7 +300,7 @@ static EASYNET_STACK: Stack = Stack {
     zmq: 28535,
     grpc: 28551,
     erpc: 28552,
-    enforcer_args: &["--network-preset=easynet"],
+    enforcer_args: &["--fork=ecash"],
     // easynet's public door (freebanktest, relayed to our easynet node): TRACKING.md.
     seeds: &["163.47.9.132:28533"],
 };
@@ -304,7 +318,11 @@ pub static EASYNET: Network = Network {
     rpc_port: 28454,
     p2p_port: 28455,
     pin_height: 0,
-    pin_hash: "00000001a4105dc30c636e71ac2d844caa32d6fa2e9aacc5b2225ea772dd9490",
+    // easynet-4's genesis (reset 4). Reset 3's was 00000001a4105dc3…9490: a FreeBank folder made on that chain moves
+    // aside at its next start (node/restart.rs).
+    pin_hash: "000000018a449eb24e2c55744a19ad02db5928fa89296f87cbb2059784b2b211",
+    // easynet-4's genesis time (2026-10-29 05:11:59 UTC); the old chain's FreeBank blocks are all older.
+    restarted: Some(1_793_250_719),
     l1_chain: "",
     l1_names: &["easynet"],
     l1_kind: L1Kind::Test,
@@ -335,6 +353,7 @@ pub static MAINNET: Network = Network {
     p2p_port: 8455,
     pin_height: 0,
     pin_hash: "",
+    restarted: None,
     l1_chain: "main",
     l1_names: &["main"],
     l1_kind: L1Kind::Main,
