@@ -1,0 +1,720 @@
+Package: freebank
+Architecture: amd64
+Version: 0.1.0
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 7981
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.1.0_amd64.deb
+Size: 2367760
+MD5sum: bd6a92dd44b6395ebbb3c8fa80109b54
+SHA1: 872744d3b893b632aa1d42f421654cda15128c26
+SHA256: 081f85f1ee8b8f452d2dd8db44615d27d4a224c77a4f19c0b56d85c74cdc994d
+SHA512: 29d4b8ad6fbe3f2658cd8393f23bc4523b6bf321e47d777798e526fcaa18d08126fa0e7e02b1a41400a1107f8fb1aa6111d369b902a48677bafb969dc529416a
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.1.1
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 8270
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.1.1_amd64.deb
+Size: 2474724
+MD5sum: 8a73338c30fc0830f6250801258b26e4
+SHA1: 36d5f84d2f87cc599fc9df482c5f93fbfa24d5ec
+SHA256: 9210a3e6dedf7f21cee062b92127c6667148698b5ec76c6bd1c8d3569b4d4bad
+SHA512: 97133f37ddb7e25871a4027d9c91ed2363c750f76ac4fb020bb4624003970e4f302f4bb569e53108c4b9559e4a05d6f8040a06e24627a826fd6a2a2dd694db11
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.0
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 10076
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.0_amd64.deb
+Size: 3086880
+MD5sum: 45282179a5f0e1ba62e107b21d3403cc
+SHA1: 23474e3d51ea2a02ab0c06dccfddc6bd2cd90405
+SHA256: 63b1001e08e08924b79db3cf7b9bd22e82fab0a2acff4b4de3f17700c402e76c
+SHA512: 3e120fa49e4cf1e018499d20895c94292576eb76a75df8c260ef6d69f39e4a8628959395336a8ff79cc23920b45e810ed76934570e25455e2eec80eaf90ebe51
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.1
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 10402
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.1_amd64.deb
+Size: 3185004
+MD5sum: 03b7844bfdbf417bfa1f872bf900c7a2
+SHA1: f4930dadd9572e9bf056c70a275309eb59f9244e
+SHA256: d7c47f51e21dc9a548ac34f9fe1bcfb197826a97e3ca0df5786d5b0a3ee6ad79
+SHA512: 0a60e40f38c74ae37efa413ee24758abeced599433225031c8f66c580511b1b0399d4548d86ae38ad349ce4baa73b4308faf6e1fb6a3e20e9e88322b0a8125eb
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.2
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 10404
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.2_amd64.deb
+Size: 3184648
+MD5sum: 7f4c0c768127b0be96e55110f3760ad0
+SHA1: 9fcc7052b1d5df42421ff50d2757155a1745fe11
+SHA256: f6f5c80dc0e6d65862f8415fb81ce32291f6b0366dc2a08ab6ad01e93ab94c1b
+SHA512: 6cbda7d7baaf977a43621f33a2528b92ec6e060da053df72eb9d429be16f0ea15802aaa3395d64a773d8aaa9f9dfd721c7659aa6362fcd7976c947c1a6aae13b
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.3
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 10439
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.3_amd64.deb
+Size: 3203096
+MD5sum: 68f44fa4e1626a305f3f8017a50159a0
+SHA1: 590c8558904a14850a0f5cb0a612ba2d8c0455c6
+SHA256: ebd8179b537004aeb7ff4d71822b94a866373cc9ceffff707cb98872662b7320
+SHA512: 84d059f2f6195d8b4eb192906f3a8997457a4f958f83cee156030a2213302153b1a6ab0a9e9875c076c2cb36cd814351ed257377092c7f4a08cb9e80d1c9f45d
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.4
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 10612
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.4_amd64.deb
+Size: 3249264
+MD5sum: 92da0769b68340a62780bad3cceae6db
+SHA1: 52735fc7658bb755da1f1bd6835dfedf8f9dfdf6
+SHA256: a515960e9ca9899bca1608611e28c26bc2e76f9f953b3c063df196404f522112
+SHA512: 6e02e70f551fff0349259b9980842d8fe64507f7030e22ba925cce808c96c9b4ed4ed2abae35c9563bbe636d56078d5138a63eff6a177f03cc8dda77a86968df
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.5
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 10772
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.5_amd64.deb
+Size: 3303376
+MD5sum: b3a013fcfab423e5c62aa601938872aa
+SHA1: 25693708bf755a470f2719706eef32f8bfaf1204
+SHA256: 8786f94eb20cc7ac23f6e3947036dc0079e455af428281076d82a4cfdcdaf228
+SHA512: 3b921d01e0a5dc6f2f933e05ee3edfb8309473b70e36d4b57d24922efde99984f01a7bc51d91c1659869577f64e86475a5ad49ad7783164bad4b19ffbbc9682e
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.6
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 12585
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.6_amd64.deb
+Size: 4594836
+MD5sum: 71498ccb5928a76edc6b72516810ee74
+SHA1: 4dd9dc2c629c3b1d0702932c56e26417062ded6e
+SHA256: 6df7962481bf2479de6e2b79a27038b74c79bdf65ae2088c92b04d332ee81ba2
+SHA512: 7dc99815a37c41257b498b78cfbf13d31f165650d8703ac6c6d32155ba68fd4003542808fbf46ddff35b8fcc6aa7063b57b9a0adf7e2611dde28b7ba0dc30be2
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.7
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 12593
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.7_amd64.deb
+Size: 4596604
+MD5sum: 42f4c3b8fbf16b9cfd08efc72512680a
+SHA1: 65de860c826c39d54d62e1e277b5b517440d024b
+SHA256: f261f2218b31d4e04f196651b8e812e90c76d84b6cec12293407d60f8061fbc5
+SHA512: 220da0f83f7db2530b29b81c7ae0805c36975d99a0cebf75b5d43b74494c66729d84978325db69563e0b859cf091ad6edd5396990506a86062c1db4e2365e396
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.2.8
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 12944
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.2.8_amd64.deb
+Size: 4702392
+MD5sum: f566065b42a9ac1edb6dbeda8af0d3a3
+SHA1: a7bd74ef6ef7e8e422c53ec0734bc929395a348f
+SHA256: 32a2ea6f2358a8ab87be7a1940a03360ed56629d4eb7759720b5abdbe44a5948
+SHA512: 9ca46df0b6836d4e1bc5b8cb1be9a846b87ef38ff3dac7298dd9d11d73658f498e3dace9e9776aa0d45673124f052d81a03caddf32012b8dbcc09ce83f99abfd
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.3.0
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13451
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.3.0_amd64.deb
+Size: 4842664
+MD5sum: 0702a3c90a0807f03768f257d48c319b
+SHA1: 0a5f5e3ecd2ec1584fe9c1088ef76acdab8154a7
+SHA256: 6e0ee10391120259baee9484cfcaacd0dde20a5d2946612c23d36c71f60e3f8b
+SHA512: b8af05ce638cd43176e81ba62e1fa56f86ce4be4a69ac8fd7eee9d90325ecffa13b80f3aaea4dc0ed83bd8fe0a05e9266753d6e23432f47f6436e00f3ad92b87
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.0
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13489
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.0_amd64.deb
+Size: 4854368
+MD5sum: a5529430843ba022a4d91c7418a60d4b
+SHA1: 10f858d494a180e23bed80e8a57ec99fa07920b0
+SHA256: 774995af23cd280cc23086fda5a9bc00800f74f0dfda24007e1a491a14f83463
+SHA512: b92030ea64dc88ce32aeaf084f175da68cc0e12020388ee4fec172190ea8e54c8ff47d7c50ca537bbb026a45aa3fceef8dfeb66fc7371c38864c7352b4190584
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.10
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13898
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.10_amd64.deb
+Size: 4970896
+MD5sum: e5ae960f240a7069c3f91ed6ec0da9a9
+SHA1: 9adde4390634e90737d8185b213ba312050df2fb
+SHA256: b7f1bf3a7d8cf3dbc207af756b3435b632bafae8361acaa76ee2acfef7f0b2f5
+SHA512: 0d3c255a0cceac5e2452a66b1056c1a6292531cd2ba76eed41194bd6127d3fe293f28219dc9bd30fef74f79dc8c435b7ab0b292b578ad4ae0f265bf23a15803a
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.1
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13511
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.1_amd64.deb
+Size: 4859888
+MD5sum: 06c7fa68e433cb51197a2c34599ff312
+SHA1: de573e4a05061bea67ed54126c8695dd8e3b8f3d
+SHA256: 99849b2bf357a57313bd50c19b6cac28d13e2c9c41a7ed6b6ce6af97a6e2347b
+SHA512: dfe8bcc815bdf1bc2d8b5e4617ea58e1786fbb67415b084330e9c4383d9e238e267b76a133a9916b4c3fb4fd073bf4517585f34bd06c5520fd3694c7f5c90942
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.2
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13580
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.2_amd64.deb
+Size: 4875568
+MD5sum: 8dc4a4e62636ce4fb330316e3d91156a
+SHA1: 28359fe4bcd8079a538d04e9dc2115e732d7ed5d
+SHA256: 91818b5425ebfcaa121a0564be515c098c420082eb70abc1588fc1f4a2fe4a19
+SHA512: ed7dfc6ffbfe851700586b28d54f8f01a744e1bd72567cd358546a4a0e3803526d477e3f8e9b97ac167d84b903f551cded270112fce9bf6939577e723d5fb299
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.3
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13580
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.3_amd64.deb
+Size: 4874964
+MD5sum: 36f812146f110448629348387c31b0b7
+SHA1: 46790021500a1ca66fdcd48efe1546cc5beefb5a
+SHA256: 2166cba1ffb9761e0d34d0f0613d0458b4ae3b76a5eab59b8477f144c3dc1cb4
+SHA512: 82af9ed5faf83e4ec210ed58a577d7af90a0df02dd5ca7fc2d3fcf00912a2d6199f02623f1697d5fb2a0901c95b40d477f167459cd33885666d69d7615aec0f6
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.4
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13675
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.4_amd64.deb
+Size: 4902948
+MD5sum: df000c55cc0845d1f90f1f867b36b39c
+SHA1: 31f7a517adaea46dfe75012fe84ffabd31d887c7
+SHA256: d598aeec7152c08e7316981b9e9d736d44f8d413e0d7c6666bcf4a5e2e251750
+SHA512: 7621fc1360bd919b2df34b540b05369b95f1b980d31ca5997ee77ab607a6266eac9f47677735e270c12a2da822453f98f1faad62d46c2eeda709f9d11c4adec6
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.5
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13677
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.5_amd64.deb
+Size: 4904164
+MD5sum: b2311b99b448dd6043859cc06bfc4d90
+SHA1: b4f57544ac153cea7a4cbb27fb2aac285f1896c4
+SHA256: 2ced3a852e9786a6b9cda43ffa8d26d0a38c07bd155e8ef054378447fab1c2f1
+SHA512: addd0ccb58390c504be86d04ed3ecaa6fa61acb59965b68d8caabf0be6386d50a64326d0c67db4f5d949453b5ea9121af0ffa3ddc95c2bf8a5984397b6ef0a46
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.6
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13782
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.6_amd64.deb
+Size: 4931820
+MD5sum: 662cd0edc882eb7fed710d7acc248d9b
+SHA1: 8e1e4a803fe9db94942fb5711e97d538d00a24cb
+SHA256: b8ddab144088ddda3b0af5d5fd3626a762541f4cdd9cd26d262ee6a17ce5ae28
+SHA512: adfe666cc49d8d6ffb5b94236ad53d63e2d5452bdf6cc8adb7456d05e5372f142e19a27a43a290c7d6113e2cb3d2f512454e134f5b5cb87fde72c7f5f721dbed
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.7
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13782
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.7_amd64.deb
+Size: 4930012
+MD5sum: 05b3c253df2a7c84ab2a7ab5c0aae9a8
+SHA1: fd641d8d3527bf3b0ed55eae2c38e3a96691569f
+SHA256: 53e72661a3d8ed202afdebc2a3808301a061d536a21f2e00c0743c3ccec85864
+SHA512: 901f8816c985604563386a30fe3add6e94fb7776d7cdca37841586278145376c406d2d2a2792677dfac6f3168d35b5a7796b5b9f818ff46de722072165014966
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.8
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13809
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.8_amd64.deb
+Size: 4943664
+MD5sum: 2c6f9694f147093ed006aeb441e02cf4
+SHA1: 20bcaa5b0f7aea9566d78af9e0ca39c7c273612e
+SHA256: 94c511043850972673111871bd8f17446c1abd4338630a56f27b640504058ab9
+SHA512: 49d31cc6386a0ac8265d2067ff0532c278959c7037d8b67d7c76b593e13a3cc612d1b4c2e1bdebf1c35511df8965bb1e0f5573204e7fe760d2d130ec63760b19
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.4.9
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 13811
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.4.9_amd64.deb
+Size: 4945180
+MD5sum: 9da41811feae846d4ecd6baff1e31916
+SHA1: 802d1e1df77f2e1fab1b5b89a3fbc35333aa1fd1
+SHA256: 46edb276108c0ef3cbf34f138f0160bba2d086a9ed2322b41aa183892081ba2c
+SHA512: 50f33f4465eff0a3508036a5fa89a2f4919643341ccd71452e655efcc52951e33a79e712c6af5d3c611259042cb12cd822fd5d5fb950d4011016d24060d1ed73
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.5.0
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14118
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.5.0_amd64.deb
+Size: 5035840
+MD5sum: 889cded61fd58de89668d5832ca06843
+SHA1: e02c2c9862d9f8d7403a2d316ee14d2990bb3af9
+SHA256: 9457550082bac473e69d801e0cd90f9735fc7069e92d4853661b4553d6f08fa6
+SHA512: ec898c05fcbc2e588e12ef015d0c891012a9d03cddf6ae7fa2fa38beb3d4ea6fcf8c76348266ca848396ca3e633d8a7cead614e658ee263ad484b0d31f9d46ef
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.5.1
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14304
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.5.1_amd64.deb
+Size: 5095820
+MD5sum: 8ccb7be07b861f0376a254cfd8df3b65
+SHA1: 78db33af4626cb773b936b8b0db09f50f4f90864
+SHA256: fecfe2214c36aced8600b405ea71f257aafd81032c5e234aa312b23b02d9fb84
+SHA512: 2bb5f7a9ba5cb08ea6329dcdaf3bacd13d5d1a5bc7fae5ec24b02caf46a27109152101982705a2db540a69166dbaf7e32555ad14f163c87bd0d974fa5b0d8280
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.0
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14578
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.0_amd64.deb
+Size: 5184548
+MD5sum: d448e5c57564bceca20281d4fe9d0a61
+SHA1: c4b2cd0b854072d45ab03545ff84101568d381e2
+SHA256: 5bfd180852c44ae8c185e7d6643c0acc9c6f712f350423b0fcb7a7d3bf143c54
+SHA512: ddaaa8455e82d706a147d06efcac3b2e55ac155987c8f4309414c23d7d9f1da63f0bc8c973dbba62e1b10f900ab34a058b4f055ca4da683b32c1578684a0ba5e
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.10
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14685
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.10_amd64.deb
+Size: 5218780
+MD5sum: e1918e01098a9588c1762878b000eace
+SHA1: d5cd81716d82e54463aca1788f07e42d5766fc78
+SHA256: db6e8b2499f9abb0a780554473de3a82374fcecc1a4c593054e2ec69d90a7dbd
+SHA512: 79d97fe2f3d2f8a468bdf3c2fdd2258c47c3d340de7b285dc83eec74e2ed81fc8878b8dae53a1383daded4057709f05b69d5365e285cba1cbdc048d4df4b55f5
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.1
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14637
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.1_amd64.deb
+Size: 5205528
+MD5sum: 9c60a4fdc9e60025ae2f2b17cb318742
+SHA1: 8c55a7afdfa15ab26aa6c6bd7b49814bc3b13453
+SHA256: a6f23d4d51702add11558230386b3be261701d920bcda2509208f063b64d655f
+SHA512: 2b80b9b367285d944b6b4ac74eff19407d42bfc9ea49f874ffa8487215a657a80df3d5d1a5e26671af1d85bb30bbe6807dcad84d8d7d200fe7f47bbed3482c4a
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.2
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14639
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.2_amd64.deb
+Size: 5207972
+MD5sum: 5e92eb34332ba961ebfd8cfd000daddf
+SHA1: 99a6c6460bd70d924ad4c22d93fd433dd8671a93
+SHA256: a73c9b0b640519f55e3d28915ad7147b61f0100849f7bf4d74b330e588c22038
+SHA512: ea62e4ee103b5e6e2396f9ace68cb1f72cc3c4168f480e4f7f3a0004121e66e1345ac1e2afa2caa98ab2c047b5951efc0a1103f54e349508d1cd5c8e580611ad
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.3
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14642
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.3_amd64.deb
+Size: 5209320
+MD5sum: e795e5c1df8d7520828f2e3b87f36185
+SHA1: f0b5ad81767ab789984349289ac1ea2e8dc4c9b5
+SHA256: 7b4d45b014a860116347654b66682e2819f959d4b776a6370bd4d6ff019d335e
+SHA512: 0a15b5d89575fa576dca09621cccd11839db6a7827d728f65f8bfa7257771b82de864e75364b93a1c49deb6c0ee24975bb48a4f2b2570abb3ac5e11f48bbf699
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.4
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14643
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.4_amd64.deb
+Size: 5211300
+MD5sum: 9902c946b1604f577cde35a205a17cfa
+SHA1: 645d79f9b29a03abb7e62dde8afe1ec813d72a96
+SHA256: 28653cf8febd26744458dcddab7387dc6381e819263a7a37e531337d430f4b25
+SHA512: 3840b6b615a21e744008e70ca3aa519251a36e3360b0e53e428c8e551218527d000c54a09a32b9350170d7fef06e83b96814ae8b5c818c94d7607446aa7607ef
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.5
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14560
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.5_amd64.deb
+Size: 5185600
+MD5sum: da97c8daea393a02ab3b064c741210cc
+SHA1: 3e15907138fa01c3a4dfa54633b9e9d37dd4d959
+SHA256: b8d0d6921691719f0f4cf59d8858625c6a493c9677ede64f27bb4d049a05aee6
+SHA512: 30840cc176cf003188bc0b2733468a4fdd736ce281971e94178cf69e084d43c1148ecc8f1227819c373a213d2d96f9e4ae9db1de67fcf0378e8173cbd552acd2
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.6
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14564
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.6_amd64.deb
+Size: 5184304
+MD5sum: 877cf7bd5d375359190e8170b54e99d3
+SHA1: cd08365c64c289770c7fbaa387ffdbba7837c5a4
+SHA256: 5ab1506ac30c9114bde9d9e104e246158bfb4681ec1f11389d67c8cab3da0143
+SHA512: f5af0ca70d21f67f630e6b80aa58ebc2906f3263776426520563754fc82cd73fa95581766d23bda2698e824daa507e9b10268fd6283119a1075be88431f1880e
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.7
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14564
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.7_amd64.deb
+Size: 5186528
+MD5sum: 8b8a26d54d593a20135170458b8eeca6
+SHA1: 61ff04b9f006312a5f648aee1cfe32f8670b749a
+SHA256: d97ba697c1a20848ffa46104d648c048a5375f7d6ba884f16882d2bf849737af
+SHA512: 2a8ef98d88986fd1dc1714ce9a909e92e23d5885fff71355275ec5254ab5fcbe8bc2ff559cd573d43507b88a86b9c0bc23a9c91855a9b24cc9610b0a17cc3cdf
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.8
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14670
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.8_amd64.deb
+Size: 5214876
+MD5sum: 9b1fe58d6c2b98bd46d04f8475d5fa68
+SHA1: d8b578ebe611727e2fe606cb24156263cbb1f17d
+SHA256: 9bb8611b5430ce87ebf1d11990e5e5a649fa0e6c26065d137785abe20e87a96a
+SHA512: bb26091280511ca4374d001b80816a8d71b2367de5291efdd797a126b3f83d0cd253b0d1aed2f542b8b19b900348df52c67a5dc69301f4a55d0d24202f9246d4
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
+Package: freebank
+Architecture: amd64
+Version: 0.6.9
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14685
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.6.9_amd64.deb
+Size: 5220692
+MD5sum: 1dd895714075fa93503d97947dea9e1b
+SHA1: 1dbb0389dee8571ffd22b7e57b341936631f5ea4
+SHA256: 30a89ed023782b7f7f19c917cd6eb637d67adbb3e9b712e0e36a478de985c6d4
+SHA512: 09d7fef4d323b3b410d338887d61574f5c243ca7857f1d46aced1017e9023c4f622fd3e8c1025af06e637604cc673b60144f4ed80a354af032c029f91dc47af9
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Finds the eCash beta node and enforcer on this computer or your network, installs
+ and runs a FreeBank node beside them, and shows its peers and blocks.
+
