@@ -91,7 +91,8 @@ pub fn validate_tag(t: &str) -> Result<(), String> {
 
 /// The newest published C++ release of this network's line (v0.2.N; mainnet v1.x) that carries this network's archive
 /// for this platform: non-draft, non-prerelease. (The retired Rust node is the v0.3.x line; GitHub's "latest" flag is
-/// not relied on: from fork day it is mainnet's.) On easynet, the newest v0.2.N with an easynet build.
+/// not relied on: from fork day it is mainnet's.) On easynet, the newest v0.2.N or v1.x (from v1.0.1, pre-releases
+/// too) with an easynet build.
 pub async fn find_release(http: &reqwest::Client) -> Result<String, String> {
     let list: serde_json::Value = http
         .get(RELEASES_URL)
@@ -112,7 +113,7 @@ pub fn newest_release(list: &serde_json::Value, net: &crate::network::Network, t
     list.as_array()
         .into_iter()
         .flatten()
-        .filter(|r| r["draft"] == false && r["prerelease"] == false)
+        .filter(|r| r["draft"] == false && (r["prerelease"] == false || net.line == crate::network::Line::V02ThenV1))
         .filter_map(|r| {
             let tag = r["tag_name"].as_str()?;
             let order = crate::network::order(net, tag)?;
@@ -125,7 +126,7 @@ pub fn newest_release(list: &serde_json::Value, net: &crate::network::Network, t
         })
         .max()
         .map(|(_, tag)| tag)
-        .ok_or_else(|| format!("GitHub lists no FreeBank release for {} yet.", crate::network::current().name))
+        .ok_or_else(|| format!("GitHub lists no FreeBank release for {} yet.", net.name))
 }
 
 /// Stream `url` to `dest`, reporting bytes as they arrive.
@@ -454,8 +455,9 @@ async fn refetch(mgr: &Arc<NodeManager>) -> Result<(), String> {
         .installed_tag
         .clone()
         .ok_or("FreeBank isn't installed yet.")?;
-    // Releases before v0.2.16 have no signature: such a tag is updated instead. Every other line is signed.
-    if crate::network::current().line == crate::network::Line::V02 && super::patch(&tag).map_or(true, |n| n < FIRST_SIGNED) {
+    // Releases before v0.2.16 have no signature (v0.2.7.1 among them): such a tag is updated instead. Every v1.x is
+    // signed (easynet runs them since v0.6.10).
+    if tag.starts_with("v0.2.") && super::patch(&tag).map_or(true, |n| n < FIRST_SIGNED) {
         set(&p, |s| s.what = Some("update".into()));
         return update(mgr).await;
     }
@@ -635,6 +637,27 @@ mod tests {
         let t = suggest_tag();
         assert_eq!(t.len(), 13);
         assert!(validate_tag(&t).is_ok());
+    }
+
+    #[test]
+    fn the_newest_release_of_each_line() {
+        use crate::network::{BETA, EASYNET, MAINNET};
+        let both = |v: &str| serde_json::json!([
+            {"name": format!("freebank-{v}-x86_64-linux-gnu.tar.gz")},
+            {"name": format!("freebank-easynet-{v}-x86_64-linux-gnu.tar.gz")},
+        ]);
+        let list = serde_json::json!([
+            {"tag_name": "v1.0.2", "draft": true, "prerelease": false, "assets": both("1.0.2")},
+            {"tag_name": "v1.0.1", "draft": false, "prerelease": true, "assets": both("1.0.1")},
+            {"tag_name": "v1.0.0", "draft": false, "prerelease": true, "assets": both("1.0.0")},
+            {"tag_name": "v0.3.5", "draft": false, "prerelease": true, "assets": []},
+            {"tag_name": "v0.2.29", "draft": false, "prerelease": false, "assets": both("0.2.29")},
+        ]);
+        let t = "x86_64-linux-gnu";
+        assert_eq!(newest_release(&list, &EASYNET, t).unwrap(), "v1.0.1", "easynet takes v1.x pre-releases");
+        assert_eq!(newest_release(&list, &BETA, t).unwrap(), "v0.2.29");
+        assert!(newest_release(&list, &MAINNET, t).is_err(), "mainnet waits for a full release");
+        assert!(newest_release(&list, &EASYNET, "arm64-apple-darwin").is_err(), "no easynet build for that platform");
     }
 
     #[test]

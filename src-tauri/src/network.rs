@@ -22,8 +22,12 @@ pub enum L1Kind {
 /// Which FreeBank releases a network runs, and what its archive is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line {
-    /// v0.2.N, archive `<asset>-0.2.N-<triplet>.tar.gz` (beta, and easynet's builds of the same releases).
+    /// v0.2.N, archive `<asset>-0.2.N-<triplet>.tar.gz` (beta).
     V02,
+    /// v0.2.N, then v1.x.y from v1.0.1 (easynet, v0.6.10), each in its easynet build: v1.0.1 credits every deposit
+    /// under eCash's new enforcer, a hard fork on easynet. Its v1.x count while they are pre-releases, as FreeBank keeps
+    /// them until mainnet's switch-on.
+    V02ThenV1,
     /// v1.x.y (mainnet).
     V1,
 }
@@ -311,7 +315,7 @@ pub static EASYNET: Network = Network {
     l1: "easynet",
     ready: true,
     closed: None,
-    line: Line::V02,
+    line: Line::V02ThenV1,
     asset: "freebank-easynet",
     net_folder: Some("easynet"),
     datadir: easynet_datadir,
@@ -508,6 +512,8 @@ pub fn order(n: &Network, tag: &str) -> Option<(u32, u32, u32)> {
     }
     let ok = match n.line {
         Line::V02 => v[0] == 0 && v[1] == 2,
+        // v1.0.0 (mainnet's dormant release) came before the deposit fix.
+        Line::V02ThenV1 => (v[0] == 0 && v[1] == 2) || (v[0] == 1 && (v[1], v[2]) >= (0, 1)),
         Line::V1 => v[0] == 1,
     };
     ok.then_some((v[0], v[1], v[2]))
@@ -693,6 +699,12 @@ mod tests {
         assert_eq!(order(&BETA, "v0.3.5"), None, "the retired Rust line");
         assert_eq!(order(&BETA, "v0.2.7.1"), None);
         assert!(order(&MAINNET, "v1.0.10") > order(&MAINNET, "v1.0.9"));
+        assert!(order(&EASYNET, "v1.0.1") > order(&EASYNET, "v0.2.29"), "easynet moves on to v1.x (v0.6.10)");
+        assert_eq!(order(&EASYNET, "v1.0.0"), None, "before the deposit fix");
+        assert_eq!(
+            asset_name(&EASYNET, "v1.0.1", "x86_64-linux-gnu").as_deref(),
+            Some("freebank-easynet-1.0.1-x86_64-linux-gnu.tar.gz")
+        );
     }
 
     #[test]

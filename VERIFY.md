@@ -200,7 +200,8 @@ macOS.
     `github.com/mbdrivechains/freebank-app/releases/download/v<version>/` only when you press Update and restart;
   - on easynet (v0.5.0): its eCash node and enforcer from `github.com/mbdrivechains/bitcoin/releases/download/<tag>/`,
     when you press Install or Update, checked as above; FreeBank's easynet node (`freebank-easynet-<version>-...`) from
-    the same FreeBank releases, with the same signature check;
+    the same FreeBank releases, with the same signature check: the newest v0.2.N, or since v0.6.10 v1.x from v1.0.1,
+    pre-releases included (FreeBank keeps v1.x pre-releases until mainnet's switch-on; `network.rs`, `Line`);
   - on beta (v0.5.1), only while setup offers FreeBank's own eCash node, or one waits to load its snapshot: a `HEAD`
     request to each snapshot's address (`achow101.com`; `data.drivechain.dev` too before v0.6.3), at
     most every ten minutes, to see which answers with its size. When you press Install: the node and enforcer from
