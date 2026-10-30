@@ -135,6 +135,9 @@ pub struct Settings {
     /// The eCash node and enforcer this app installed and runs for the network (v0.5.0, stack.rs). None: it uses a
     /// stack that was already running (BitWindow's, or one set up by hand), at `rest` and `enforcer`.
     pub stack: Option<crate::stack::StackSettings>,
+    /// The node release whose refused blocks were last checked again (v0.6.11, recheck.rs `after_release`). None: not
+    /// yet, for any release this app ran.
+    pub tips_checked: Option<String>,
 }
 
 impl Default for Settings {
@@ -164,6 +167,7 @@ impl Default for Settings {
             changer_key: None,
             auto_update: false,
             stack: None,
+            tips_checked: None,
         }
     }
 }

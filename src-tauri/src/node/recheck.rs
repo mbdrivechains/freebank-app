@@ -5,6 +5,15 @@
 //! waits for the eCash node (`process::start`), but not for ever. So while the app runs: once this run's debug.log says
 //! a block failed bad-mc-prev and the eCash view has caught up, each such block (and only those) is checked again
 //! (`reconsiderblock`), once each, and the Node tab says so. A block that really is bad is refused again.
+//!
+//! Blocks an earlier release refused (v0.6.11, `after_release`). A newer release of the node can take a block an older
+//! one refused, and the node keeps a refused block marked invalid through an update: on 2026-10-30 easynet's block 219
+//! (the first one FreeBank v1.0.1 makes, which credits deposits) was refused by v0.2.29, and after the update to
+//! v1.0.1 the node still stopped at 218. So once for each release the app runs its node with (an update, or this
+//! version's first start), the blocks its log says an earlier release refused, and the branches past its chain that
+//! it doesn't follow, are checked again. (A refused block is a chain tip only until a peer's headers build on it, so
+//! `getchaintips` alone doesn't name it; checking a branch's tip again clears the blocks under it too.) The peers it
+//! banned for sending them are let back in: easynet's FreeBank has a single peer, banned for a day.
 
 use super::{detect, process, NodeManager};
 use serde_json::json;
@@ -13,6 +22,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// `listbanned`'s reason for a ban the node set itself (a peer sent a block it refused, or headers on one).
+const MISBEHAVING: &str = "node misbehaving";
+/// freebankd's line for a block it refused, with the block's hash and height after it (validation.cpp).
+const INVALID: &str = "InvalidChainFound: invalid block=";
 /// What the node's log says when its eCash view didn't have a block's L1 block (freebankd's ConnectTip).
 const BAD_L1: &str = "bad-mc-prev";
 /// freebankd's line for a block it couldn't connect, with the block's hash after it (validation.cpp, ConnectTip).
@@ -53,7 +66,8 @@ async fn look(mgr: &NodeManager) {
     let datadir = PathBuf::from(&s.datadir);
     let mark = mgr.log_mark.lock().unwrap().map(|m| m.debug_log);
     let pending = scan(mgr, &datadir, mark);
-    if pending.is_empty() {
+    let new_release = s.tips_checked != s.installed_tag;
+    if pending.is_empty() && !new_release {
         return;
     }
     let caught_up = match crate::stack::caught_up(mgr).await {
@@ -65,6 +79,9 @@ async fn look(mgr: &NodeManager) {
         return;
     }
     let c = detect::local_client(&mgr.http, &s);
+    if new_release {
+        after_release(mgr, &c, &datadir, s.installed_tag.as_deref().unwrap_or_default()).await;
+    }
     let mut checked = Vec::new();
     for hash in pending {
         {
@@ -84,8 +101,125 @@ async fn look(mgr: &NodeManager) {
     }
     if !checked.is_empty() {
         checked.sort_unstable();
-        mgr.recheck.lock().unwrap().said = Some(words(&checked));
+        say(mgr, words(&checked));
     }
+}
+
+/// Checked again once with this release (`tag`): the blocks an earlier release refused (its log) that aren't on the
+/// node's chain, and the branches past its chain (`past_tip`). The Node tab names the refused blocks it then took.
+async fn after_release(mgr: &NodeManager, c: &crate::rpc::FreeBankClient, datadir: &Path, tag: &str) {
+    // Still loading its blocks: next time.
+    let Ok(tips) = c.call("getchaintips", vec![]).await else { return };
+    let mut refused = Vec::new();
+    for (hash, height) in earlier_refusals(&read_log(datadir), tag) {
+        if !on_chain(c, &hash).await {
+            refused.push((hash, height));
+        }
+    }
+    let mut again: Vec<String> = refused.iter().map(|(h, _)| h.clone()).collect();
+    for hash in past_tip(&tips) {
+        if !again.contains(&hash) {
+            again.push(hash);
+        }
+    }
+    for hash in &again {
+        let r = c.call("reconsiderblock", vec![json!(hash)]).await;
+        crate::activity::note(&format!("node: block {hash}, refused by an earlier release or under a branch it didn't follow, checked again by {tag} ({})", match &r {
+            Ok(_) => "done".to_string(),
+            Err(e) => e.to_string(),
+        }));
+    }
+    if !again.is_empty() {
+        unban(c, tag).await;
+    }
+    let mut taken = Vec::new();
+    for (hash, height) in &refused {
+        if on_chain(c, hash).await {
+            taken.push(*height);
+        }
+    }
+    let mut s = mgr.settings.lock().await.clone();
+    s.tips_checked = Some(tag.to_string());
+    let _ = mgr.save_settings(s).await;
+    if !taken.is_empty() {
+        taken.sort_unstable();
+        say(mgr, words_release(&taken, tag));
+    }
+}
+
+/// The peers the node banned itself: a peer it banned for a block it refused may well have been right. Bans set by
+/// hand are kept. After the blocks are checked again, so a peer let back in isn't banned again for the same block.
+async fn unban(c: &crate::rpc::FreeBankClient, tag: &str) {
+    let Ok(list) = c.call("listbanned", vec![]).await else { return };
+    for b in list.as_array().into_iter().flatten().filter(|b| b["ban_reason"] == MISBEHAVING) {
+        let Some(addr) = b["address"].as_str() else { continue };
+        let r = c.call("setban", vec![json!(addr), json!("remove")]).await;
+        crate::activity::note(&format!("node: peer {addr}, banned by the node, let back in with {tag} ({})", match &r {
+            Ok(_) => "done".to_string(),
+            Err(e) => e.to_string(),
+        }));
+    }
+}
+
+async fn on_chain(c: &crate::rpc::FreeBankClient, hash: &str) -> bool {
+    let h = c.call("getblockheader", vec![json!(hash)]).await;
+    h.ok().and_then(|h| h["confirmations"].as_i64()).is_some_and(|n| n > 0)
+}
+
+/// The node's log, its last 64 MiB.
+fn read_log(datadir: &Path) -> String {
+    let Ok(mut f) = std::fs::File::open(datadir.join("debug.log")) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(len.saturating_sub(64 << 20))).is_ok() {
+        let _ = f.read_to_end(&mut buf);
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// The blocks the log says a release other than `tag` refused, each once: hash and height. Lines before the log's
+/// first start line (a log freebankd shrank) are left out: which release wrote them isn't known.
+fn earlier_refusals(log: &str, tag: &str) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = Vec::new();
+    let mut other: Option<bool> = None;
+    for line in log.lines() {
+        if let Some(after) = line.split(STARTED).nth(1) {
+            // "FreeBank version v0.2.29.0-gdf0e250… (release build)": v0.2.29.
+            let v = format!("v{}", after.split_whitespace().next().unwrap_or(""));
+            other = Some(!(v == tag || v.starts_with(&format!("{tag}.")) || v.starts_with(&format!("{tag}-"))));
+        } else if other == Some(true) {
+            let Some(after) = line.split(INVALID).nth(1) else { continue };
+            let hash: String = after.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            let height = after.split("height=").nth(1).and_then(|h| h.split_whitespace().next()).and_then(|h| h.parse().ok());
+            if let (64, Some(height)) = (hash.len(), height) {
+                if !out.iter().any(|(h, _)| *h == hash) {
+                    out.push((hash, height));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The branches past the node's chain it doesn't follow, from `getchaintips`: each one's tip. A branch there whose
+/// blocks it has refused, or that build on one it refused, is shown as invalid or as headers only.
+fn past_tip(tips: &serde_json::Value) -> Vec<String> {
+    let list = tips.as_array().map(Vec::as_slice).unwrap_or_default();
+    let Some(active) = list.iter().find(|t| t["status"] == "active").and_then(|t| t["height"].as_u64()) else { return Vec::new() };
+    list.iter()
+        .filter(|t| ["invalid", "headers-only", "valid-headers"].iter().any(|s| t["status"] == *s))
+        .filter(|t| t["height"].as_u64().is_some_and(|h| h > active))
+        .filter_map(|t| t["hash"].as_str().map(String::from))
+        .collect()
+}
+
+/// What the Node tab says, after anything it already said in this run.
+fn say(mgr: &NodeManager, text: String) {
+    let mut rc = mgr.recheck.lock().unwrap();
+    rc.said = Some(match rc.said.take() {
+        Some(before) if before != text => format!("{before} {text}"),
+        _ => text,
+    });
 }
 
 /// Read what the node's log added since the last look: from its start (`mark`), or for a node taken over from an
@@ -153,6 +287,12 @@ fn words(heights: &[u64]) -> String {
     )
 }
 
+fn words_release(heights: &[u64], tag: &str) -> String {
+    let list = heights.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ");
+    let (which, it) = if heights.len() == 1 { (format!("block {list}"), "it") } else { (format!("blocks {list}"), "them") };
+    format!("An earlier release of FreeBank's node had refused {which}, and the node kept refusing {it} after the update. FreeBank had {tag} check {it} again, and {tag} took {it}.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +312,53 @@ mod tests {
         assert!(failed_bad_l1(&format!("ConnectTip(): ConnectBlock {H} failed. Reason: bad-txns\n")).is_empty());
         assert!(words(&[1228]).contains("marked block 1228 as bad") && words(&[1228]).ends_with("checked it again."));
         assert!(words(&[1228, 1229]).contains("blocks 1228, 1229") && words(&[1228, 1229]).ends_with("checked them again."));
+    }
+
+    #[test]
+    fn the_branches_past_the_chain() {
+        let tips = json!([
+            {"height": 241, "hash": "e".repeat(64), "branchlen": 23, "status": "headers-only"},
+            {"height": 218, "hash": "a".repeat(64), "branchlen": 0, "status": "active"},
+            {"height": 219, "hash": "b".repeat(64), "branchlen": 1, "status": "invalid"},
+            {"height": 230, "hash": "c".repeat(64), "branchlen": 4, "status": "valid-fork"},
+            {"height": 212, "hash": "d".repeat(64), "branchlen": 1, "status": "invalid"},
+        ]);
+        assert_eq!(past_tip(&tips), vec!["e".repeat(64), "b".repeat(64)], "past 218, and not a branch it followed before");
+        assert!(past_tip(&json!({"code": -28})).is_empty(), "not a list: nothing");
+    }
+
+    #[test]
+    fn the_blocks_an_earlier_release_refused() {
+        let b = "75e94655fb0caafd170278fa9892929b9470961df46fff1d91856af70ee0ced8";
+        let refused = |hash: &str, h: u32| format!("2026-10-30 07:36:16 InvalidChainFound: invalid block={hash}  height={h}  date=2026-10-30 03:28:08\n");
+        let log = format!(
+            "{}2026-10-30 07:36:06 FreeBank version v0.2.29.0-gdf0e2502fbdbe8706c1901968e053fcebc63916b (release build)\n{}{}\
+             2026-10-30 08:00:00 FreeBank version v1.0.1.0-g1234567 (release build)\n{}",
+            refused(&"1".repeat(64), 100),
+            refused(b, 219),
+            refused(b, 219),
+            refused(&"2".repeat(64), 230)
+        );
+        assert_eq!(earlier_refusals(&log, "v1.0.1"), vec![(b.to_string(), 219)], "v0.2.29's, once; none from before the first start line, or from v1.0.1");
+        assert_eq!(earlier_refusals(&log, "v0.2.29"), vec![("2".repeat(64), 230)]);
+        assert!(earlier_refusals(&log, "v0.2.2").len() == 2, "v0.2.2 isn't v0.2.29");
+    }
+
+    #[test]
+    fn the_words_after_a_release() {
+        let w = words_release(&[219], "v1.0.1");
+        assert!(w.contains("had refused block 219,") && w.ends_with("v1.0.1 took it."), "{w}");
+        assert!(words_release(&[219, 227], "v1.0.1").ends_with("took them."));
+    }
+
+    #[test]
+    fn what_the_node_tab_says_adds_up() {
+        let d = std::env::temp_dir().join(format!("fb-recheck-say-{}", std::process::id()));
+        let mgr = NodeManager::new(d);
+        say(&mgr, "One.".into());
+        say(&mgr, "One.".into());
+        say(&mgr, "Two.".into());
+        assert_eq!(mgr.recheck.lock().unwrap().said.as_deref(), Some("One. Two."));
     }
 
     #[test]
