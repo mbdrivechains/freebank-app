@@ -213,12 +213,13 @@ const ENFORCER_EASYNET_3_1: Download = Download {
     mac: "f83640ad58f5eff94863afec7360705a649ef37826d0925618c19e0e16d01f34",
 };
 
-/// easynet-4's enforcer (reset 4, 2026-10-29): L2L's enforcer v1.0.0 with easynet's 4 commits (tag `easynet-4` in
-/// ecash/l2l/bip300301_enforcer-postfork), built by easynet's release recipe; hashes from easynet-4's SHA256SUMS.
-const ENFORCER_EASYNET_4: Download = Download {
-    url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-4/bip300301_enforcer-easynet-4-{platform}.tar.gz",
-    linux: "a93cc8344b55ab2cf1001812534e18d293fc625503e245433456a8e9f11ca724",
-    mac: "72f6ab8f7c1e032339bb08861190b7e458044e0e6bbc8f041ef6b36a3b8ac5d3",
+/// easynet-4.1's enforcer (2026-10-31): the ecash-mainnet-3 enforcer, built by easynet's release recipe; hashes from
+/// easynet-4.1's SHA256SUMS. It and easynet-4.1's node go together: easynet-4's enforcer (until v0.6.12) can't read a
+/// v1.2.0 node's mempool (Core 32 dropped `bip125-replaceable`) and stops serving templates.
+const ENFORCER_EASYNET_4_1: Download = Download {
+    url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-4.1/bip300301_enforcer-easynet-4.1-{platform}.tar.gz",
+    linux: "88a518ab0521abb604e688f84b9cfccf8a571eef70a7e2524e03cd612f8c34c1",
+    mac: "1fc5cb480ce5910b6757cd68812dd4e0699399564b6cc101747126ed13d8348e",
 };
 
 /// Beta's network bytes: how its node's messages and its snapshots start (`pchMessageStart`, ec a5 b1 04).
@@ -284,16 +285,18 @@ static BETA_STACK: Stack = Stack {
 /// enforcer is L2L's current one with easynet's 4 commits, which has no easynet preset: `--fork=ecash`, and it reads the
 /// chain from the node (its data goes in `<data-dir>/ecash/testnet4/`). Its network bytes only matter to its wallet,
 /// which the app leaves off. Flags are the easynet installer's (contrib/easynet/easynet.sh on the `easynet-4` branch). Until v0.6.8 it was reset 3
-/// (easynet-3.2's node, 3.1's enforcer, chain easynet-3), whose data the app leaves where it is.
+/// (easynet-3.2's node, 3.1's enforcer, chain easynet-3), whose data the app leaves where it is. Since v0.6.13 the
+/// programs are easynet-4.1's (eCash v1.2.0's node, on Core 32.1, and the ecash-mainnet-3 enforcer) on the same chain,
+/// so `chain` stays `easynet-4` and Settings' Update keeps the data.
 static EASYNET_STACK: Stack = Stack {
-    tag: "easynet-4",
+    tag: "easynet-4.1",
     chain: "easynet-4",
     node: Download {
-        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-4/bitcoin-easynet-4-{platform}.tar.gz",
-        linux: "def83c5d11e0b39ec57697f5c0a713f84d2c7f10387796367fc9daf8a47f9023",
-        mac: "2c63581284d3de66354813b6057c0f888fd4b13dc4b8158b09b245c75459dd5e",
+        url: "https://github.com/mbdrivechains/bitcoin/releases/download/easynet-4.1/bitcoin-easynet-4.1-{platform}.tar.gz",
+        linux: "a005f5a2a95c06d8f9dec7fea27deaf12273f5a4de9fc97150d299982ac84623",
+        mac: "26082c3e8d4fb3def4b45e2edb054b4c54bec437ac9fc6a7549cae650d971cc4",
     },
-    enforcer: ENFORCER_EASYNET_4,
+    enforcer: ENFORCER_EASYNET_4_1,
     section: "easynet",
     folder: "easynet",
     txindex: true,
