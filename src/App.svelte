@@ -43,6 +43,8 @@
   import SecuritySettings from "./components/SecuritySettings.svelte";
   import HelpSettings from "./components/HelpSettings.svelte";
   import ReportDialog from "./components/ReportDialog.svelte";
+  import WaysGuide from "./components/WaysGuide.svelte";
+  import { goTo, waysOpen } from "./lib/ways";
   import { openReport, reportDraft } from "./lib/report";
   import SecurityAlerts from "./components/SecurityAlerts.svelte";
   import StackAlert from "./components/StackAlert.svelte";
@@ -74,6 +76,15 @@
   // v0.2.6 (the UX walk-through): four tabs, Home · Credit · eCash · Node, and Settings behind the gear. Send, Receive
   // and Deposit open in place on Home, as on the phone page.
   let currentView: "home" | "credit" | "ecash" | "node" | "settings" = "home";
+  // A screen "Ways to use FreeBank" asked for: the view here; a Credit segment is CreditPanel's to open and clear.
+  $: if ($goTo) {
+    currentView = $goTo.view;
+    if ($goTo.view === "home") {
+      error = "";
+      if ($goTo.home) homeAction = $goTo.home;
+    }
+    if ($goTo.view !== "credit" || !$goTo.seg) goTo.set(null);
+  }
   let homeAction: "" | "send" | "receive" | "deposit" | "withdraw" = "";
   function openHome(a: "send" | "receive" | "deposit" | "withdraw") {
     if (homeAction === a) { homeAction = ""; return; }
@@ -577,6 +588,7 @@
       {#if localNode && !isPWA}<HouseDue />{/if}
       {#if localNode && !isPWA}<StackAlert />{/if}
       {#if $network.faucet && !isPWA}<StartGuide />{/if}
+      {#if !isPWA}<button class="link-btn ways-open" on:click={() => waysOpen.set("")} data-testid="ways-open">Ways to use FreeBank ›</button>{/if}
       <!-- Home / Dashboard -->
       <SecurityAlerts on:open={() => { currentView = "settings"; settingsPart = "security"; }} />
       <BalanceCard {balance} onRefresh={refresh} />
@@ -642,6 +654,8 @@
     {/if}
     {/key}
   {/if}
+
+  {#if $waysOpen !== null}<WaysGuide />{/if}
 
   {#if $reportDraft}<ReportDialog />{/if}
 

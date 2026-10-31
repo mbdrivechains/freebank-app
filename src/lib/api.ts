@@ -569,7 +569,8 @@ export const api = {
     // repaying in that house's notes (node v0.2.27). An older node, or a failed look-up, leaves it unknown: Retire as before.
     await Promise.all(
       bills
-        .filter((b) => b.status === 'a' && (b.roles ?? []).includes('acceptor'))
+        // v0.6.12: the holder's bills too, as a house-held bill's bond is the house's to claim, not the custody key's.
+        .filter((b) => b.status === 'a' && (b.roles ?? []).some((r) => r === 'acceptor' || r === 'holder'))
         .map(async (b) => {
           try {
             const full = (await fbCall('getbill', [b.id])) as { owner_house_id?: number };

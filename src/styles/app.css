@@ -415,6 +415,12 @@ button:focus-visible {
   opacity: 1;
 }
 
+/* "Ways to use FreeBank ›" on Home and Credit (v0.6.12) */
+.ways-open {
+  display: block;
+  margin: -6px 0 10px;
+}
+
 .note-row {
   background: var(--bg-inset);
   border: 1px solid var(--border-color);

@@ -3,6 +3,7 @@
   // holder needs first and the issuer's forms folded under "House tools". Moved here from App.svelte as it was, then
   // reorganised.
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import {
     api,
     houseType,
@@ -18,6 +19,8 @@
   import { nettingStep, roundHexFrom, type NettingRound } from "../lib/netting";
   import { BASE_TICKER } from "../lib/brand";
   import { network } from "../lib/network";
+  import { canClaimBond } from "../lib/bills";
+  import { goTo, waysOpen } from "../lib/ways";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "../lib/amount";
   import { nice } from "../lib/errors";
   import { walletLocked, withUnlock } from "../lib/wallet";
@@ -65,6 +68,20 @@
     ? `You need FreeBank coins first: Home › Receive › Get ${$network.name} coins brings some.`
     : "You need FreeBank coins first: Home › Deposit brings them in from eCash.";
 
+  // "Ways to use FreeBank" asked for a segment (App has switched to Credit): open it, then clear the request. A
+  // request made from another tab is taken when this mounts, which would otherwise open Notes over it.
+  let mounted = false;
+  function takeRequest(): Seg | null {
+    const t = get(goTo);
+    if (!t || t.view !== "credit" || !t.seg) return null;
+    goTo.set(null);
+    return t.seg;
+  }
+  $: if (mounted && $goTo) {
+    const s = takeRequest();
+    if (s) open(s);
+  }
+
   function open(s: Seg) {
     seg = s;
     error = "";
@@ -73,7 +90,10 @@
     else if (s === "pools") { loadPools(); loadHouses(); }
     else { loadBills(); loadNotes(); loadHouses(); checkRepayInNotes(); }
   }
-  onMount(() => open("notes"));
+  onMount(() => {
+    mounted = true;
+    open(takeRequest() ?? "notes");
+  });
 
   // Notes (M1)
   let notes: NoteHolding[] = [];
@@ -854,6 +874,7 @@
     <button class:active={seg === s} on:click={() => open(s)}>{label}</button>
   {/each}
 </nav>
+<button class="link-btn ways-open" on:click={() => waysOpen.set("")} data-testid="ways-open-credit">Ways to use FreeBank ›</button>
 
 {#if error}
   <Notice kind="error" message={error} on:dismiss={() => (error = "")} />
@@ -1469,6 +1490,9 @@
               <div class="house-stats">
                 <div><span class="stat-label">Bond</span> {b.escrow} {BASE_TICKER}</div>
                 <div><span class="stat-label">Matures</span> {b.maturity_height > height ? `in about ${days(b.maturity_height - height)}` : "now"} (block {b.maturity_height}), then {days(b.grace_blocks)} to pay</div>
+                {#if canClaimBond(b, height)}
+                  <div class="soft-error" data-testid="bill-past-due"><span class="stat-label">Past due</span> not paid in time: you can claim the bond</div>
+                {/if}
                 {#if b.roles && b.roles.length}
                   <div><span class="stat-label">Your role</span> {b.roles.join(", ")}</div>
                 {/if}
@@ -1479,7 +1503,7 @@
               <div class="note-actions">
                 <button on:click={() => { billAction = { type: "endorse", id: b.id }; endorsePubkey = ""; }} disabled={b.status !== "a"}>Endorse</button>
                 <button on:click={() => startRetire(b)} disabled={billBusy || b.status !== "a"}>{repayNotes(b) > 0 ? "Repay" : "Retire"}</button>
-                <button on:click={() => doClaimBillEscrow(b.id)} disabled={billBusy || b.status !== "d"}>Claim the bond</button>
+                <button on:click={() => doClaimBillEscrow(b.id)} disabled={billBusy || !canClaimBond(b, height)}>Claim the bond</button>
               </div>
               {#if billAction && billAction.type === "retire" && billAction.id === b.id}
                 <div class="note-form" data-testid="repay-in-notes">

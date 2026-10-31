@@ -1,14 +1,15 @@
 {
   "name": "freebank",
   "private": true,
-  "version": "0.6.11",
+  "version": "0.6.12",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check:qr": "node scripts/qr-ghost-check.mjs"
+    "check:qr": "node scripts/qr-ghost-check.mjs",
+    "check:ways": "node scripts/ways-check.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^3.1.0",
