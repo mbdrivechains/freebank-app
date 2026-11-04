@@ -189,6 +189,9 @@ export const stack = {
 export const SNAPSHOT_PENDING_START = "FreeBank's eCash node hasn't loaded its snapshot yet.";
 /** What a start says when FreeBank pins a newer release of the eCash node (stack.rs start_inner); setup offers Update. */
 export const NEWER_NODE_START = "FreeBank has a newer ";
+/** The node's refusal to start a release older than its network's chain needs (network.rs too_old, v0.7.0: easynet's
+ *  new chain on FreeBank v1.1.0): the start screen then offers the update. */
+export const NEW_CHAIN_NODE = " started a new chain on ";
 
 /** "830 GB", "9.4 GB", "327 MB". */
 export function gigabytes(n: number | null | undefined): string {

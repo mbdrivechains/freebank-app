@@ -81,6 +81,9 @@ export interface House {
   defer_interest_bps?: number; // node v0.2.18: the yearly rate on demands queued while suspended (1000 = 10%)
   type?: HouseType;            // node v0.2.19 (absent before: open)
   member_records?: number;     // node v0.2.19, members and redeem houses: members listed, removed ones included
+  depositunits?: number;       // deposit principal (note units: mg on a gram node)
+  brassagebps?: number;        // the spread a redemption owes now; on a gram node (v1.1.0) 0 while the house is open,
+                               // else from its counted till: 0 at or above 2% of its notes, rising to 4% (400) at 0.5%
   [k: string]: unknown;
 }
 
@@ -130,7 +133,8 @@ export interface LpHolding {
 export interface Bill {
   id: number;
   bill_id: string;
-  amount: number;        // face amount (sECX)
+  amount?: number;       // face amount (sECX), before FreeBank v1.1.0
+  face_mg?: number;      // face in whole mg of gold, on gram nodes (FreeBank v1.1.0 and later)
   escrow: number;        // acceptor's escrow bond (sECX)
   status: string;        // a / r / d / x
   issued_height: number;
@@ -313,6 +317,13 @@ export const api = {
   async sendTransaction(address: string, amount: number): Promise<string> {
     if (isTauri) throw new Error('The desktop sends through Send.');
     return rpcCall('sendtoaddress', [address, amount]) as Promise<string>;
+  },
+
+  /** Send `units` mg of gold token `token` to an address (gram nodes). The desktop's send_token goes through "Approve
+   * sends on my phone", at the token's worth at the gold price; the browser build calls the node itself. */
+  async sendToken(token: string, units: number, address: string): Promise<string> {
+    if (isTauri) return tauriInvoke('send_token', { token, units, address }) as Promise<string>;
+    return rpcCall('sendissued', [token, units, address]) as Promise<string>;
   },
 
   /** Get recent transactions */

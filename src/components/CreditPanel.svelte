@@ -2,6 +2,7 @@
   // Credit (v0.2.6, the UX walk-through's structure): Notes | Houses | Pools | Bills, one tab with four segments, what a
   // holder needs first and the issuer's forms folded under "House tools". Moved here from App.svelte as it was, then
   // reorganised.
+  import { R1_HOUSE, R4_POOL, R5_BILL } from "../lib/notice";
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import {
@@ -21,12 +22,35 @@
   import { network } from "../lib/network";
   import { canClaimBond } from "../lib/bills";
   import { goTo, waysOpen } from "../lib/ways";
-  import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "../lib/amount";
+  import { ECX_PROBLEM, fmtEcx, parseEcx } from "../lib/amount";
+  import {
+    billArg,
+    billUnits,
+    detectNoteUnit,
+    disclosure,
+    getGoldFix,
+    getHouseGold,
+    getIssuedToken,
+    listTokenPools,
+    goldFixWords,
+    houseCard,
+    noteAmounts,
+    noteUnit,
+    notePoolsOpen,
+    payoutPrice,
+    payoutWords,
+    pct1,
+    statusWords,
+    type GoldFix,
+    type HouseCard,
+    type IssuedToken,
+  } from "../lib/grams";
   import { nice } from "../lib/errors";
   import { walletLocked, withUnlock } from "../lib/wallet";
   import { showReceipt } from "../lib/receipts";
   import Notice from "./Notice.svelte";
   import NoteChanger from "./NoteChanger.svelte";
+  import TokenPools from "./TokenPools.svelte";
   import { lockHexFrom, parseKeysetFile, saveFloat, savedFloat, type MintKeyset } from "../lib/tokenhouse";
 
   /** The wallet's spendable sECX, sats (for "you need coins first"). */
@@ -39,7 +63,12 @@
   // FreeBank blocks follow eCash's, about 144 a day.
   function days(blocks: number): string {
     const d = blocks / 144;
-    return d < 1 ? `${Math.max(1, Math.round(d * 24))} hours` : `${d < 10 ? d.toFixed(1).replace(/\.0$/, "") : Math.round(d)} days`;
+    if (d < 1) {
+      const h = Math.max(1, Math.round(d * 24));
+      return `${h} hour${h === 1 ? "" : "s"}`;
+    }
+    const n = d < 10 ? d.toFixed(1).replace(/\.0$/, "") : String(Math.round(d));
+    return `${n} day${n === "1" ? "" : "s"}`;
   }
   // A house by name, as the Houses segment lists it.
   function nameOf(list: House[], id: number): string {
@@ -85,9 +114,10 @@
   function open(s: Seg) {
     seg = s;
     error = "";
+    detectNoteUnit();
     if (s === "notes") { loadNotes(); loadHouses(); }
     else if (s === "houses") loadHouses();
-    else if (s === "pools") { loadPools(); loadHouses(); }
+    else if (s === "pools") { loadHouses().then(() => { if ($noteUnit === "sat" || $notePoolsOpen) loadPools(); }); }
     else { loadBills(); loadNotes(); loadHouses(); checkRepayInNotes(); }
   }
   onMount(() => {
@@ -125,8 +155,8 @@
   // on). Note units are base-native, 1 unit = 1 sat of sECX, so a note amount is an sECX amount, and
   // this shows "= 50,000,000 units" under an sECX field once it holds a valid amount.
   function unitsEcho(v: string | number): string {
-    const u = parseEcx(v);
-    return u === null ? "" : `= ${u.toLocaleString()} units`;
+    const u = A.parse(v);
+    return u === null ? "" : A.unit === "mg" ? `= ${u.toLocaleString()} mg` : `= ${u.toLocaleString()} units`;
   }
 
   // Lists that need the wallet unlocked (listmynotes, listmylp, listmybills): with it locked, the screen says so and
@@ -165,10 +195,10 @@
 
   async function doMint() {
     if (!mintHouseId || !mintUnits) return;
-    const units = parseEcx(mintUnits);
-    if (units === null) { error = ECX_PROBLEM; return; }
+    const units = A.parse(mintUnits);
+    if (units === null) { error = A.problem; return; }
     const houseId = parseInt(mintHouseId);
-    const amount = `${fmtEcx(units)} ${BASE_TICKER}`;
+    const amount = A.fmt(units);
     const to = mintTo.trim();
     // A redeem-only house reaches a member only by minting to them (node v0.2.19).
     if (!to && typeOf(houses, houseId) === "redeem") { error = "A redeem-only house mints only to a member: enter their address."; return; }
@@ -197,7 +227,7 @@
     // everything redeemable now (while suspended, only the demanded notes), or everything not yet demanded.
     const n = notes.find((x) => x.house_id === houseId);
     const units = !n ? 0 : type === "redeem" ? n.redeemable_units ?? n.units : type === "demand" ? n.units - n.demanded_units : 0;
-    actionUnits = units > 0 ? ecxInput(units) : "";
+    actionUnits = units > 0 ? A.input(units) : "";
   }
 
   // The yearly rate on demands queued at a suspended house (node v0.2.18, defer_interest_bps: 1000 = 10%). It takes
@@ -209,10 +239,10 @@
 
   async function submitAction() {
     if (!action || !actionUnits) return;
-    const units = parseEcx(actionUnits);
-    if (units === null) { error = ECX_PROBLEM; return; }
+    const units = A.parse(actionUnits);
+    if (units === null) { error = A.problem; return; }
     const { type, houseId } = action;
-    const amount = `${fmtEcx(units)} ${BASE_TICKER}`;
+    const amount = A.fmt(units);
     actionBusy = true;
     error = "";
     try {
@@ -246,6 +276,9 @@
 
   // Houses (M2)
   let houses: House[] = [];
+  /** The spread a payout of this house's notes bears now (listhouses' brassagebps, v1.1.0): 0 while it is open; at a
+   *  stressed or suspended house with a thin till, redeemed and demanded notes alike (the node's REDEEM). */
+  $: spreadOf = (id: number) => houses.find((h) => h.id === id)?.brassagebps ?? 0;
   let housesLoading = false;
   let regName = "";
   let regTier = "0";
@@ -277,6 +310,34 @@
       error = nice(e);
     }
     housesLoading = false;
+    if ((await detectNoteUnit()) === "mg") loadGold();
+  }
+
+  // Gram notes (the gram-notes release): note amounts in the node's unit, and each house's card (status, owners'
+  // capital and till as ratios, the issuers behind its gold) with the disclosure, from gethousegold.
+  $: A = noteAmounts($noteUnit);
+  let cards: Record<number, HouseCard> = {};
+  const tokens = new Map<string, IssuedToken>();
+  /** The payout price now, sats per gram (null: none, so payouts in sECX wait). */
+  let goldPrice: number | null = null;
+  let goldFix: GoldFix | null = null;
+
+  async function loadGold() {
+    const next: Record<number, HouseCard> = {};
+    for (const h of houses) {
+      try {
+        const g = await getHouseGold(h.id);
+        for (const v of g.vaults) {
+          if (!tokens.has(v.token_id)) tokens.set(v.token_id, await getIssuedToken(v.token_id));
+        }
+        next[h.id] = houseCard(h.effective_status, h.depositunits ?? 0, g, tokens);
+      } catch {
+        // A house the node can't describe yet: no card.
+      }
+    }
+    cards = next;
+    goldFix = await getGoldFix().catch(() => null);
+    goldPrice = payoutPrice(goldFix, await listTokenPools().catch(() => null));
   }
 
   async function doRegister() {
@@ -545,15 +606,16 @@
   let createFeeBps = "30";
 
   function price(p: Pool): string {
-    // The node leaves the spot price out while a pool side is empty. Both sides count in sats
-    // (1 note unit = 1 sat), so sats per unit is sECX paid per sECX of notes.
+    // The node leaves the spot price out while a pool side is empty. It is sats per note unit: on an older node both
+    // sides count in sats (1 note unit = 1 sat), so sECX paid per sECX of notes; on a gram node sats per mg.
     if (p.spot_price_sats_x1e8 == null) return "no price yet";
+    if (A.unit === "mg") return `${fmtEcx(Math.round((p.spot_price_sats_x1e8 / 1e8) * 1000))} ${BASE_TICKER} a gram of notes`;
     return `${(p.spot_price_sats_x1e8 / 1e8).toFixed(6)} ${BASE_TICKER} per ${BASE_TICKER} of notes`;
   }
 
-  // An empty or zero "least out" is no limit; anything else must be a valid amount (null if not).
-  function minOut(v: string | number | null): number | null {
-    return v === "" || v === null || Number(v) === 0 ? 0 : parseEcx(v);
+  // An empty or zero "least out" is no limit; anything else must be a valid amount (null if not), in what comes out.
+  function minOut(v: string | number | null, notesOut: boolean): number | null {
+    return v === "" || v === null || Number(v) === 0 ? 0 : notesOut ? A.parse(v) : parseEcx(v);
   }
 
   async function loadPools() {
@@ -600,25 +662,24 @@
     try {
       if (type === "swap") {
         const dir = swapDir;
-        const amountIn = parseEcx(poolAmountIn);
-        const least = minOut(poolMinOut);
-        if (amountIn === null || least === null) throw new Error(ECX_PROBLEM);
+        const amountIn = dir === "noteforbtx" ? A.parse(poolAmountIn) : parseEcx(poolAmountIn);
+        const least = minOut(poolMinOut, dir === "btxfornote");
+        if (amountIn === null || least === null) throw new Error(A.unit === "mg" ? `${A.problem} (${BASE_TICKER}: ${ECX_PROBLEM})` : ECX_PROBLEM);
         const txid = await withUnlock(() => api.swapNote(poolId, dir, amountIn, least), { what: "swap in the pool" });
-        const given = `${fmtEcx(amountIn)} ${BASE_TICKER}`;
         showReceipt({
           txid,
           what: dir === "noteforbtx"
-            ? `Swapped ${given} of notes for ${BASE_TICKER} in Pool #${poolId}`
-            : `Swapped ${given} for notes in Pool #${poolId}`,
+            ? `Swapped ${A.unit === "mg" ? A.fmt(amountIn) : `${fmtEcx(amountIn)} ${BASE_TICKER}`} of notes for ${BASE_TICKER} in Pool #${poolId}`
+            : `Swapped ${fmtEcx(amountIn)} ${BASE_TICKER} for notes in Pool #${poolId}`,
         });
       } else if (type === "add") {
-        const notes = parseEcx(poolAddNoteEcx);
+        const notes = A.parse(poolAddNoteEcx);
         const ecx = parseEcx(poolAddEcx);
-        if (notes === null || ecx === null) throw new Error(ECX_PROBLEM);
+        if (notes === null || ecx === null) throw new Error(A.unit === "mg" ? `${A.problem} (${BASE_TICKER}: ${ECX_PROBLEM})` : ECX_PROBLEM);
         const txid = await withUnlock(() => api.addLiquidity(poolId, notes, ecx), { what: "add liquidity" });
         showReceipt({
           txid,
-          what: `Added ${fmtEcx(notes)} ${BASE_TICKER} of notes and ${fmtEcx(ecx)} ${BASE_TICKER} to Pool #${poolId}`,
+          what: `Added ${A.fmt(notes)} of notes and ${fmtEcx(ecx)} ${BASE_TICKER} to Pool #${poolId}`,
         });
       } else {
         const lp = Number(poolRemoveLp);
@@ -636,9 +697,9 @@
 
   async function doCreatePool() {
     if (!createPoolId || !createNoteEcx || !createEcx) return;
-    const notes = parseEcx(createNoteEcx);
+    const notes = A.parse(createNoteEcx);
     const ecx = parseEcx(createEcx);
-    if (notes === null || ecx === null) { error = ECX_PROBLEM; return; }
+    if (notes === null || ecx === null) { error = A.unit === "mg" ? `${A.problem} (${BASE_TICKER}: ${ECX_PROBLEM})` : ECX_PROBLEM; return; }
     const poolId = parseInt(createPoolId);
     poolBusy = true;
     error = "";
@@ -648,7 +709,7 @@
       });
       showReceipt({
         txid,
-        what: `Created Pool #${poolId} with ${fmtEcx(notes)} ${BASE_TICKER} of notes and ${fmtEcx(ecx)} ${BASE_TICKER}`,
+        what: `Created Pool #${poolId} with ${A.fmt(notes)} of notes and ${fmtEcx(ecx)} ${BASE_TICKER}`,
       });
       createNoteEcx = "";
       createEcx = "";
@@ -676,6 +737,10 @@
   let billEscrow = "";
   let billMatureIn = "1000";
   let billGrace = "1008";
+  /** A bill's face in the node's unit (sats, or mg on a gram node): `face_mg` on a gram node, `amount` before. */
+  const faceUnits = (b: Bill) => billUnits(b);
+  /** What a face in mg is worth in sats at today's gold price (null: no price). */
+  const faceWorth = (mg: number) => (goldPrice ? Math.ceil((mg * goldPrice) / 1000) : null);
   const BILL_STATUS: Record<string, string> = {
     a: "Active", r: "Retired", d: "Defaulted", x: "Disputed",
   };
@@ -715,15 +780,17 @@
       const now = (await api.getBlockchainInfo()).blocks;
       const maturity = now + parseInt(billMatureIn || "1000");
       const bodyHex = toHex(billBody || "bill");
-      const amount = parseFloat(billAmount);
+      const face = A.parse(billAmount);
+      if (face === null) throw new Error(A.problem);
       const escrow = parseFloat(billEscrow);
+      // The face goes as the node reads it: whole mg on a gram node, else an 8-decimal amount of sECX.
       const txid = await withUnlock(
-        () => api.issueBill(bodyHex, amount, escrow, maturity, parseInt(billGrace || "1008")),
+        () => api.issueBill(bodyHex, billArg(face, $noteUnit), escrow, maturity, parseInt(billGrace || "1008")),
         { what: "issue the bill" },
       );
       showReceipt({
         txid,
-        what: `Issued a bill for ${amount} ${BASE_TICKER}, bonded with ${escrow} ${BASE_TICKER}`,
+        what: `Issued a bill for ${A.fmt(face)}, bonded with ${escrow} ${BASE_TICKER}`,
         rows: [{ label: "Matures at", value: `block ${maturity.toLocaleString()}` }],
       });
       billBody = "";
@@ -771,7 +838,7 @@
     if (!repaysInNotes || !h || !(b.roles ?? []).includes("acceptor")) return 0;
     const n = notes.find((x) => x.house_id === h);
     const free = n ? n.units - n.demanded_units : 0;
-    return Math.max(0, Math.min(free, parseEcx(String(b.amount)) ?? 0));
+    return Math.max(0, Math.min(free, faceUnits(b)));
   }
 
   // Node v0.2.27 or later takes `notes` on retirebill (its subversion, "/FreeBank:0.2.29/"); an older one refuses the
@@ -807,7 +874,7 @@
       retireCoins = [];
     }
     billAction = { type: "retire", id: b.id };
-    retireNotes = ecxInput(burnFor(repayNotes(b)));
+    retireNotes = A.input(burnFor(repayNotes(b)));
     if (!burnFor(repayNotes(b))) retireError = "Your notes of this house aren't in a block yet: wait a block, or pay it all in sECX.";
   }
 
@@ -819,8 +886,8 @@
       const inNotes = r.notes_burned > 0;
       showReceipt({
         txid: r.txid,
-        what: inNotes ? `Repaid Bill #${id}, ${fmtEcx(r.notes_burned)} ${BASE_TICKER} of it in notes` : `Retired Bill #${id}`,
-        rows: inNotes ? [{ label: "In notes", value: `${fmtEcx(r.notes_burned)} ${BASE_TICKER}, back to the house that issued them` }] : undefined,
+        what: inNotes ? `Repaid Bill #${id}, ${A.fmt(r.notes_burned)} of it in notes` : `Retired Bill #${id}`,
+        rows: inNotes ? [{ label: "In notes", value: `${A.fmt(r.notes_burned)}, back to the house that issued them` }] : undefined,
       });
       billAction = null;
       retireNotes = "";
@@ -835,20 +902,20 @@
 
   function retireInNotes(b: Bill) {
     retireError = "";
-    const u = parseEcx(retireNotes);
-    if (u === null || u <= 0) { retireError = "Enter the notes to pay, with at most 8 decimals, or pay it all in sECX."; return; }
-    if (u > repayNotes(b)) { retireError = `You can pay at most ${fmtEcx(repayNotes(b))} ${BASE_TICKER} of it in notes.`; return; }
+    const u = A.parse(retireNotes);
+    if (u === null || u <= 0) { retireError = `${A.problem} Or pay it all in sECX.`; return; }
+    if (u > repayNotes(b)) { retireError = `You can pay at most ${A.fmt(repayNotes(b))} of it in notes.`; return; }
     const burn = burnFor(u);
     if (!burn) {
       const smallest = retireCoins.length ? retireCoins[retireCoins.length - 1] : 0;
       retireError = smallest
-        ? `Notes go whole, coin by coin, and your smallest coin of this house's notes is ${fmtEcx(smallest)} ${BASE_TICKER}: enter at least that, or Send the notes to yourself first to split a coin.`
+        ? `Notes go whole, coin by coin, and your smallest coin of this house's notes is ${A.fmt(smallest)}: enter at least that, or Send the notes to yourself first to split a coin.`
         : "Your notes of this house aren't in a block yet: wait a block, or pay it all in sECX.";
       return;
     }
     if (burn !== u) {
-      retireNotes = ecxInput(burn);
-      retireError = `Notes go whole, coin by coin: ${fmtEcx(burn)} ${BASE_TICKER} of them fits. Press Repay again to pay that much in notes.`;
+      retireNotes = A.input(burn);
+      retireError = `Notes go whole, coin by coin: ${A.fmt(burn)} of them fits. Press Repay again to pay that much in notes.`;
       return;
     }
     doRetireBill(b.id, burn);
@@ -916,17 +983,32 @@
                   <span class="badge badge-{n.house_status}">{STATUS_LABEL[n.house_status] ?? n.house_status}</span>
                   {#if typeOf(houses, n.house_id) !== "open"}<span class="badge badge-members">{TYPE_LABEL[typeOf(houses, n.house_id)]}</span>{/if}
                 </div>
-                <div class="note-units">{fmtEcx(n.units)} {BASE_TICKER}</div>
+                <div class="note-units">{A.fmt(n.units)}</div>
               </div>
-              <div class="hint">{n.units.toLocaleString()} units</div>
+              {#if A.unit === "sat"}<div class="hint">{n.units.toLocaleString()} units</div>{/if}
+              {#if cards[n.house_id]}
+                <div class="house-card">
+                  <div class="house-stats">
+                    <div><span class="stat-label">House</span> {statusWords(cards[n.house_id].status)}</div>
+                    {#if cards[n.house_id].capitalRatio !== null}<div><span class="stat-label">Owners' capital</span> {pct1(cards[n.house_id].capitalRatio ?? 0)} of notes and deposits</div>{/if}
+                    {#if cards[n.house_id].tillRatio !== null}<div><span class="stat-label">Till</span> {pct1(cards[n.house_id].tillRatio ?? 0)} of notes</div>{/if}
+                    <div><span class="stat-label">Holds gold tokens from</span> {cards[n.house_id].issuers.join(", ") || "no one yet"}</div>
+                    {#if cards[n.house_id].goldPerGram !== null}<div><span class="stat-label">Left for claims</span> {(cards[n.house_id].goldPerGram ?? 0).toFixed(3)} g of gold tokens per gram of notes</div>{/if}
+                    {#if cards[n.house_id].frozenMg > 0}<div><span class="stat-label">Frozen by an issuer</span> {A.fmt(cards[n.house_id].frozenMg)} of its gold, which no payout takes</div>{/if}
+                    {#each cards[n.house_id].untrusted as u}<div class="blocked-why">{u}</div>{/each}
+                    {#if payoutWords(n.units, goldPrice, spreadOf(n.house_id))}<div><span class="stat-label">Paid out now</span> {payoutWords(n.units, goldPrice, spreadOf(n.house_id))}</div>{/if}
+                  </div>
+                  <p class="hint disclosure">{disclosure(cards[n.house_id])}</p>
+                </div>
+              {/if}
               {#if n.demanded_units > 0}
                 <div class="note-demanded">
                   {#if n.house_status === "d"}
-                    {fmtEcx(n.demanded_units)} {BASE_TICKER} in the house's payout queue, earning {queueRate(houses, n.house_id)}
+                    {A.fmt(n.demanded_units)} in the house's payout queue, earning {queueRate(houses, n.house_id)}
                   {:else if n.house_status === "o" || n.house_status === "s"}
-                    {fmtEcx(n.demanded_units)} {BASE_TICKER} demanded: the house must pay it within the demand window
+                    {A.fmt(n.demanded_units)} demanded: the house must pay it within the demand window
                   {:else}
-                    {fmtEcx(n.demanded_units)} {BASE_TICKER} demanded; the house has failed, so holders are paid from what it has left
+                    {A.fmt(n.demanded_units)} demanded; the house has failed, so holders are paid from what it has left
                   {/if}
                 </div>
               {/if}
@@ -942,9 +1024,12 @@
               {#if action && action.houseId === n.house_id}
                 <div class="note-form">
                   <label>
-                    Amount ({BASE_TICKER})
-                    <input type="number" bind:value={actionUnits} placeholder="0.00000000" step="0.00000001" min="0" />
+                    Amount ({A.label})
+                    <input type="number" bind:value={actionUnits} placeholder={A.unit === "mg" ? "0.000" : "0.00000000"} step={A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
                   </label>
+                  {#if A.unit === "mg" && action.type !== "send" && A.parse(actionUnits)}
+                    <p class="hint">{payoutWords(A.parse(actionUnits) ?? 0, goldPrice, spreadOf(n.house_id)) ?? "No gold price on FreeBank right now: payouts in sECX wait until there is one."}</p>
+                  {/if}
                   {#if unitsEcho(actionUnits)}
                     <p class="hint">{unitsEcho(actionUnits)}</p>
                   {/if}
@@ -984,8 +1069,9 @@
           {/each}
         {/if}
       </div>
-      <!-- v0.4.8: sell or buy a house's notes through the money changer. -->
-      {#if !locked.notes}
+      <!-- v0.4.8: sell or buy a house's notes through the money changer. Its quotes are in sECX: not on a gram-notes
+           chain until they're in grams (v0.7.0). -->
+      {#if !locked.notes && $noteUnit !== "mg"}
         <NoteChanger {notes} on:changed={loadNotes} />
       {/if}
 
@@ -994,18 +1080,26 @@
         <summary>House tools: mint notes</summary>
       <div class="card">
         <h3>Mint notes</h3>
-        <p class="muted">Issue new notes from a house your node controls. Enter the amount in {BASE_TICKER}: notes are base-native, 1 unit = 1 sat.</p>
+        {#if A.unit === "mg"}
+          <p class="muted">Issue new notes from a house your node controls. Enter the amount in grams. The house issues only while its counted owners' capital is at least 10% of notes and deposits and its till at least 2% of notes.</p>
+        {:else}
+          <p class="muted">Issue new notes from a house your node controls. Enter the amount in {BASE_TICKER}: notes are base-native, 1 unit = 1 sat.</p>
+        {/if}
+        <p class="hint role-line" data-testid="notice-house">{R1_HOUSE}</p>
         <div class="form">
           <label>
             House ID
             <input type="number" bind:value={mintHouseId} placeholder="e.g. 1" />
           </label>
           <label>
-            Amount ({BASE_TICKER})
-            <input type="number" bind:value={mintUnits} placeholder="0.00000000" step="0.00000001" min="0" />
+            Amount ({A.label})
+            <input type="number" bind:value={mintUnits} placeholder={A.unit === "mg" ? "0.000" : "0.00000000"} step={A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
           </label>
           {#if unitsEcho(mintUnits)}
             <p class="hint">{unitsEcho(mintUnits)}</p>
+          {/if}
+          {#if A.unit === "mg" && cards[Number(mintHouseId)]}
+            <p class="hint disclosure">Whoever takes these notes should see this: {disclosure(cards[Number(mintHouseId)])}</p>
           {/if}
           {#if mintHouseId && typeOf(houses, mintHouseId) !== "open"}
             <label>
@@ -1029,7 +1123,8 @@
             {housesLoading ? "…" : "Refresh"}
           </button>
         </div>
-        <p class="muted">Every note-issuing house on the chain. A note is only as sound as the house behind it — check its status and reserves before you trust its notes.</p>
+        <p class="muted">Every note-issuing house on the chain. A note is only as sound as the house behind it — check its status{A.unit === "mg" ? ", owners' capital and till" : " and reserves"} before you trust its notes.</p>
+        {#if A.unit === "mg"}<p class="muted small">Gold price: {goldFixWords(goldFix, goldPrice)}</p>{/if}
         {#if houses.length === 0}
           <div class="empty">
             <p>{syncing ? "Your node is still catching up; houses show once it has." : "No houses on this network yet."}</p>
@@ -1046,8 +1141,24 @@
                   <span class="badge badge-{h.effective_status.charAt(0)}">{h.effective_status}</span>
                   {#if houseType(h) !== "open"}<span class="badge badge-members">{TYPE_LABEL[houseType(h)]}</span>{/if}
                 </div>
-                <div class="note-units" title="Tier {h.tier}">notes up to {(h.lambdax10 / 10).toFixed(1).replace(/\.0$/, "")}× its reserve</div>
+                {#if A.unit === "sat"}<div class="note-units" title="Tier {h.tier}">notes up to {(h.lambdax10 / 10).toFixed(1).replace(/\.0$/, "")}× its reserve</div>{/if}
               </div>
+              {#if A.unit === "mg"}
+              <div class="house-stats">
+                <div><span class="stat-label">Notes outstanding</span> {A.fmt(h.mintedunits)}{h.mintcapunits > 0 ? ` of a ${A.fmt(h.mintcapunits)} limit` : ""}</div>
+                {#if cards[h.id]}
+                  {#if cards[h.id].capitalRatio !== null}<div><span class="stat-label">Owners' capital</span> {pct1(cards[h.id].capitalRatio ?? 0)} of notes and deposits</div>{/if}
+                  {#if cards[h.id].tillRatio !== null}<div><span class="stat-label">Till</span> {pct1(cards[h.id].tillRatio ?? 0)} of notes</div>{/if}
+                  <div><span class="stat-label">Holds gold tokens from</span> {cards[h.id].issuers.join(", ") || "no one yet"}</div>
+                  {#if cards[h.id].goldPerGram !== null}<div><span class="stat-label">Left for claims</span> {(cards[h.id].goldPerGram ?? 0).toFixed(3)} g of gold tokens per gram of notes</div>{/if}
+                    {#if cards[h.id].frozenMg > 0}<div><span class="stat-label">Frozen by an issuer</span> {A.fmt(cards[h.id].frozenMg)} of its gold, which no payout takes</div>{/if}
+                    {#each cards[h.id].untrusted as u}<div class="blocked-why">{u}</div>{/each}
+                    {#if cards[h.id].demandInterestMg > 0}<div><span class="stat-label">Interest owed on demanded notes</span> {A.fmt(cards[h.id].demandInterestMg)}</div>{/if}
+                    {#if cards[h.id].equityMg !== null}<div><span class="stat-label">Owners' equity</span> {A.fmt(cards[h.id].equityMg ?? 0)} at today's gold price{cards[h.id].demandInterestMg > 0 ? ", after that interest" : ""}{(cards[h.id].equityMg ?? 0) < 0 ? ": below zero, so anyone can open claims on it" : ""}</div>{/if}
+                {/if}
+              </div>
+              {#if cards[h.id]}<p class="hint disclosure">{disclosure(cards[h.id])}</p>{/if}
+              {:else}
               <div class="house-stats">
                 <div><span class="stat-label">Reserve pledged</span> {h.activeescrow} {BASE_TICKER}</div>
                 <div><span class="stat-label">Notes outstanding</span> {fmtEcx(h.mintedunits)} of {fmtEcx(h.mintcapunits)} {BASE_TICKER} cap</div>
@@ -1056,6 +1167,7 @@
                 {/if}
                 <div><span class="stat-label">Last attested</span> {h.lastattestheight > 0 ? `block ${h.lastattestheight} · ${h.lastattestreserves} sECX` : "never"}</div>
               </div>
+              {/if}
               {#if h.mintcapunits > 0}
                 <div class="util-bar"><div class="util-fill" style="width:{util(h)}%"></div></div>
               {/if}
@@ -1117,7 +1229,8 @@
         <summary>House tools: charter a house, attest reserves, your mint's tokens, settle with other houses</summary>
       <div class="card">
         <h3>Charter a house</h3>
-        <p class="muted">Open your own note-issuing house — the Scottish move: anyone can start a bank, kept honest by convertibility. Your node holds the keys.</p>
+        <p class="muted">Open your own note-issuing house, kept honest by convertibility: its notes are paid out on demand. Your node holds the keys.</p>
+        <p class="hint role-line">{R1_HOUSE}</p>
         <div class="form">
           <label>
             Name (note-class id)
@@ -1148,6 +1261,7 @@
       <div class="card">
         <h3>Attest reserves</h3>
         <p class="muted">A house your node holds the keys of shows its reserves on chain, so holders can see what backs its notes.</p>
+        <p class="hint role-line">{R1_HOUSE}</p>
         <div class="form">
           <label>
             House #
@@ -1211,6 +1325,8 @@
           {/if}
         </div>
       </div>
+      <!-- v0.7.0: netting here counts sECX at par; on a gram-notes chain it waits for its gram screens. -->
+      {#if $noteUnit !== "mg"}
       <div class="card" data-testid="house-netting">
         <h3>Settle with other houses: netting</h3>
         <p class="muted">The Edinburgh exchange: each house hands in the other houses' notes it holds, they're all
@@ -1286,8 +1402,18 @@
           {/if}
         </div>
       </div>
+      {:else}
+      <div class="card" data-testid="house-netting-grams">
+        <h3>Settle with other houses: netting</h3>
+        <p class="muted">Netting on a gram-notes chain is from the command line for now.</p>
+      </div>
+      {/if}
       </details>
     {:else if seg === "pools"}
+      {#if $noteUnit === "mg"}
+        <TokenPools {houses} on:error={(e) => (error = e.detail)} />
+      {/if}
+      {#if $noteUnit === "sat" || $notePoolsOpen}
       <!-- Pools (M3): notes ⇄ sECX, a constant-product pool -->
       {#if locked.lp}
         <div class="card locked-read">
@@ -1319,7 +1445,7 @@
               </div>
               <div class="house-stats">
                 <div><span class="stat-label">My share</span> {pct(lp.share_bps)} of {lp.lp_supply.toLocaleString()} shares</div>
-                <div><span class="stat-label">Underlying notes</span> {fmtEcx(lp.my_note_units)} {BASE_TICKER}</div>
+                <div><span class="stat-label">Underlying notes</span> {A.fmt(lp.my_note_units)}</div>
                 <div><span class="stat-label">Underlying {BASE_TICKER}</span> {fmtEcx(lp.my_btx_sats)} {BASE_TICKER}</div>
               </div>
             </div>
@@ -1357,7 +1483,7 @@
                 <div class="note-units">{price(p)}</div>
               </div>
               <div class="house-stats">
-                <div><span class="stat-label">Note reserve</span> {fmtEcx(p.note_reserve)} {BASE_TICKER}</div>
+                <div><span class="stat-label">Note reserve</span> {A.fmt(p.note_reserve)}</div>
                 <div><span class="stat-label">{BASE_TICKER} reserve</span> {fmtEcx(p.btx_reserve)} {BASE_TICKER}</div>
                 <div><span class="stat-label">Pool shares</span> {p.lp_supply.toLocaleString()}</div>
               </div>
@@ -1380,17 +1506,17 @@
                       >{BASE_TICKER} → Note</button>
                     </div>
                     <label>
-                      {swapDir === "noteforbtx" ? `Notes in (${BASE_TICKER})` : `${BASE_TICKER} in`}
-                      <input type="number" bind:value={poolAmountIn} placeholder="0.00000000" step="0.00000001" min="0" />
+                      {swapDir === "noteforbtx" ? `Notes in (${A.label})` : `${BASE_TICKER} in`}
+                      <input type="number" bind:value={poolAmountIn} placeholder={swapDir === "noteforbtx" && A.unit === "mg" ? "0.000" : "0.00000000"} step={swapDir === "noteforbtx" && A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
                     </label>
                     <label>
-                      {swapDir === "noteforbtx" ? `Least ${BASE_TICKER} out` : `Least notes out (${BASE_TICKER})`}
-                      <input type="number" bind:value={poolMinOut} placeholder="empty or 0 = no slippage limit" step="0.00000001" min="0" />
+                      {swapDir === "noteforbtx" ? `Least ${BASE_TICKER} out` : `Least notes out (${A.label})`}
+                      <input type="number" bind:value={poolMinOut} placeholder="empty or 0 = no slippage limit" step={swapDir === "btxfornote" && A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
                     </label>
                   {:else if poolAction.type === "add"}
                     <label>
-                      Notes ({BASE_TICKER})
-                      <input type="number" bind:value={poolAddNoteEcx} placeholder="0.00000000" step="0.00000001" min="0" />
+                      Notes ({A.label})
+                      <input type="number" bind:value={poolAddNoteEcx} placeholder={A.unit === "mg" ? "0.000" : "0.00000000"} step={A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
                     </label>
                     <label>
                       {BASE_TICKER}
@@ -1423,14 +1549,15 @@
       <div class="card">
         <h3>Create a pool</h3>
         <p class="muted">Seed a new note/{BASE_TICKER} pool. The pool id is the house id whose notes it trades. You supply both sides of the initial reserves.</p>
+        <p class="hint role-line">{R4_POOL}</p>
         <div class="form">
           <label>
             Pool id (house id)
             <input type="number" bind:value={createPoolId} placeholder="e.g. 1" />
           </label>
           <label>
-            Seed notes ({BASE_TICKER})
-            <input type="number" bind:value={createNoteEcx} placeholder="0.00000000" step="0.00000001" min="0" />
+            Seed notes ({A.label})
+            <input type="number" bind:value={createNoteEcx} placeholder={A.unit === "mg" ? "0.000" : "0.00000000"} step={A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
           </label>
           <label>
             Seed {BASE_TICKER}
@@ -1450,6 +1577,7 @@
       </div>
       </details>
       {/if}
+      {/if}
     {:else if seg === "bills"}
       <!-- Bills (M4): bills of exchange — the discount-house asset side -->
       {#if locked.bills}
@@ -1465,7 +1593,11 @@
             {billsLoading ? "…" : "Refresh"}
           </button>
         </div>
-        <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, backed by a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+        {#if A.unit === "mg"}
+          <p class="muted">A bill is a promise to pay a set weight of gold on a set date, paid in {BASE_TICKER} at the gold price on the day, backed by a bond in {BASE_TICKER} held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+        {:else}
+          <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, backed by a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+        {/if}
         {#if locked.bills}
           <p class="muted small">—</p>
         {:else if bills.length === 0}
@@ -1485,11 +1617,14 @@
                   <span class="note-house">Bill #{b.id}</span>
                   <span class="badge badge-bill-{b.status}">{BILL_STATUS[b.status] ?? b.status}</span>
                 </div>
-                <div class="note-units">{b.amount} {BASE_TICKER}</div>
+                <div class="note-units">{A.fmt(faceUnits(b))}</div>
               </div>
               <div class="house-stats">
+                {#if A.unit === "mg" && b.status === "a"}
+                  <div><span class="stat-label">Paid in {BASE_TICKER}</span> {faceWorth(faceUnits(b)) !== null ? `about ${fmtEcx(faceWorth(faceUnits(b)) ?? 0)} ${BASE_TICKER} at today's gold price` : "at the gold price, once there is one again (until then it doesn't fall due)"}</div>
+                {/if}
                 <div><span class="stat-label">Bond</span> {b.escrow} {BASE_TICKER}</div>
-                <div><span class="stat-label">Matures</span> {b.maturity_height > height ? `in about ${days(b.maturity_height - height)}` : "now"} (block {b.maturity_height}), then {days(b.grace_blocks)} to pay</div>
+                {#if b.status === "a"}<div><span class="stat-label">Matures</span> {b.maturity_height > height ? `in about ${days(b.maturity_height - height)}` : "now"} (block {b.maturity_height}), then {days(b.grace_blocks)} to pay</div>{/if}
                 {#if canClaimBond(b, height)}
                   <div class="soft-error" data-testid="bill-past-due"><span class="stat-label">Past due</span> not paid in time: you can claim the bond</div>
                 {/if}
@@ -1509,15 +1644,15 @@
                 <div class="note-form" data-testid="repay-in-notes">
                   <p class="small">
                     {nameOf(houses, b.owner_house_id ?? 0)} holds this bill, so you can repay it in the house's own notes: they
-                    go back to the house, at par. You hold {fmtEcx(repayNotes(b))} {BASE_TICKER} of them that you can use.
+                    go back to the house, at par. You hold {A.fmt(repayNotes(b))} of them that you can use.
                   </p>
                   <label>
-                    In notes ({BASE_TICKER})
-                    <input type="number" bind:value={retireNotes} step="0.00000001" min="0" />
+                    In notes ({A.label})
+                    <input type="number" bind:value={retireNotes} step={A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
                   </label>
                   <p class="hint">
-                    The rest, {fmtEcx(Math.max(0, (parseEcx(String(b.amount)) ?? 0) - (parseEcx(retireNotes) ?? 0)))} {BASE_TICKER},
-                    is paid in {BASE_TICKER}; your bond comes back.
+                    The rest, {A.fmt(Math.max(0, faceUnits(b) - (A.parse(retireNotes) ?? 0)))},
+                    is paid in {BASE_TICKER}{A.unit === "mg" ? " at the gold price" : ""}; your bond comes back.
                   </p>
                   {#if retireError}<p class="soft-error small">{retireError}</p>{/if}
                   <div class="note-form-actions">
@@ -1565,14 +1700,15 @@
       <div class="card">
         <h3>Issue a bill</h3>
         <p class="muted">Draw and accept a bill: a dated promise for a face amount, backed by a bond the holder can claim if it isn't paid.</p>
+        <p class="hint role-line" data-testid="notice-bill">{R5_BILL}</p>
         <div class="form">
           <label>
             Description
             <input type="text" bind:value={billBody} placeholder="e.g. 90-day trade bill" />
           </label>
           <label>
-            Face amount ({BASE_TICKER})
-            <input type="number" bind:value={billAmount} placeholder="e.g. 1.0" step="0.00000001" />
+            Face amount ({A.label}){A.unit === "mg" ? ", paid in sECX at the gold price when it's repaid" : ""}
+            <input type="number" bind:value={billAmount} placeholder={A.unit === "mg" ? "e.g. 50.000" : "e.g. 1.0"} step={A.unit === "mg" ? "0.001" : "0.00000001"} />
           </label>
           <label>
             Escrow bond ({BASE_TICKER})
@@ -1621,5 +1757,12 @@
   }
   .locked-read p {
     margin: 0;
+  }
+  .house-card {
+    margin: 0.4rem 0;
+  }
+  .disclosure {
+    border-left: 2px solid var(--border-color);
+    padding-left: 0.6rem;
   }
 </style>

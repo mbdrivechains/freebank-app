@@ -10,6 +10,7 @@
   // `canShowAddresses` is false until the wallet has its passphrase: setting one replaces the wallet's seed,
   // so an address shown before would belong to the old seed. App.svelte wires it to the wallet's state.
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { L2_DEPOSIT } from "../lib/notice";
   import Notice from "./Notice.svelte";
   import { L1_TICKER } from "../lib/brand";
   import QrCode from "./QrCode.svelte";
@@ -209,6 +210,7 @@
 
 <div class="card deposit-par" data-testid="deposit-par">
   <h3>Deposit from eCash</h3>
+  <p class="hint role-line" data-testid="notice-deposit">{L2_DEPOSIT}</p>
   {#if !canShowAddresses}
     <p class="hint">Deposits show here once your wallet has a passphrase.</p>
   {:else if ec?.state === "ready" && ec.main}
@@ -301,6 +303,7 @@
     {/if}
   </div>
   <p class="muted small">Move ECX from the eCash chain into FreeBank, where it becomes sECX, with BitWindow.</p>
+  <p class="hint role-line">{L2_DEPOSIT}</p>
 
   {#if !$depositOpen}
     <button class="secondary dep-show" on:click={show}>Show how to deposit</button>

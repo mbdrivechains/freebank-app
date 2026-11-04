@@ -9,6 +9,7 @@
   //   restore-file   Settings: a checked backup file into the wallet's place
   // The long parts run in the app (src-tauri/src/recovery/job.rs), which may restart the node; this
   // follows their progress. Passphrases and words go to the app and are dropped here once used.
+  import { L1_KEYS } from "../lib/notice";
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import Notice from "./Notice.svelte";
   import PassphraseFields from "./PassphraseFields.svelte";
@@ -609,6 +610,7 @@
         Your recovery words are 24 words you write down. With them and a new passphrase, your wallet comes back on any
         computer.
       </p>
+      <p class="hint role-line" data-testid="notice-keys">{L1_KEYS}</p>
       <div class="wf-choices">
         <button class="wf-choice" on:click={() => choose(false)} disabled={busy}>
           <strong>New recovery words</strong>

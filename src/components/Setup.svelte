@@ -19,6 +19,8 @@
     tagProblem,
     versions,
     BITWINDOW_URL,
+    checkForUpdate,
+    update,
     type DatadirCheck,
     type InstallProgress,
     type NodeProgress,
@@ -34,6 +36,7 @@
     switchNetwork,
     SNAPSHOT_PENDING_START,
     NEWER_NODE_START,
+    NEW_CHAIN_NODE,
     type Remote,
     type StackProgress,
     type StackStatus,
@@ -386,6 +389,38 @@
 
   // What the node's start says while it waits before starting (v0.6.8: after an unclean stop, for the eCash node).
   let startWords = "";
+  // The node is older than its network's chain needs (v0.7.0: easynet's new chain on v1.1.0): the update is the way on,
+  // offered here; it starts the new node itself, which moves the old chain's data aside and syncs the new one.
+  $: newChain = startError.includes(NEW_CHAIN_NODE);
+  $: if (newChain && !$update?.latest) checkForUpdate(true);
+  let chainUpd: InstallProgress | null = null;
+  let chainUpdError = "";
+  async function updateForNewChain() {
+    chainUpdError = "";
+    try {
+      await node.updateStart();
+    } catch (e) {
+      chainUpdError = String(e);
+      return;
+    }
+    const tick = async () => {
+      try {
+        chainUpd = await node.updateProgress();
+      } catch {
+        setTimeout(tick, 1500);
+        return;
+      }
+      if (chainUpd.running) setTimeout(tick, 700);
+      else if (chainUpd.error) chainUpdError = chainUpd.error;
+      else {
+        chainUpd = null;
+        startError = "";
+        watchNode();
+      }
+    };
+    setTimeout(tick, 700);
+  }
+
   async function startNode() {
     startError = "";
     startedHere = true;
@@ -1057,9 +1092,22 @@
 
     {#if startError}
       <p class="soft-error">{startError}</p>
-      <div class="row-actions">
-        <button on:click={startNode}>Start again</button>
-      </div>
+      {#if newChain}
+        <div class="row-actions">
+          <button on:click={updateForNewChain} disabled={!!chainUpd?.running} data-testid="new-chain-update">
+            {chainUpd?.running ? "Updating the node…" : `Update node to ${$update?.latest ?? "the new release"}`}
+          </button>
+        </div>
+        <p class="fine">
+          Downloads it from GitHub, checks it was signed with the FreeBank release key and matches its checksums, then
+          starts it.
+        </p>
+        {#if chainUpdError}<p class="soft-error">{chainUpdError}</p>{/if}
+      {:else}
+        <div class="row-actions">
+          <button on:click={startNode}>Start again</button>
+        </div>
+      {/if}
       {#if info}
         <AdvancedSettings settings={info.settings} defaultDatadir={info.default_datadir} on:saved={() => check()} />
       {/if}

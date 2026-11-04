@@ -37,11 +37,18 @@ const OLD_CHAIN_TOO: &[&str] = &["peers.dat", "banlist.dat", "fee_estimates.dat"
 /// again since. None for a folder that isn't FreeBank's, or whose chain is the network's.
 pub fn old_chain(datadir: &Path) -> Option<String> {
     let n = crate::network::current();
-    old_chain_on(datadir, n.pin_hash, n.restarted)
+    old_chain_on(datadir, n.pin_hash, n.restarted, n.fb_magic)
 }
 
-fn old_chain_on(datadir: &Path, pin: &str, restarted: Option<u64>) -> Option<String> {
-    if pin.is_empty() || !datadir.join(DATADIR_MARK).is_file() {
+fn old_chain_on(datadir: &Path, pin: &str, restarted: Option<u64>, magic: Option<[u8; 4]>) -> Option<String> {
+    if !datadir.join(DATADIR_MARK).is_file() {
+        return None;
+    }
+    // FreeBank's own chain started again on the same eCash chain (easynet on v1.1.0): its blocks carry other bytes.
+    if let Some(m) = old_magic(datadir, magic) {
+        return Some(format!("FreeBank's chain {}", hex::encode(m)));
+    }
+    if pin.is_empty() {
         return None;
     }
     let record = std::fs::read_to_string(datadir.join(PIN_RECORD)).ok().map(|t| t.trim().to_string());
@@ -77,6 +84,16 @@ fn first_block_time(datadir: &Path) -> Option<u64> {
     None
 }
 
+/// The network bytes the folder's first block file starts with, when they aren't this network's (`fb_magic`): an
+/// earlier FreeBank chain on the same eCash chain. None when the network doesn't say its bytes, or there's no block yet.
+fn old_magic(datadir: &Path, magic: Option<[u8; 4]>) -> Option<[u8; 4]> {
+    use std::io::Read;
+    let want = magic?;
+    let mut head = [0u8; 4];
+    std::fs::File::open(datadir.join("blocks").join("blk00000.dat")).ok()?.read_exact(&mut head).ok()?;
+    (head != [0; 4] && head != want).then_some(head)
+}
+
 /// Before each start, after `settle`: the pin this start uses.
 pub fn remember(datadir: &Path) {
     if !pin_hash().is_empty() && datadir.join(DATADIR_MARK).is_file() {
@@ -89,18 +106,25 @@ pub fn settle(mgr: &NodeManager, datadir: &Path) -> Result<Option<String>, Strin
     if old_chain(datadir).is_none() {
         return Ok(None);
     }
+    let n = crate::network::current();
+    let freebank_only = old_magic(datadir, n.fb_magic).is_some();
     let t = now();
     std::fs::write(datadir.join(MOVED_RECORD), t.to_string()).map_err(|e| e.to_string())?;
     MOVED_AT.store(t, Ordering::Relaxed);
     let away = move_aside(datadir)?;
+    let why = if freebank_only {
+        format!("FreeBank on {} started a new chain, so your node syncs it from its first block.", n.name)
+    } else {
+        format!("{} started again from its first block, so FreeBank's node starts its chain again too.", n.l1)
+    };
     let said = format!(
-        "{} started again from its first block, so FreeBank's node starts its chain again too. Your wallets keep their \
-         keys and addresses; their payments on the old chain count for nothing now and aren't listed. The old chain's \
-         data is in {}.",
-        crate::network::current().l1,
+        "{} Your wallets keep their keys and addresses; their payments on the old chain count for nothing now and \
+         aren't listed. The old chain's data is in {}.",
+        why,
         away.display()
     );
-    crate::activity::note(&format!("node: the eCash chain started again; the old chain's data moved to {}", away.display()));
+    let which = if freebank_only { "FreeBank's chain" } else { "the eCash chain" };
+    crate::activity::note(&format!("node: {which} started again; the old chain's data moved to {}", away.display()));
     *mgr.restarted.lock().unwrap() = Some(said);
     Ok(Some(away.to_string_lossy().into_owned()))
 }
@@ -145,7 +169,7 @@ fn same_disk_as_parent(_: &Path) -> bool {
 /// A wallet payment in no block that the wallet saw before the node's chain moved aside: the old chain's. It is in no
 /// balance, and the lists leave it out.
 pub fn from_old_chain(e: &Value) -> bool {
-    old_payment(e, MOVED_AT.load(Ordering::Relaxed))
+    old_payment(e, MOVED_AT.load(Ordering::Relaxed).max(crate::network::current().fb_since.unwrap_or(0)))
 }
 
 fn old_payment(e: &Value, moved: u64) -> bool {
@@ -280,14 +304,14 @@ mod tests {
         let old = "00000001a4105dc30c636e71ac2d844caa32d6fa2e9aacc5b2225ea772dd9490";
         let new = "000000018a449eb24e2c55744a19ad02db5928fa89296f87cbb2059784b2b211";
         let d = folder(old);
-        assert_eq!(old_chain_on(&d, new, None).as_deref(), Some(old), "the cache, without a record");
+        assert_eq!(old_chain_on(&d, new, None, None).as_deref(), Some(old), "the cache, without a record");
         std::fs::write(d.join(PIN_RECORD), new).unwrap();
-        assert_eq!(old_chain_on(&d, new, None), None, "the record says this start's pin");
+        assert_eq!(old_chain_on(&d, new, None, None), None, "the record says this start's pin");
         std::fs::write(d.join(PIN_RECORD), old).unwrap();
-        assert_eq!(old_chain_on(&d, new, None).as_deref(), Some(old));
+        assert_eq!(old_chain_on(&d, new, None, None).as_deref(), Some(old));
         std::fs::write(d.join(PIN_RECORD), "torn").unwrap();
-        assert_eq!(old_chain_on(&d, new, None).as_deref(), Some(old), "a record that isn't one: the cache says");
-        assert_eq!(old_chain_on(&d, "", None), None, "a network with no pin (mainnet, not yet)");
+        assert_eq!(old_chain_on(&d, new, None, None).as_deref(), Some(old), "a record that isn't one: the cache says");
+        assert_eq!(old_chain_on(&d, "", None, None), None, "a network with no pin (mainnet, not yet)");
         // `remember` writes the network's own pin (beta's in tests).
         remember(&d);
         assert_eq!(std::fs::read_to_string(d.join(PIN_RECORD)).unwrap(), pin_hash());
@@ -299,15 +323,43 @@ mod tests {
         let new = "000000018a449eb24e2c55744a19ad02db5928fa89296f87cbb2059784b2b211";
         let d = folder(new);
         std::fs::remove_file(d.join("mainblockhash.dat")).unwrap();
-        assert_eq!(old_chain_on(&d, new, Some(1_793_250_719)), None, "no block file");
+        assert_eq!(old_chain_on(&d, new, Some(1_793_250_719), None), None, "no block file");
         blocks(&d, 1_792_139_812);
         assert_eq!(first_block_time(&d), Some(1_792_139_812), "the first block after the genesis");
-        assert!(old_chain_on(&d, new, Some(1_793_250_719)).is_some(), "made before the restart");
-        assert_eq!(old_chain_on(&d, new, None), None, "a network that never restarted");
+        assert!(old_chain_on(&d, new, Some(1_793_250_719), None).is_some(), "made before the restart");
+        assert_eq!(old_chain_on(&d, new, None, None), None, "a network that never restarted");
         blocks(&d, 1_793_260_000);
-        assert_eq!(old_chain_on(&d, new, Some(1_793_250_719)), None, "the new chain's");
+        assert_eq!(old_chain_on(&d, new, Some(1_793_250_719), None), None, "the new chain's");
         std::fs::write(d.join("blocks/blk00000.dat"), vec![0u8; 4096]).unwrap();
         assert_eq!(first_block_time(&d), None, "an empty block file");
+    }
+
+    /// The block file of a FreeBank chain with these network bytes.
+    fn blocks_with(d: &Path, magic: [u8; 4]) {
+        blocks(d, 1_793_760_000);
+        let mut f = std::fs::read(d.join("blocks/blk00000.dat")).unwrap();
+        f[..4].copy_from_slice(&magic);
+        std::fs::write(d.join("blocks/blk00000.dat"), f).unwrap();
+    }
+
+    #[test]
+    fn a_new_freebank_chain_on_the_same_ecash_chain_moves_the_old_one_aside() {
+        let pin = "000000018a449eb24e2c55744a19ad02db5928fa89296f87cbb2059784b2b211";
+        let new = Some([0xfb, 0x4b, 0xea, 0x05]);
+        let d = folder(pin);
+        std::fs::write(d.join(PIN_RECORD), pin).unwrap();
+        assert_eq!(old_chain_on(&d, pin, None, new), None, "no block file yet");
+        blocks_with(&d, [0xfb, 0x4b, 0xea, 0x03]);
+        assert_eq!(old_chain_on(&d, pin, None, new).as_deref(), Some("FreeBank's chain fb4bea03"), "easynet's v1.0.x chain");
+        assert_eq!(old_chain_on(&d, pin, None, None), None, "a network that doesn't say its bytes");
+        assert_eq!(old_chain_on(&d, "", None, new).as_deref(), Some("FreeBank's chain fb4bea03"), "whatever the pin");
+        blocks_with(&d, [0xfb, 0x4b, 0xea, 0x05]);
+        assert_eq!(old_chain_on(&d, pin, None, new), None, "the new chain's own blocks");
+        std::fs::write(d.join("blocks/blk00000.dat"), vec![0u8; 4096]).unwrap();
+        assert_eq!(old_chain_on(&d, pin, None, new), None, "a block file not written yet");
+        std::fs::remove_file(d.join(DATADIR_MARK)).unwrap();
+        blocks_with(&d, [0xfb, 0x4b, 0xea, 0x03]);
+        assert_eq!(old_chain_on(&d, pin, None, new), None, "a folder that isn't FreeBank's");
     }
 
     #[test]
@@ -324,5 +376,17 @@ mod tests {
             assert_eq!(old_payment(&e, r), old, "{e}");
         }
         assert!(!old_payment(&json!({"txid": "a", "confirmations": 0, "timereceived": 100}), 0), "never moved");
+    }
+
+    #[test]
+    fn easynets_old_chain_payments_are_left_out_without_a_move() {
+        // An older app's node update reindexes onto the new chain over the old block files: no move is recorded, so the
+        // new chain's start dates the old chain's payments.
+        let since = crate::network::EASYNET.fb_since.expect("easynet's new chain has a start");
+        assert!(since > 1_793_750_400, "after the genesis time");
+        assert!(old_payment(&json!({"txid": "a", "confirmations": 0, "timereceived": 1_793_811_012}), since), "old chain's block 985");
+        assert!(!old_payment(&json!({"txid": "b", "confirmations": 0, "timereceived": since + 60}), since), "new chain");
+        assert!(!old_payment(&json!({"txid": "c", "confirmations": 3, "timereceived": 1_793_811_012}), since), "in a block");
+        assert_eq!(crate::network::MAINNET.fb_since, None);
     }
 }

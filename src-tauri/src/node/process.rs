@@ -222,6 +222,10 @@ async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
             tag
         ));
     }
+    // A release older than the network's chain (easynet's new chain needs v1.1.0): it would start an empty old chain.
+    if crate::network::below_min(crate::network::current(), &tag) {
+        return Err(crate::network::too_old(crate::network::current(), &tag));
+    }
     // Another node in this folder, on whatever port: freebankd would refuse to start beside it.
     if let Some(u) = lock::in_use(Path::new(&s.datadir), &[]) {
         return Err(format!("{} Stop it first, or choose another data folder under Advanced.", u.say()));

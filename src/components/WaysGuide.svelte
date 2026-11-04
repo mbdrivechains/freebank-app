@@ -3,6 +3,7 @@
   // and Settings > Help. "Go there" closes it on the screen a step names; "Send as a suggestion" opens the report
   // dialog over it, filled in, for the user to read before anything goes.
   import { BASE_TICKER } from "../lib/brand";
+  import { detectNoteUnit, notePoolsOpen, noteUnit } from "../lib/grams";
   import { openReport, reportDraft } from "../lib/report";
   import {
     COMMON,
@@ -19,6 +20,12 @@
   } from "../lib/ways";
 
   $: way = $waysOpen ? wayById($waysOpen) : undefined;
+  // The node's unit, asked again on opening: only the Credit tab asks otherwise, and Ways opens from Home and Help too.
+  $: if ($waysOpen) detectNoteUnit();
+  // On a gram-notes chain (v1.1.0) house note pools are closed, and the guides still speak of sECX notes (v0.7.0).
+  $: ways = WAYS.filter((w) => w.id !== "pools" || $notePoolsOpen);
+  const GRAMS_NOTE =
+    "On this chain, notes, bills and deposits count in grams of gold, and are paid out in sECX at the chain's payout price for gold. These guides still give amounts in sECX; the screens show grams.";
 
   const IN_APP: Record<Way["inApp"], string> = {
     yes: "In the app",
@@ -62,8 +69,9 @@
     {#if !way}
       <h3 id="ways-title">Ways to use FreeBank</h3>
       <p class="muted">What do you want to do?</p>
+      {#if $noteUnit === "mg"}<p class="hint" data-testid="ways-grams">{GRAMS_NOTE}</p>{/if}
       <div class="ways-menu">
-        {#each WAYS as w}
+        {#each ways as w}
           <button class="secondary ways-goal" on:click={() => waysOpen.set(w.id)} data-testid="ways-goal-{w.id}">
             <span>{w.goal}</span>
             <span class="ways-tag tag-{w.inApp.replace(' ', '-')}">{IN_APP[w.inApp]}</span>
@@ -76,6 +84,7 @@
       <p class="muted small">{COMMON[0]}</p>
     {:else}
       <h3 id="ways-title">{way.title}</h3>
+      {#if $noteUnit === "mg"}<p class="hint">{GRAMS_NOTE}</p>{/if}
       <p>{way.summary}</p>
       <dl class="ways-facts">
         <dt>Who lends</dt>

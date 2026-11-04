@@ -421,7 +421,8 @@ async fn update(mgr: &Arc<NodeManager>) -> Result<(), String> {
     };
 
     set(&p, |s| s.stage = "start".into());
-    if running {
+    // From a release the chain no longer runs on (it was refused at its start): the new one starts at once.
+    if running || crate::network::below_min(net, &old) {
         super::process::start(mgr).await?;
     } else {
         set(&p, |s| s.note = Some("The node was stopped; start it when you're ready.".into()));

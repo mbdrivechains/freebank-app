@@ -41,6 +41,33 @@ export function nice(e: unknown): string {
   if (/Request failed|error sending request|Connection refused|RPC not configured|busy; try again/i.test(m)) {
     return "Your FreeBank node isn't answering. It may be stopped or still starting; the Node tab shows which.";
   }
+  // Gram notes: every sECX payout is priced at the tip, and the node refuses one when the feed is stale and no pool is
+  // deep ("No payout price...").
+  if (/no payout price/i.test(m)) {
+    return "There is no gold price on FreeBank right now, so payouts in sECX wait. Nothing is lost: try again once the price is reported. Until then, bills don't fall overdue.";
+  }
+  // Gram nodes, the gold token wallet's refusals (the user's own pool and token actions).
+  if (/Insufficient plain funds/i.test(m)) {
+    return "Not enough spendable sECX for this and its fee. sECX still on its way can be used once it's in a block: wait a block and try again.";
+  }
+  if (/Insufficient unfrozen token units/i.test(m)) {
+    return "You don't have that much of this gold token to use: some may be on its way (wait a block), or frozen by its issuer.";
+  }
+  if (/Insufficient LP shares/i.test(m)) {
+    return "You don't have that many shares of this pool.";
+  }
+  if (/above max_sats|below min_out/i.test(m)) {
+    return "The pool's price moved more than 1% since the estimate, so nothing was done. Look at the new estimate and try again.";
+  }
+  if (/Swap out of range for the pool/i.test(m)) {
+    return "That swap is too small for the pool to pay anything, or too large for what it holds. Try another amount.";
+  }
+  if (/Liquidity too small to mint a share/i.test(m)) {
+    return "That's too little to earn a share of the pool. Add more.";
+  }
+  if (/pool keeps its floor/i.test(m)) {
+    return "That many shares can't come out: a pool keeps a small floor that is never taken out. Take out fewer.";
+  }
   // Node v0.2.19's refusals for members-only and redeem-only houses.
   if (/bad-house-not-member/.test(m)) {
     return "This house's notes can only go to its members, and that address isn't one.";

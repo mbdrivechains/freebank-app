@@ -33,9 +33,9 @@ grep -q '^Replaces:' "$ctl" || printf 'Replaces: free-bank\n' >> "$ctl"
 grep -q '^Conflicts:' "$ctl" || printf 'Conflicts: free-bank\n' >> "$ctl"
 grep -q '^Homepage:' "$ctl" || printf 'Homepage: https://github.com/mbdrivechains/freebank-app\n' >> "$ctl"
 sed -i -e 's/^Maintainer: FreeBank$/Maintainer: FreeBank <apt@ecxfreebank.com>/' "$ctl"
-# Tauri leaves a "(none)" long description; give it a real one.
+# Tauri leaves a "(none)" long description; give it a real one, ending with the notice's short line.
 if grep -q '^ (none)$' "$ctl"; then
-  sed -i -e 's/^ (none)$/ Finds the eCash beta node and enforcer on this computer or your network, installs\n and runs a FreeBank node beside them, and shows its peers and blocks./' "$ctl"
+  sed -i -e 's|^ (none)$| Sets up and runs a FreeBank node beside an eCash node, and is its wallet.\n .\n FreeBank is experimental software: you can lose what you put in. It is not a bank;\n houses are run by independent operators and can fail. Not advice. Full notice:\n https://github.com/mbdrivechains/freebank-app/blob/main/NOTICE.md|' "$ctl"
 fi
 
 # Desktop file named after the app id; the category makes it show under Office/Finance.

@@ -1705,3 +1705,8 @@ button.secondary.danger-text:not(:disabled):hover {
 }
 
 
+
+/* The notice's one-line warnings (v0.7.0): a little room before the form that follows. */
+.role-line {
+  margin-bottom: 10px;
+}

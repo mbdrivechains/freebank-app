@@ -26,8 +26,32 @@ use tauri::State;
 /// The least FreeBank fee offered for the withdrawal transaction itself: freebankd's wallet wants its minimum fee for
 /// the transaction's size (Core's fallback rate, 0.0002 sECX a kB, on a few hundred bytes), and refuses less.
 pub const FREEBANK_FEE: u64 = 20_000;
-/// The size the FreeBank fee is reckoned on, kB.
-const WITHDRAWAL_KB: f64 = 0.6;
+/// The size the FreeBank fee is first reckoned on, bytes (a few inputs). The wallet picks the coins itself, so a
+/// withdrawal that takes many of them is bigger: once it refuses the fee as too small, later quotes reckon on twice the
+/// size, up to WITHDRAWAL_BYTES_MAX.
+const WITHDRAWAL_BYTES: u64 = 600;
+const WITHDRAWAL_BYTES_MAX: u64 = 9_600;
+static SIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(WITHDRAWAL_BYTES);
+/// freebankd's wallet refusing the withdrawal's FreeBank fee (CreateWithdrawal: under GetMinimumFee for its size).
+const NODE_FEE_SHORT: &str = "The fee you have set is too small";
+const FEE_SHORT: &str = "FreeBank's wallet wanted a higher FreeBank fee for this withdrawal than the quote had: it needs more of \
+your coins than most, or the chain is busy. Nothing was sent. Review it again: the new quote allows for a bigger transaction.";
+
+/// The withdrawal's refusal in plain words; a fee too small makes later quotes reckon on a bigger transaction.
+fn fee_refusal(m: String) -> String {
+    if !m.contains(NODE_FEE_SHORT) {
+        return m;
+    }
+    let _ = SIZE.fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |b| {
+        Some((b * 2).min(WITHDRAWAL_BYTES_MAX))
+    });
+    FEE_SHORT.into()
+}
+
+/// The FreeBank fee for `per_kb` (sats a kB) on a transaction of `bytes`, never under FREEBANK_FEE.
+fn fee_for(per_kb: u64, bytes: u64) -> u64 {
+    (per_kb.saturating_mul(bytes).div_ceil(1000)).clamp(FREEBANK_FEE, 1_000_000)
+}
 /// The eCash fee offered for the payout when freebankd has no recent average to go by.
 pub const DEFAULT_MAINCHAIN_FEE: u64 = 10_000;
 /// The smallest withdrawal offered: 0.001 sECX (eCash dust is far below it).
@@ -224,7 +248,7 @@ pub async fn withdraw_confirm(
         in_wallet(&mut c, &p.fb_wallet, "createwithdrawal", create_args(&p.address, &refund, p.sats, p.fee, p.mainchain_fee))
         .await
         .map_err(|e| (e.did_nothing(), e.for_ui()))
-        .map_err(|(nothing, m)| if nothing { m } else { format!("{m} It may have gone through: look under Withdrawals.") })
+        .map_err(|(nothing, m)| if nothing { fee_refusal(m) } else { format!("{m} It may have gone through: look under Withdrawals.") })
     }
     .await;
     let v = match made {
@@ -287,7 +311,7 @@ async fn freebank_fee(client: &ClientState) -> u64 {
     let c = client.lock().await;
     let est = c.call_typed("estimatesmartfee", vec![json!(6)]).await.ok();
     let per_kb = est.and_then(|e| sats(&e["feerate"])).unwrap_or(0);
-    ((per_kb as f64 * WITHDRAWAL_KB).ceil() as u64).clamp(FREEBANK_FEE, 1_000_000)
+    fee_for(per_kb, SIZE.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 /// A withdrawal as the screens show it.
@@ -445,5 +469,22 @@ mod tests {
         assert_eq!(state_of(None, None, Some(0)), "pending");
         assert_eq!(state_of(None, None, Some(-1)), "failed");
         assert_eq!(state_of(None, None, None), "unknown");
+    }
+
+    #[test]
+    fn a_fee_too_small_says_so_and_later_quotes_allow_for_a_bigger_transaction() {
+        // 0.001 sECX a kB (a chain busy with credit actions at their default) on 600 bytes; the floor below that.
+        assert_eq!(fee_for(100_000, 600), 60_000);
+        assert_eq!(fee_for(1_000, 600), FREEBANK_FEE);
+        assert_eq!(fee_for(u64::MAX, 600), 1_000_000);
+        assert_eq!(fee_refusal("RPC error -1: Invalid refund destination".into()), "RPC error -1: Invalid refund destination");
+        assert_eq!(SIZE.load(std::sync::atomic::Ordering::SeqCst), WITHDRAWAL_BYTES);
+        assert_eq!(fee_refusal("RPC error -1: The fee you have set is too small!\n".into()), FEE_SHORT);
+        assert_eq!(SIZE.load(std::sync::atomic::Ordering::SeqCst), 2 * WITHDRAWAL_BYTES);
+        for _ in 0..10 {
+            fee_refusal("RPC error -1: The fee you have set is too small!".into());
+        }
+        assert_eq!(SIZE.load(std::sync::atomic::Ordering::SeqCst), WITHDRAWAL_BYTES_MAX);
+        SIZE.store(WITHDRAWAL_BYTES, std::sync::atomic::Ordering::SeqCst);
     }
 }

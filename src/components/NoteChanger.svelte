@@ -3,6 +3,7 @@
   // for ECX (paid in with a note transfer from the FreeBank wallet), or buy them with ECX from the app's eCash wallet.
   // Shown only when a changer is set up (Settings) and deals in some house's notes. One note unit is one sat of sECX
   // at par, so note amounts are entered and shown as sECX, as everywhere on this screen.
+  import { L4_CHANGER } from "../lib/notice";
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import { fmtEcx, parseEcx } from "../lib/amount";
   import { BASE_TICKER, L1_TICKER } from "../lib/brand";
@@ -149,6 +150,7 @@
     <p class="muted small">
       It buys and sells some houses' notes for {L1_TICKER}, a little below par. You trust it with one order at a time.
     </p>
+    <p class="muted small">{L4_CHANGER}</p>
     {#if done}<p class="small nc-done">{done}</p>{/if}
     {#if mode === null}
       <div class="row-actions">

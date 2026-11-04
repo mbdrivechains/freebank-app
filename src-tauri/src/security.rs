@@ -105,6 +105,19 @@ pub const RPC_ALLOWED: &[&str] = &[
     "getpool",
     "getbill",
     "listbills",
+    // Read-only, gram nodes (the gram-notes release): a house's gold, the tokens behind it, the gold price and the
+    // token pools (the per-note card and the payout price).
+    "gethousegold",
+    "getissuedtoken",
+    "getgoldfix",
+    "listtokenpools",
+    // Gram nodes, the Pools segment's gold tokens: the wallet's token coins (read-only), and a token's one pool
+    // against sECX (swap, add, take out), which sign with the wallet like the credit actions and pay only the wallet.
+    // (Sending a token to an address is a send: it belongs with send.rs, behind phone approval, not here.)
+    "listissued",
+    "swaptoken",
+    "addtokenliquidity",
+    "removetokenliquidity",
 ];
 
 /// Refuse a method the screens may not call (see RPC_ALLOWED).

@@ -44,6 +44,7 @@
   import HelpSettings from "./components/HelpSettings.svelte";
   import ReportDialog from "./components/ReportDialog.svelte";
   import WaysGuide from "./components/WaysGuide.svelte";
+  import NoticeGate from "./components/NoticeGate.svelte";
   import { goTo, waysOpen } from "./lib/ways";
   import { openReport, reportDraft } from "./lib/report";
   import SecurityAlerts from "./components/SecurityAlerts.svelte";
@@ -660,6 +661,8 @@
   {#if $reportDraft}<ReportDialog />{/if}
 
   {#if asking}<AskDialog on:close={() => (asking = false)} />{/if}
+  <!-- The first-run notice (v0.7.0): over everything until "I understand", once per device. -->
+  <NoticeGate />
 
   {#if $versions}
     <footer class="app-foot">

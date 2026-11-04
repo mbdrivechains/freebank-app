@@ -3059,16 +3059,76 @@ pub const CREDIT_PAYMENTS: &[&str] = &[
     "addhousemembers",
     "removehousemembers",
     "purgehousemembers",
+    // Gram nodes (the gram-notes release): a gold token's one pool against sECX, and a gold token sent to an address
+    // (send_token's own command; the generic path never takes sendissued).
+    "swaptoken",
+    "addtokenliquidity",
+    "removetokenliquidity",
+    "sendissued",
 ];
+
+/// The node's fee for a gold token call that leaves it out (0.001 sECX).
+const TOKEN_FEE_DEFAULT_SATS: u64 = 100_000;
+/// The plain sECX a token coin carries to its new owner (the node's ISSUED_COIN_VALUE), paid by the sender.
+const TOKEN_COIN_SATS: u64 = 1_000;
+
+/// What a credit payment's cost is read with besides its arguments, as the desktop finds them before asking.
+#[derive(Debug, Clone, Default)]
+pub struct CreditFacts {
+    /// The bill's amount (getbill), for endorsebill and retirebill.
+    pub bill: Option<u64>,
+    /// The node counts notes, bills and gold tokens in mg (getblockchaininfo's `note_unit`, the gram-notes release).
+    pub grams: bool,
+    /// The chain's payout price now, sats per gram (listtokenpools); None: none.
+    pub price: Option<u64>,
+    /// The token's pool, (units, sats), for swaptoken and addtokenliquidity.
+    pub pool: Option<(u64, u64)>,
+    /// The token's ticker, for the words.
+    pub ticker: Option<String>,
+    /// The token is a gold token (getissuedtoken's kind "gold_mg"): only then is a unit a mg of gold.
+    pub gold: bool,
+}
+
+/// A bill's face from getbill, in the note unit: `face_mg` (whole mg) on a gram node (FreeBank v1.1.0 and later),
+/// `amount` (8-decimal sECX) before. A `face_mg` that isn't a whole number reads as nothing, so a phone is asked.
+pub fn bill_face(b: &Value) -> Option<u64> {
+    match b.get("face_mg") {
+        Some(v) if !v.is_null() => v.as_u64(),
+        _ => store::json_to_sats(&b["amount"]).ok(),
+    }
+}
+
+/// `units` at `sats` per `per` units, rounded up; None if `per` is 0.
+fn worth(units: u64, sats: u64, per: u64) -> Option<u64> {
+    (per > 0).then(|| ((units as u128 * sats as u128).div_ceil(per as u128)).min(u64::MAX as u128) as u64)
+}
+
+/// mg in grams with three decimals: 1500 -> "1.500".
+fn grams_of(mg: u64) -> String {
+    format!("{}.{:03}", mg / 1000, mg % 1000)
+}
 
 /// What a credit call from the desktop's tabs costs this wallet (sats) and how a phone is asked about it; None for the
 /// calls that pay nothing. Counted: the fee, and whatever leaves the wallet for someone else or a pool: notes sent,
 /// what goes into a swap or a pool, a bill's bond, a bill handed on or paid (`bill`: its amount, from getbill). A cost
 /// that can't be read from the call counts as more than any day's amount, so a phone is asked.
+#[cfg(test)]
 pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u64, Approve)> {
+    credit_payment_with(method, p, &CreditFacts { bill, ..CreditFacts::default() })
+}
+
+/// credit_payment with what the node said besides. On a gram node, notes, bills and gold tokens count at what they're
+/// worth in sECX at the payout price (a token sold: at the pool's price if that is higher). Where the cost can't be
+/// read (no price, a token that isn't gold, an add to a pool, which the node prices from pending trades with no cap),
+/// a phone is asked.
+pub fn credit_payment_with(method: &str, p: &[Value], f: &CreditFacts) -> Option<(u64, Approve)> {
     if !CREDIT_PAYMENTS.contains(&method) {
         return None;
     }
+    if f.grams || matches!(method, "swaptoken" | "addtokenliquidity" | "removetokenliquidity" | "sendissued") {
+        return Some(gram_payment(method, p, f));
+    }
+    let bill = f.bill;
     let units = |i: usize| p.get(i).and_then(Value::as_u64);
     let ecx = |i: usize| p.get(i).and_then(|v| store::json_to_sats(v).ok());
     let id = |i: usize| p.get(i).and_then(Value::as_u64).map_or("?".to_string(), |n| n.to_string());
@@ -3077,7 +3137,7 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
     // fee, address), registerhouse's (tier, threshold, classid, denommg, pledges, fee, type; node v0.2.19) and
     // retirebill's (id, fee, notes; node v0.2.27).
     let fee = match method {
-        "transfernote" | "mintnote" => p.get(2),
+        "transfernote" | "mintnote" | "demandnote" => p.get(2),
         "retirebill" => p.get(1),
         "registerhouse" => p.get(5),
         _ => p.last(),
@@ -3113,7 +3173,14 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
             Some(to) => (units(1), format!("Mint {} sECX of house #{}'s notes to {to}", e(units(1)), id(0))),
         },
         "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} sECX of house #{}'s notes", e(units(1)), id(0))),
-        "demandnote" => (Some(NOTE_CARRIER_SATS), format!("Demand {} sECX of house #{}'s notes", e(units(1)), id(0))),
+        // A demand with a payout address (pre-authorised): the discharge, the notes' worth, goes to that address.
+        "demandnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
+            None => (Some(NOTE_CARRIER_SATS), format!("Demand {} sECX of house #{}'s notes", e(units(1)), id(0))),
+            Some(to) => (
+                units(1).map(|u| u.saturating_add(NOTE_CARRIER_SATS)),
+                format!("Demand {} sECX of house #{}'s notes, paid to {to}", e(units(1)), id(0)),
+            ),
+        },
         "registerhouse" => {
             // Its pledges, an array of sECX amounts (security re-review L1).
             let pledged = p.get(4).and_then(Value::as_array).and_then(|a| {
@@ -3135,4 +3202,112 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
     };
     let cost = out.zip(fee).map_or(u64::MAX, |(o, f)| o.saturating_add(f));
     Some((cost, Approve::Action { text, sats: (cost != u64::MAX).then_some(cost) }))
+}
+
+/// A credit payment on a gram node: amounts in mg, worth sats at a price.
+fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
+    let units = |i: usize| p.get(i).and_then(Value::as_u64);
+    let id = |i: usize| p.get(i).and_then(Value::as_u64).map_or("?".to_string(), |n| n.to_string());
+    let g = |n: Option<u64>| n.map_or("?".to_string(), grams_of);
+    let e = |s: Option<u64>| s.map_or("?".to_string(), |s| to_ecx(s).to_string());
+    let at_price = |mg: Option<u64>| mg.zip(f.price).and_then(|(m, pr)| worth(m, pr, 1000));
+    // A token's worth: the higher of the pool's confirmed price and the payout price, as either can be pushed down.
+    let token_worth = |n: Option<u64>| {
+        let pool = n.zip(f.pool).and_then(|(n, (u, s))| worth(n, s, u));
+        match (pool, at_price(n)) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        }
+    };
+    let tk = f.ticker.clone().unwrap_or_else(|| {
+        let t = p.first().and_then(Value::as_str).unwrap_or("?");
+        format!("token {}…", t.chars().take(8).collect::<String>())
+    });
+    // The fee: where the note calls put it, or a token call's optional last argument (the node's default if left out).
+    let fee_at = |i: usize| match p.get(i) {
+        None => Some(TOKEN_FEE_DEFAULT_SATS),
+        Some(v) => store::json_to_sats(v).ok(),
+    };
+    let fee = match method {
+        "transfernote" | "mintnote" => p.get(2).and_then(|v| store::json_to_sats(v).ok()),
+        "demandnote" => fee_at(2),
+        "swaptoken" | "sendissued" => fee_at(3),
+        "addtokenliquidity" | "removetokenliquidity" => fee_at(2),
+        "retirebill" => p.get(1).and_then(|v| store::json_to_sats(v).ok()),
+        "registerhouse" => p.get(5).and_then(|v| store::json_to_sats(v).ok()),
+        _ => p.last().and_then(|v| store::json_to_sats(v).ok()),
+    };
+    let (out, text): (Option<u64>, String) = match method {
+        "transfernote" => {
+            let to = p.get(3).and_then(Value::as_str).unwrap_or("");
+            if to.is_empty() {
+                (Some(NOTE_CARRIER_SATS), format!("Move {} g of house #{}'s notes within this wallet", g(units(1)), id(0)))
+            } else {
+                (at_price(units(1)).map(|o| o.saturating_add(NOTE_CARRIER_SATS)), format!("Send {} g of house #{}'s notes to {to}", g(units(1)), id(0)))
+            }
+        }
+        "mintnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
+            None => (Some(0), format!("Mint house #{}'s notes", id(0))),
+            Some(to) => (at_price(units(1)), format!("Mint {} g of house #{}'s notes to {to}", g(units(1)), id(0))),
+        },
+        "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} g of house #{}'s notes", g(units(1)), id(0))),
+        "demandnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
+            None => (Some(NOTE_CARRIER_SATS), format!("Demand {} g of house #{}'s notes", g(units(1)), id(0))),
+            Some(to) => (
+                at_price(units(1)).map(|o| o.saturating_add(NOTE_CARRIER_SATS)),
+                format!("Demand {} g of house #{}'s notes, paid to {to}", g(units(1)), id(0)),
+            ),
+        },
+        "registerhouse" => {
+            let pledged = p.get(4).and_then(Value::as_array).and_then(|a| {
+                a.iter().try_fold(0u64, |t, v| store::json_to_sats(v).ok().map(|s| t.saturating_add(s)))
+            });
+            (pledged, format!("Register a house, pledging {} sECX", e(pledged)))
+        }
+        "attesthouse" => (Some(0), format!("Attest house #{}'s reserves", id(0))),
+        "registertokenkeyset" => (Some(0), format!("Record house #{}'s token keyset", id(0))),
+        "claimbillescrow" => (Some(0), format!("Claim bill #{}'s bond", id(0))),
+        "addhousemembers" | "removehousemembers" => {
+            let n = p.get(1).and_then(Value::as_array).map_or(0, |a| a.len());
+            let (verb, to) = if method == "addhousemembers" { ("Add", "to") } else { ("Remove", "from") };
+            (Some(0), format!("{verb} {n} member{} {to} house #{}", if n == 1 { "" } else { "s" }, id(0)))
+        }
+        "purgehousemembers" => (Some(0), format!("Clear removed members' records from house #{}", id(0))),
+        "swaptoken" => match p.get(1).and_then(Value::as_str) {
+            Some("sell") => (token_worth(units(2)), format!("Sell {} g of {tk} in its pool", g(units(2)))),
+            Some("buy") => (units(2), format!("Buy {tk} with {} sECX in its pool", e(units(2)))),
+            _ => (None, format!("Swap {tk} in its pool")),
+        },
+        // The node takes the sECX side at the pool's ratio as pending trades leave it. With max_sats (node v1.1.0; 0 or
+        // left out: no bound) it takes at most that, so the add counts the token's worth and that; without, the sECX
+        // side can't be read from here, so a phone is asked.
+        "addtokenliquidity" => match p.get(3).and_then(Value::as_u64).filter(|&m| m > 0) {
+            Some(most) => (
+                token_worth(units(1)).map(|w| w.saturating_add(most)),
+                format!("Add {} g of {tk} and at most {} sECX to its pool", g(units(1)), e(Some(most))),
+            ),
+            None => {
+                let with = units(1).zip(f.pool).and_then(|(n, (u, s))| worth(n, s, u));
+                (None, format!("Add {} g of {tk} and about {} sECX (at the pool's price when it goes in) to its pool", g(units(1)), e(with)))
+            }
+        },
+        "removetokenliquidity" => (Some(0), format!("Take {} shares out of {tk}'s pool", units(1).map_or("?".into(), |n| n.to_string()))),
+        "sendissued" => {
+            let to = p.get(2).and_then(Value::as_str).unwrap_or("?");
+            let out = at_price(units(1)).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));
+            let what = if f.gold { format!("{} g of {tk}", g(units(1))) } else { format!("{} units of {tk}", units(1).map_or("?".into(), |n| n.to_string())) };
+            (out, format!("Send {what} to {to}"))
+        }
+        // Bills on a gram node: the face is whole mg (`face_mg`), paid in sECX at the payout price; the bond is sECX.
+        "issuebill" => {
+            let face = p.get(1).and_then(Value::as_u64);
+            let bond = p.get(2).and_then(|v| store::json_to_sats(v).ok());
+            (bond, format!("Issue a bill for {} g, bonded with {} sECX", g(face), e(bond)))
+        }
+        "endorsebill" => (at_price(f.bill), format!("Hand bill #{} ({} g) to another holder", id(0), g(f.bill))),
+        "retirebill" => (at_price(f.bill), format!("Repay bill #{}: {} g, paid in sECX at the gold price", id(0), g(f.bill))),
+        _ => (None, method.to_string()),
+    };
+    let cost = out.zip(fee).map_or(u64::MAX, |(o, f)| o.saturating_add(f));
+    (cost, Approve::Action { text, sats: (cost != u64::MAX).then_some(cost) })
 }

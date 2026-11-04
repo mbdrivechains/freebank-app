@@ -186,33 +186,102 @@ pub async fn rpc_call(
     params: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     crate::security::allow_rpc(&method)?;
-    let guard = if crate::phone::CREDIT_PAYMENTS.contains(&method.as_str()) {
+    guarded_call(client.inner(), mgr.inner(), phone.inner(), &method, params).await
+}
+
+/// Send `units` (mg) of gold token `token` to `address` (gram nodes). A send, so it has its own command rather than the
+/// screens' generic path (whose allowlist keeps every send out), and goes through "Approve sends on my phone" at the
+/// token's worth at the payout price.
+#[tauri::command]
+pub async fn send_token(
+    client: State<'_, ClientState>,
+    mgr: State<'_, std::sync::Arc<crate::node::NodeManager>>,
+    phone: State<'_, crate::phone::commands::PhoneState>,
+    token: String,
+    units: u64,
+    address: String,
+) -> Result<serde_json::Value, String> {
+    let params = send_token_params(&token, units, &address)?;
+    guarded_call(client.inner(), mgr.inner(), phone.inner(), "sendissued", params).await
+}
+
+/// sendissued's arguments, once they're a token id, an amount and an address.
+fn send_token_params(token: &str, units: u64, address: &str) -> Result<Vec<serde_json::Value>, String> {
+    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("That isn't a gold token's id.".into());
+    }
+    if units == 0 {
+        return Err("Enter how much to send, above zero.".into());
+    }
+    let address = address.trim();
+    if address.is_empty() || address.len() > 120 || !address.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("That isn't a FreeBank address. Check it and try again.".into());
+    }
+    Ok(vec![serde_json::json!(token), serde_json::json!(units), serde_json::json!(address)])
+}
+
+/// What a credit payment's cost is read with, from the node: a bill's amount, and on a gram node the payout price and
+/// the token's pool and ticker. A failed look leaves the fact out, so the cost can't be read and a phone is asked.
+async fn credit_facts(c: &mut FreeBankClient, method: &str, params: &[serde_json::Value]) -> Result<crate::phone::CreditFacts, String> {
+    let mut f = crate::phone::CreditFacts::default();
+    f.grams = c.call_ui("getblockchaininfo", vec![]).await?["note_unit"].as_str() == Some("mg");
+    f.bill = match (method, params.first()) {
+        ("endorsebill" | "retirebill", Some(id)) => match c.call_ui("getbill", vec![id.clone()]).await {
+            Ok(b) => crate::phone::bill_face(&b),
+            Err(_) => None,
+        },
+        _ => None,
+    };
+    let token_call = matches!(method, "swaptoken" | "addtokenliquidity" | "removetokenliquidity" | "sendissued");
+    if f.grams || token_call {
+        if let Ok(l) = c.call_ui("listtokenpools", vec![]).await {
+            f.price = l["payout_price_sats_per_gram"].as_u64();
+            if let (true, Some(t)) = (token_call, params.first().and_then(|v| v.as_str())) {
+                if let Some(pool) = l["pools"].as_array().and_then(|a| a.iter().find(|p| p["token_id"].as_str() == Some(t))) {
+                    f.pool = pool["units"].as_u64().zip(pool["sats"].as_u64());
+                    f.ticker = pool["ticker"].as_str().map(String::from);
+                }
+            }
+        }
+        if let (true, Some(t)) = (token_call, params.first()) {
+            if let Ok(tok) = c.call_ui("getissuedtoken", vec![t.clone()]).await {
+                f.ticker = tok["ticker"].as_str().map(String::from).or(f.ticker.take());
+                f.gold = tok["kind"].as_str() == Some("gold_mg");
+            }
+        }
+    }
+    Ok(f)
+}
+
+/// A screen's call to the node, a credit payment first through "Approve sends on my phone" when that's on.
+async fn guarded_call(
+    client: &ClientState,
+    mgr: &std::sync::Arc<crate::node::NodeManager>,
+    phone: &crate::phone::commands::PhoneState,
+    method: &str,
+    params: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let guard = if crate::phone::CREDIT_PAYMENTS.contains(&method) {
         phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some())
     } else {
         None
     };
     let cleared = match guard {
         Some(p) => {
-            let bill = {
+            let facts = {
                 let mut c = client.lock().await;
                 if c.call_ui("getwalletinfo", vec![]).await?["unlocked_until"].as_u64() == Some(0) {
                     return Err(crate::send::LOCKED.into());
                 }
-                match (method.as_str(), params.first()) {
-                    ("endorsebill" | "retirebill", Some(id)) => match c.call_ui("getbill", vec![id.clone()]).await {
-                        Ok(b) => crate::phone::store::json_to_sats(&b["amount"]).ok(),
-                        Err(_) => None,
-                    },
-                    _ => None,
-                }
+                credit_facts(&mut c, method, &params).await?
             };
-            let (cost, what) = crate::phone::credit_payment(&method, &params, bill).expect("a credit payment");
+            let (cost, what) = crate::phone::credit_payment_with(method, &params, &facts).expect("a credit payment");
             Some((p, p.clear_desktop(cost, what).await?))
         }
         None => None,
     };
     let mut c = client.lock().await;
-    let r = screen_call(&mut c, &method, params).await;
+    let r = screen_call(&mut c, method, params).await;
     drop(c);
     r.map_err(|(e, give_back)| {
         if let (true, Some((p, cl))) = (give_back, cleared) {
@@ -247,6 +316,18 @@ mod tests {
     use super::*;
     use crate::rpc::stub;
     use serde_json::json;
+
+    #[test]
+    fn a_token_send_takes_only_an_id_an_amount_and_an_address() {
+        let t = "b7d5ee5160e1f5a76944ac3e0cee8fd0ba6b5275bf06610524ae11d8d87d2d75";
+        assert_eq!(send_token_params(t, 5_000, " fbaddr1 ").unwrap(), vec![json!(t), json!(5_000), json!("fbaddr1")]);
+        assert!(send_token_params(&t[..63], 5_000, "fbaddr1").is_err());
+        assert!(send_token_params(&format!("{}g", &t[..63]), 5_000, "fbaddr1").is_err());
+        assert!(send_token_params(t, 0, "fbaddr1").is_err());
+        assert!(send_token_params(t, 5_000, "").is_err());
+        assert!(send_token_params(t, 5_000, "fb addr").is_err());
+        assert!(send_token_params(t, 5_000, "fbaddr\"; rm").is_err());
+    }
 
     #[tokio::test]
     async fn a_credit_payment_the_node_took_without_answering_keeps_its_count() {

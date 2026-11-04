@@ -269,6 +269,7 @@ pub fn run() {
             commands::get_connection_status,
             commands::get_blockchain_info,
             commands::rpc_call,
+            commands::send_token,
             // v0.2.0 send
             send::fee_choices,
             send::send_prepare,

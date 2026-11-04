@@ -1,5 +1,18 @@
 # FreeBank
 
+> **Notice.** FreeBank is experimental, open-source software. It has not been audited, and you can lose what you put
+> into it. FreeBank is not a bank. Nothing on it is insured or guaranteed by any government or by its developers.
+>
+> Houses are run by independent operators, not by FreeBank's developers. A house can suspend payment or fail, and its
+> notes may not be paid in full. Notes are denominated in grams of gold and paid in sECX (ECX held on FreeBank) at an
+> on-chain price. Moving sECX back to eCash is slow and needs eCash miners' approval, and sECX can trade below ECX.
+>
+> Running a house, issuing tokens, reporting prices or lending to consumers may need a licence where you do it.
+> Nothing here is an offer of a financial product, or financial, legal or tax advice. FreeBank is not offered where
+> using it would be unlawful. You are responsible for the laws and taxes that apply to you.
+>
+> The full notice: [NOTICE.md](NOTICE.md), and in the app under Settings › Help › About and legal.
+
 The desktop app for the [**FreeBank**](https://github.com/mbdrivechains/freebank) credit-creation
 drivechain (BIP 300/301, slot 130): it sets up and runs a FreeBank node beside an eCash node (its own, BitWindow's, or
 your own), shows its blocks and peers, and is its wallet. It runs on eCash beta or on easynet, a small test network
