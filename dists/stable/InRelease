@@ -5,27 +5,27 @@ Acquire-By-Hash: yes
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sat, 31 Oct 2026 23:22:18 +0000
+Date: Thu, 05 Nov 2026 00:28:48 +0000
 Description: FreeBank desktop app
 Label: FreeBank
 Origin: FreeBank
 Suite: stable
 MD5Sum:
- 050d6780c321ad355e4899b97668d696            34523 main/binary-amd64/Packages
- 4a37dbe6f41a432dd056ba0c7b344f1c             7720 main/binary-amd64/Packages.gz
+ 7cb4c70bc5751ef5b5692c6c1d32a621            35563 main/binary-amd64/Packages
+ e46f1fada64e814ba0897f7e20ddb52f             8115 main/binary-amd64/Packages.gz
 SHA1:
- 9c591991c9a64695a400f159770f2512cdf5d112            34523 main/binary-amd64/Packages
- f015e37a76c26beb628c67a64e740e63f098ec1d             7720 main/binary-amd64/Packages.gz
+ 8b000c01c01add3b7b3bdb12e1bb894673ff2a2c            35563 main/binary-amd64/Packages
+ 237efd5dc1256bf795cd7a84ca870a817d06fc1e             8115 main/binary-amd64/Packages.gz
 SHA256:
- 4158c329830871eeec9fac1f1403a419a27b9456a530369599e9c096bb48371f            34523 main/binary-amd64/Packages
- 8fc871fbc068a9e2891e0156907adfa910fa2263d52ee5f86ab4965265dc0995             7720 main/binary-amd64/Packages.gz
+ a9173903ca5518cdf224736f5bcf24162cd9a17dacc6829e5f971fd5f79e01d3            35563 main/binary-amd64/Packages
+ bf94737600ac996d09d42ce3c45bbe2ea6a233bf0ba9eb0c9f54cfc945e80931             8115 main/binary-amd64/Packages.gz
 SHA512:
- e626b9d4938abe60d329c41afb711d1f8341c95b1d2819a3eeed011299126a954bf72f09c48667e9ba1fda7301bd6acbbcadddaaaaaddf6327520c3b8ea8e46b            34523 main/binary-amd64/Packages
- f3690666c6cfec5a1e2b52e71dc6fdb5a9ce723fb6e6bfe2f74cf378ff561a051284ddbc12404c7472d7c5793d44a3e7f62dd23c6eab3361f81dd4aebca0c597             7720 main/binary-amd64/Packages.gz
+ 778aed8c9cb72ef2d5e50ac71c04fadef0c356c9c3b7e0ceb1e9fd10deb92d17ede8580aca1a572edbe47190c6f45689138848eeeb0e7b215b7fff148c9c8e70            35563 main/binary-amd64/Packages
+ ac3c13971e974e830dab7008fb0675f2fbe9bd18ad91f785fe99ba2e6f0dc4a0b48c01bd5164bde4ce041ba740a841f25ebda4e6abde0a8cadec267100831c10             8115 main/binary-amd64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQitK9YVWUJ/FXtBtp6gMfMN8lgOwUCauZ4KgAKCRB6gMfMN8lg
-O8SeAP9qRKHW3kdGqLHeBPH8t+x5NlEY+qSfjizExtEah00qqQD/U8J4wPh8PKXD
-la5pvSFox3NHXwLcUNk0mhKEj3OAHww=
-=yfzL
+iHUEARYKAB0WIQQitK9YVWUJ/FXtBtp6gMfMN8lgOwUCauvNwAAKCRB6gMfMN8lg
+O0hvAQCHe1vmMDbhPs8GLOlCiCtK74vQMG6FHnMKheNAuuEwkAEAj/DRJ4bMgJsg
+xv8nu9w/CT9uOLM4xQ3TdavAfym43wY=
+=DUmi
 -----END PGP SIGNATURE-----
