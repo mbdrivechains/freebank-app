@@ -224,7 +224,10 @@ check("the notice: one text in the app, the README and the release notes", () =>
   assert.deepEqual(quoted(`release-notes/v${v}.md`), n1, `release-notes/v${v}.md`);
   assert.ok(n1[1].includes("grams of gold"));
   assert.ok(!nt.noticeN(false).join(" ").includes("grams"), "ECX-notes chains: no sentence on grams");
-  const notice = readFileSync(path.resolve(here, "..", "NOTICE.md"), "utf8").replace(/\s+/g, " ");
+  // Links read as their text: "[doc/PRODUCER_POLICY.md](https://…)" is "doc/PRODUCER_POLICY.md".
+  const notice = readFileSync(path.resolve(here, "..", "NOTICE.md"), "utf8")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\s+/g, " ");
   for (const sec of nt.NOTICE_F) {
     assert.ok(notice.includes(`**${sec.title}.**`), `NOTICE.md has "${sec.title}"`);
     for (const t of [...sec.text, ...(sec.list ?? []), ...(sec.after ? [sec.after] : [])])

@@ -212,6 +212,11 @@ async fn invite_join_pay_move_and_delete() {
     assert_eq!(sent, vec![vec![json!(5), json!(1_000_000), json!(NOTE_FEE), json!(TO)]]);
     assert!(h.rpc.params_of("transfernote").is_empty(), "never from the owner's wallet");
     assert_eq!(h.rpc.hosted.lock().unwrap()[&wallet].unlocked_until, 0);
+    // v0.7.1: on a gram-notes chain a hosted phone's note actions wait for its page to speak grams too.
+    h.rpc.grams.store(true, Ordering::SeqCst);
+    let r = ask(&mut h, &mut shop, 3, 36, "note-send", json!({"house": 5, "address": TO, "amount": 0.01})).await;
+    assert_eq!(r["err"], ERR_NOTES_IN_GRAMS, "{r}");
+    h.rpc.grams.store(false, Ordering::SeqCst);
 
     // Moving home to fresh words : the shopkeeper's own computer's address (here TO) joins the house, the notes
     // go, then the sECX; done when the wallet holds nothing. Its own address, or a non-address, is refused.

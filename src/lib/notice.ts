@@ -72,6 +72,14 @@ export const NOTICE_F: { title: string; text: string[]; list?: string[]; after?:
     ],
   },
   {
+    title: "Blocks can stop",
+    text: [
+      "FreeBank has new blocks only while someone bids for them on eCash. Until 31 Oct 2027 its developer bids a fixed " +
+        "amount so that blocks keep coming (doc/PRODUCER_POLICY.md); anyone may bid, and the highest bid wins. After " +
+        "that date, if nobody bids, FreeBank stops: coins on it can't move or be withdrawn until someone does.",
+    ],
+  },
+  {
     title: "Not a bank, no guarantee",
     text: ["FreeBank is not a bank. Nothing on it is insured or guaranteed by any government or by its developers."],
   },

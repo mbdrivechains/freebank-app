@@ -184,6 +184,10 @@ pub const ERR_DECLINED: &str = "declined on the desktop";
 pub const NOTE_FEE: f64 = 0.001;
 /// freebankd before v0.2.19 lists a wallet's notes only while it is unlocked, so there the phone's Notes need phone
 /// sends on. v0.2.19 lists them locked (freebankd's note 2026-10-04-from-freebankd-list-locked-done), and this never shows.
+/// A phone's own note action on a gram-notes chain (v0.7.1): the phone page counts notes in sECX, so its amounts and its
+/// daily limit would be off by the gold price; until it speaks grams, notes move from the desktop.
+pub const ERR_NOTES_IN_GRAMS: &str = "On this chain notes count in grams of gold, and this phone doesn't handle them yet: \
+                                      send, redeem or demand notes from FreeBank on your desktop.";
 pub const ERR_NOTES_LOCKED: &str = "Your desktop wallet is locked. To see your notes here, turn on \"Let my phone send while \
                                     FreeBank is open\" in FreeBank on your desktop (Settings, Phone).";
 /// Daemon mode (`background.rs`, light): a paired phone asked, and the node is starting. The reply carries
@@ -691,6 +695,13 @@ fn house_type(h: Option<&Value>) -> &'static str {
 
 /// One house of the directory (listhouses) as the phone shows it: its name, state and soundness.
 fn house_view(h: &Value) -> Value {
+    house_view_in(h, false)
+}
+
+/// The same, saying the chain's note unit (v0.7.1): on a gram-notes chain the phone page shows notes out in grams, the
+/// house's counted till against its notes and its redemption spread, and no attested reserves (gram houses don't
+/// attest ECX reserves).
+fn house_view_in(h: &Value, grams: bool) -> Value {
     // listhouses names the state in full ("open", "stressed", "deferred", "insolvent", "wounddown").
     let state = match h["effective_status"].as_str().unwrap_or("") {
         "deferred" => 'd',
@@ -708,6 +719,10 @@ fn house_view(h: &Value) -> Value {
         "attested_at": h["lastattestheight"],
         "rate_bps": h["defer_interest_bps"],
         "type": house_type(Some(h)),
+        "unit": if grams { "mg" } else { "sat" },
+        "notes_out_mg": if grams { h["mintedunits"].clone() } else { Value::Null },
+        "till_ratio_bps": if grams { h["tillratiobps"].clone() } else { Value::Null },
+        "spread_bps": if grams { h["brassagebps"].clone() } else { Value::Null },
     })
 }
 
@@ -733,6 +748,12 @@ fn history_view(r: &Value) -> Value {
 
 /// A wallet's notes (`listmynotes`) as the phone shows them, with their houses' names, states and types.
 fn notes_view(mine: &Value, houses: &Value) -> Value {
+    notes_view_in(mine, houses, false)
+}
+
+/// The same, saying the chain's note unit (v0.7.1): on a gram-notes chain each line carries its mg as well, for the
+/// phone page to show grams (its "amount" fields stay as before for a page that predates it).
+fn notes_view_in(mine: &Value, houses: &Value, grams: bool) -> Value {
     let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
     let list = mine
         .as_array()
@@ -759,6 +780,9 @@ fn notes_view(mine: &Value, houses: &Value) -> Value {
                 "can_demand": n["demandable"] == true,
                 "rate_bps": house.map(|h| h["defer_interest_bps"].clone()).unwrap_or(Value::Null),
                 "type": house_type(house),
+                "unit": if grams { "mg" } else { "sat" },
+                "units_mg": if grams { json!(units) } else { Value::Null },
+                "demanded_mg": if grams { n["demanded_units"].clone() } else { Value::Null },
             })
         })
         .collect();
@@ -1615,7 +1639,8 @@ impl Phone {
             "invite" => self.invite(ch, dev, a).await,
             "houses" => {
                 let r = self.rpc.call("listhouses", vec![]).await?;
-                Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(house_view).collect()))
+                let grams = self.grams().await.unwrap_or(false);
+                Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(|h| house_view_in(h, grams)).collect()))
             }
             "send" | "note-send" | "note-redeem" | "note-demand" => {
                 // Signed by this phone's own Face ID: the desktop's approval needn't ask for it again (security review M1).
@@ -1947,7 +1972,17 @@ impl Phone {
 
     /// A phone's note action (v0.2.5): send notes of a house to an address, redeem them for sECX, or demand them. The
     /// amount is in sECX, as the desktop's Notes tab takes it (1 unit is 1 sat), and counts against the daily limit.
+    /// Whether the node counts notes in mg (getblockchaininfo's `note_unit`, FreeBank v1.1.0 and later).
+    async fn grams(&self) -> Result<bool, String> {
+        let r = self.rpc.call("getblockchaininfo", vec![]).await.map_err(|e| e.plain())?;
+        Ok(r["note_unit"].as_str() == Some("mg"))
+    }
+
     async fn note_action(&self, dev: &str, req: &Value, kind: Kind, face_id: bool) -> Result<Value, String> {
+        // v0.7.1: not on a gram-notes chain, nor when the unit can't be read (the refusal is the safe side).
+        if self.grams().await? {
+            return Err(ERR_NOTES_IN_GRAMS.into());
+        }
         let a = &req["a"];
         let house = a["house"].as_u64().ok_or("Which house's notes?")?;
         let sats = store::json_to_sats(&a["amount"])?;
@@ -2015,6 +2050,13 @@ impl Phone {
     async fn notes(&self) -> Result<Value, String> {
         let mine = {
             let _gate = self.wallet_gate.lock().await;
+            // Node v0.2.19 and later list notes with the wallet locked (v0.7.1: ask that first, so a phone sees its
+            // notes without phone sends on); an older node says the wallet must be unlocked, and the read below does that.
+            match self.rpc.call("listmynotes", vec![]).await {
+                Ok(v) => return self.notes_answer(v).await,
+                Err(e) if e.code == Some(RPC_WALLET_UNLOCK_NEEDED) => {}
+                Err(e) => return Err(e.plain()),
+            }
             let mut first = true;
             loop {
                 let unlocked = match self.unlock_for_send(None).await {
@@ -2036,8 +2078,14 @@ impl Phone {
                 }
             }
         };
+        self.notes_answer(mine).await
+    }
+
+    /// `listmynotes`' answer with the houses' names and states, and the chain's unit.
+    async fn notes_answer(&self, mine: Value) -> Result<Value, String> {
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-        Ok(notes_view(&mine, &houses))
+        let grams = self.grams().await.unwrap_or(false);
+        Ok(notes_view_in(&mine, &houses, grams))
     }
 
     /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody

@@ -33,6 +33,10 @@ struct MockRpc {
     drop_send: AtomicBool,
     /// The next getwalletinfo answers as usual, then the unlock ends (it ran out in between).
     lock_after_look: AtomicBool,
+    /// A gram-notes node (v0.7.1): getblockchaininfo says note_unit "mg".
+    grams: AtomicBool,
+    /// A node from v0.2.19: listmynotes answers with the wallet locked.
+    notes_locked_ok: AtomicBool,
     now: Arc<AtomicU64>,
     wallet: Mutex<MockWallet>,
     /// Hosted wallets (v0.2.8, tests/hosted.rs): a members-only house 5 run by this wallet, the wallets made for
@@ -65,6 +69,8 @@ impl MockRpc {
             fail_send: AtomicBool::new(false),
             drop_send: AtomicBool::new(false),
             lock_after_look: AtomicBool::new(false),
+            grams: AtomicBool::new(false),
+            notes_locked_ok: AtomicBool::new(false),
             now,
             wallet: Mutex::new(MockWallet { txcount: 3, ..Default::default() }),
             hosting: AtomicBool::new(false),
@@ -136,7 +142,13 @@ impl Rpc for MockRpc {
                     let partner = crate::seed::p2pkh_address(&hex::decode(hosted::tests_partner_pubkey()).unwrap());
                     Ok(json!({"isvalid": params[0] == TO || params[0] == TO2 || hosted_first || params[0] == json!(partner)}))
                 }
-                "getblockchaininfo" => Ok(json!({"blocks": 120, "headers": 120, "initialblockdownload": false})),
+                "getblockchaininfo" => {
+                    let mut i = json!({"blocks": 120, "headers": 120, "initialblockdownload": false});
+                    if self.grams.load(Ordering::SeqCst) {
+                        i["note_unit"] = json!("mg");
+                    }
+                    Ok(i)
+                }
                 // Oldest first, as Core lists them.
                 "listtransactions" => Ok(json!([
                     {"txid": "aa", "category": "receive", "amount": 1.0, "confirmations": 3, "time": 5,
@@ -204,7 +216,7 @@ impl Rpc for MockRpc {
                 // House notes (v0.2.5): house 3 is open, house 4 suspended (10% a year on demands).
                 "listmynotes" => {
                     let w = self.wallet.lock().unwrap();
-                    if w.pass.is_some() && w.unlocked_until <= now {
+                    if w.pass.is_some() && w.unlocked_until <= now && !self.notes_locked_ok.load(Ordering::SeqCst) {
                         return Err(RpcFail::rpc(-13, LOCKED_MSG));
                     }
                     Ok(json!([
@@ -2354,7 +2366,8 @@ async fn the_phone_sees_its_notes_and_the_houses() {
     assert_eq!(
         r["ok"][0],
         json!({"house": 3, "name": "Bank of Leith", "state": "o", "state_name": "Open", "amount": 0.05, "demanded": 0.0,
-               "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000, "type": "open"})
+               "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000, "type": "open",
+               "unit": "sat", "units_mg": null, "demanded_mg": null})
     );
     // Suspended: only the demanded notes can be redeemed, with their interest.
     assert_eq!(r["ok"][1]["state_name"], "Suspended");
@@ -2365,7 +2378,8 @@ async fn the_phone_sees_its_notes_and_the_houses() {
     assert_eq!(
         r["ok"][1],
         json!({"house": 4, "name": "Ayr Bank", "state": "d", "state_name": "Suspended", "ratio_bps": 6000,
-               "outstanding": 0.4, "reserves": 0.24, "attested_at": 100, "rate_bps": 1000, "type": "open"})
+               "outstanding": 0.4, "reserves": 0.24, "attested_at": 100, "rate_bps": 1000, "type": "open",
+               "unit": "sat", "notes_out_mg": null, "till_ratio_bps": null, "spread_bps": null})
     );
 }
 
@@ -2393,8 +2407,64 @@ async fn notes_need_the_wallet_unlocked_for_a_moment() {
     h.rpc.forget_calls();
     let r = ask(&mut h, &mut sim, 1, 2, "notes", json!({})).await;
     assert_eq!(r["ok"].as_array().unwrap().len(), 2, "{r}");
-    assert_eq!(h.rpc.methods(), ["getwalletinfo", "walletpassphrase", "listmynotes", "walletlock", "listhouses"]);
+    assert_eq!(h.rpc.methods(), ["listmynotes", "getwalletinfo", "walletpassphrase", "listmynotes", "walletlock", "listhouses", "getblockchaininfo"]);
     assert!(!h.rpc.unlocked());
+}
+
+#[tokio::test]
+async fn a_node_that_lists_notes_locked_shows_them_without_phone_sends() {
+    // v0.7.1: node v0.2.19 and later list notes with the wallet locked, so the phone sees them with phone sends off
+    // and nothing is unlocked.
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.rpc.encrypt(PASS);
+    h.rpc.notes_locked_ok.store(true, Ordering::SeqCst);
+    h.rpc.forget_calls();
+    let r = ask(&mut h, &mut sim, 1, 1, "notes", json!({})).await;
+    assert_eq!(r["ok"].as_array().unwrap().len(), 2, "{r}");
+    assert_eq!(h.rpc.methods(), ["listmynotes", "listhouses", "getblockchaininfo"]);
+    assert!(h.rpc.params_of("walletpassphrase").is_empty());
+}
+
+#[tokio::test]
+async fn on_a_gram_chain_the_phones_own_note_actions_wait_for_the_desktop() {
+    // v0.7.1: the phone page counts notes in sECX; on a gram-notes chain its amounts, and its daily limit, would be off
+    // by the gold price, so its note actions are refused (an owner's phone here; a hosted one in tests/hosted.rs).
+    let mut h = harness(None);
+    let mut sim = Sim::new();
+    paired(&mut h, &mut sim, 1).await;
+    h.rpc.grams.store(true, Ordering::SeqCst);
+    for (id, m, a) in [
+        (1, "note-send", json!({"house": 3, "address": TO, "amount": 0.02})),
+        (2, "note-redeem", json!({"house": 3, "amount": 0.02})),
+        (3, "note-demand", json!({"house": 3, "amount": 0.02})),
+    ] {
+        let r = ask(&mut h, &mut sim, 1, id, m, a).await;
+        assert_eq!(r["err"], ERR_NOTES_IN_GRAMS, "{m}: {r}");
+    }
+    assert!(h.rpc.params_of("transfernote").is_empty() && h.rpc.params_of("redeemnote").is_empty());
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.1).abs() < 1e-12, "nothing counted");
+    // A plain sECX send still goes.
+    let r = ask(&mut h, &mut sim, 1, 4, "send", json!({"address": TO, "amount": 0.01})).await;
+    assert!(r["ok"].is_string() || r["ok"]["txid"].is_string(), "{r}");
+}
+
+#[test]
+fn the_phone_views_say_the_note_unit() {
+    let h = json!({"id": 1, "classid": "kelso", "effective_status": "open", "mintedunits": 1_500_000,
+                   "tillratiobps": 250, "brassagebps": 0, "lastattestreserves": 2.499});
+    let g = house_view_in(&h, true);
+    assert_eq!((g["unit"].clone(), g["notes_out_mg"].clone(), g["till_ratio_bps"].clone(), g["spread_bps"].clone()),
+               (json!("mg"), json!(1_500_000), json!(250), json!(0)));
+    let s = house_view(&h);
+    assert_eq!((s["unit"].clone(), s["notes_out_mg"].clone()), (json!("sat"), Value::Null));
+    let mine = json!([{"house_id": 1, "units": 300_000, "demanded_units": 1000, "redeemable": true, "demandable": true,
+                       "house_status": "o"}]);
+    let n = notes_view_in(&mine, &json!([h]), true);
+    assert_eq!((n[0]["unit"].clone(), n[0]["units_mg"].clone(), n[0]["demanded_mg"].clone()),
+               (json!("mg"), json!(300_000), json!(1000)));
+    assert_eq!(notes_view(&mine, &json!([h]))[0]["unit"], "sat");
 }
 
 #[tokio::test]
