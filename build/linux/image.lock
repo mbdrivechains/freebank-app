@@ -1,0 +1,6 @@
+# The pinned build image, saved (build/linux/save-image.sh: docker save | gzip -n) and published as a pre-release asset,
+# so a release build loads it instead of fetching Ubuntu's package snapshot (rebuild.sh checks its sha256 first, and
+# builds from the Dockerfile when this file is for another Dockerfile or the copy can't be had).
+url=https://github.com/mbdrivechains/freebank-app/releases/download/build-image-053690a7b29c/freebank-app-build-053690a7b29c.tar.gz
+sha256=3f9a7760949fc09aba53565579be0f7ca1882e891348c457b01ce8f2bf00d5ce
+dockerfile_sha256=053690a7b29c684086e0ae8de438f3d294a94df642b27e63b72987bf3c5a5dd1

@@ -186,6 +186,15 @@ pub const NOTE_FEE: f64 = 0.001;
 /// sends on. v0.2.19 lists them locked (freebankd's note 2026-10-04-from-freebankd-list-locked-done), and this never shows.
 /// A phone's own note action on a gram-notes chain (v0.7.1): the phone page counts notes in sECX, so its amounts and its
 /// daily limit would be off by the gold price; until it speaks grams, notes move from the desktop.
+/// A phone page that predates v0.7.2 asking for a note action on a gram-notes chain: it counts in sECX.
+pub const ERR_PAGE_IN_SECX: &str = "On this chain notes count in grams of gold, and this phone page counts them in sECX: \
+                                    reload the page, or move the notes from FreeBank on your desktop.";
+/// A note action on a gram-notes chain with no payout price: its worth, and so the daily limit, can't be counted.
+pub const ERR_NO_GOLD_PRICE: &str = "There is no gold price on FreeBank right now, so these notes' worth can't be \
+                                     counted against this phone's limit: try again later, or move them from your desktop.";
+/// A hosted wallet's phone asking for a note action on a gram-notes chain: not yet (v0.7.2).
+pub const ERR_HOSTED_NOTES_IN_GRAMS: &str = "On this chain notes count in grams of gold, and a hosted wallet's notes \
+                                             can't move from the phone yet.";
 pub const ERR_NOTES_IN_GRAMS: &str = "On this chain notes count in grams of gold, and this phone doesn't handle them yet: \
                                       send, redeem or demand notes from FreeBank on your desktop.";
 pub const ERR_NOTES_LOCKED: &str = "Your desktop wallet is locked. To see your notes here, turn on \"Let my phone send while \
@@ -332,6 +341,9 @@ pub struct Held {
     /// The house, for a note action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub house: Option<u64>,
+    /// A note action on a gram-notes chain (v0.7.2): `sats` is then mg of notes, worth this many sats a gram.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<u64>,
     /// unix seconds
     pub at: u64,
     /// "limit" or "locked"
@@ -356,13 +368,18 @@ pub struct Held {
 }
 
 impl Held {
+    fn pending(&self) -> Pending {
+        Pending { kind: self.kind, house: self.house, address: self.address.clone(), sats: self.sats, price: self.price }
+    }
+
     fn view(&self, ttl: u64) -> HeldView {
         HeldView {
             confirm: self.confirm.clone(),
             device: self.device.clone(),
             name: self.name.clone(),
             address: self.address.clone(),
-            amount: to_ecx(self.sats),
+            amount: to_ecx(self.pending().worth()),
+            grams: self.price.map(|_| self.sats as f64 / 1000.0),
             kind: self.kind,
             house: self.house,
             at: self.at,
@@ -380,7 +397,11 @@ pub struct HeldView {
     pub device: String,
     pub name: String,
     pub address: String,
+    /// sECX: a send's amount, or what a note action's notes are worth (at the payout price on a gram-notes chain).
     pub amount: f64,
+    /// A note action on a gram-notes chain (v0.7.2): its notes in grams.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grams: Option<f64>,
     pub kind: Kind,
     pub house: Option<u64>,
     pub at: u64,
@@ -605,6 +626,9 @@ pub struct Pending {
     pub house: Option<u64>,
     pub address: String,
     pub sats: u64,
+    /// A note action on a gram-notes chain (v0.7.2): `sats` is mg of notes, and they are worth this many sats a gram
+    /// (the payout price when the phone asked). None: sats, or note units of 1 sat.
+    pub price: Option<u64>,
 }
 
 impl Pending {
@@ -613,7 +637,28 @@ impl Pending {
     fn cost(&self) -> u64 {
         match self.kind {
             Kind::Send => self.sats,
-            _ => self.sats.saturating_add(NOTE_FEE_SATS + NOTE_CARRIER_SATS),
+            _ => self.worth().saturating_add(NOTE_FEE_SATS + NOTE_CARRIER_SATS),
+        }
+    }
+
+    /// What it moves, in sats: a send's amount; a note action's notes, at their price on a gram-notes chain (rounded
+    /// up, so the daily limit never counts them short).
+    fn worth(&self) -> u64 {
+        match (self.kind, self.price) {
+            (Kind::Send, _) | (_, None) => self.sats,
+            (_, Some(p)) => ((self.sats as u128 * p as u128).div_ceil(1000)).min(u64::MAX as u128) as u64,
+        }
+    }
+
+    /// The notes in words: "0.5 sECX", or on a gram-notes chain "150.000 g (about 0.15 sECX)"; a redeem's worth is
+    /// before the house's spread, which a stressed or suspended house with a thin till takes.
+    fn notes_words(&self) -> String {
+        match self.price {
+            Some(_) if self.kind == Kind::NoteRedeem => {
+                format!("{} g (about {} sECX before any spread)", grams_of(self.sats), to_ecx(self.worth()))
+            }
+            Some(_) => format!("{} g (about {} sECX)", grams_of(self.sats), to_ecx(self.worth())),
+            None => format!("{} sECX", to_ecx(self.sats)),
         }
     }
 
@@ -629,24 +674,31 @@ impl Pending {
     /// How a phone is asked to approve it when the desktop confirms it.
     fn approve(&self) -> Approve {
         let house = self.house.map(|h| format!("house #{h}")).unwrap_or_default();
-        let ecx = to_ecx(self.sats);
+        let notes = self.notes_words();
         match self.kind {
             Kind::Send => Approve::Send { sats: self.sats, address: self.address.clone() },
             Kind::NoteSend => Approve::Action {
-                text: format!("Send {ecx} sECX of {house}'s notes to {} (a phone's request)", self.address),
+                text: format!("Send {notes} of {house}'s notes to {} (a phone's request)", self.address),
                 sats: Some(self.cost()),
             },
             Kind::NoteRedeem => Approve::Action {
                 text: format!(
-                    "Redeem {ecx} sECX of {house}'s notes (a phone's request). This pays only if this node holds the \
+                    "Redeem {notes} of {house}'s notes (a phone's request). This pays only if this node holds the \
                      house's keys; without them the notes are burned and nothing is paid."
                 ),
                 sats: Some(self.cost()),
             },
             Kind::NoteDemand => {
-                Approve::Action { text: format!("Demand {ecx} sECX of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
+                Approve::Action { text: format!("Demand {notes} of {house}'s notes (a phone's request)"), sats: Some(self.cost()) }
             }
         }
+    }
+}
+
+/// A note action on a gram-notes chain logs its grams too (v0.7.2); "amount" is then their worth in sECX.
+fn with_grams(entry: &mut Value, p: &Pending) {
+    if p.price.is_some() && p.kind != Kind::Send {
+        entry["grams"] = json!(p.sats as f64 / 1000.0);
     }
 }
 
@@ -748,12 +800,12 @@ fn history_view(r: &Value) -> Value {
 
 /// A wallet's notes (`listmynotes`) as the phone shows them, with their houses' names, states and types.
 fn notes_view(mine: &Value, houses: &Value) -> Value {
-    notes_view_in(mine, houses, false)
+    notes_view_in(mine, houses, false, None)
 }
 
 /// The same, saying the chain's note unit (v0.7.1): on a gram-notes chain each line carries its mg as well, for the
 /// phone page to show grams (its "amount" fields stay as before for a page that predates it).
-fn notes_view_in(mine: &Value, houses: &Value, grams: bool) -> Value {
+fn notes_view_in(mine: &Value, houses: &Value, grams: bool, price: Option<u64>) -> Value {
     let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
     let list = mine
         .as_array()
@@ -783,6 +835,8 @@ fn notes_view_in(mine: &Value, houses: &Value, grams: bool) -> Value {
                 "unit": if grams { "mg" } else { "sat" },
                 "units_mg": if grams { json!(units) } else { Value::Null },
                 "demanded_mg": if grams { n["demanded_units"].clone() } else { Value::Null },
+                "redeemable_mg": if grams { json!(redeemable) } else { Value::Null },
+                "price_sats_per_gram": if grams { json!(price) } else { Value::Null },
             })
         })
         .collect();
@@ -1639,7 +1693,7 @@ impl Phone {
             "invite" => self.invite(ch, dev, a).await,
             "houses" => {
                 let r = self.rpc.call("listhouses", vec![]).await?;
-                let grams = self.grams().await.unwrap_or(false);
+                let grams = self.grams().await?;
                 Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(|h| house_view_in(h, grams)).collect()))
             }
             "send" | "note-send" | "note-redeem" | "note-demand" => {
@@ -1909,9 +1963,10 @@ impl Phone {
     fn log(&self, dev: &str, name: &str, p: &Pending, result: &str, detail: Value) {
         let mut entry = json!({
             "time": self.now(), "device": dev, "name": name, "address": p.address,
-            "amount": to_ecx(p.sats), "result": result, "detail": detail,
+            "amount": to_ecx(p.worth()), "result": result, "detail": detail,
         });
         with_kind(&mut entry, p.kind, p.house);
+        with_grams(&mut entry, p);
         self.write_log(entry);
     }
 
@@ -1919,9 +1974,10 @@ impl Phone {
     fn log_held(&self, h: &Held, result: &str, detail: Value) {
         let mut entry = json!({
             "time": self.now(), "device": h.device, "name": h.name, "address": h.address,
-            "amount": to_ecx(h.sats), "result": result, "detail": detail, "held": h.confirm,
+            "amount": to_ecx(h.pending().worth()), "result": result, "detail": detail, "held": h.confirm,
         });
         with_kind(&mut entry, h.kind, h.house);
+        with_grams(&mut entry, &h.pending());
         self.write_log(entry);
     }
 
@@ -1967,7 +2023,7 @@ impl Phone {
         if v["isvalid"] != true {
             return Err("That isn't a valid FreeBank address.".into());
         }
-        self.act(dev, req, Pending { kind: Kind::Send, house: None, address, sats }, face_id).await
+        self.act(dev, req, Pending { kind: Kind::Send, house: None, address, sats, price: None }, face_id).await
     }
 
     /// A phone's note action (v0.2.5): send notes of a house to an address, redeem them for sECX, or demand them. The
@@ -1979,13 +2035,16 @@ impl Phone {
     }
 
     async fn note_action(&self, dev: &str, req: &Value, kind: Kind, face_id: bool) -> Result<Value, String> {
-        // v0.7.1: not on a gram-notes chain, nor when the unit can't be read (the refusal is the safe side).
-        if self.grams().await? {
-            return Err(ERR_NOTES_IN_GRAMS.into());
-        }
         let a = &req["a"];
         let house = a["house"].as_u64().ok_or("Which house's notes?")?;
-        let sats = store::json_to_sats(&a["amount"])?;
+        // v0.7.2: on a gram-notes chain (or when the unit can't be read: refused) the page sends whole mg, and the notes
+        // count against the daily limit at the payout price; a page that sends an sECX amount there is refused.
+        let (sats, price) = if self.grams().await? {
+            let mg = a["units_mg"].as_u64().ok_or(ERR_PAGE_IN_SECX)?;
+            (mg, Some(self.payout_price().await?.ok_or(ERR_NO_GOLD_PRICE)?))
+        } else {
+            (store::json_to_sats(&a["amount"])?, None)
+        };
         if sats == 0 {
             return Err("amount must be more than zero".into());
         }
@@ -2002,7 +2061,13 @@ impl Phone {
         } else {
             String::new()
         };
-        self.act(dev, req, Pending { kind, house: Some(house), address, sats }, face_id).await
+        self.act(dev, req, Pending { kind, house: Some(house), address, sats, price }, face_id).await
+    }
+
+    /// The chain's payout price now, sats per gram (listtokenpools; None: there is none).
+    async fn payout_price(&self) -> Result<Option<u64>, String> {
+        let r = self.rpc.call("listtokenpools", vec![]).await.map_err(|e| e.plain())?;
+        Ok(r["payout_price_sats_per_gram"].as_u64().filter(|&p| p > 0))
     }
 
     /// Pay `p` within the phone's limit, or hold it for the desktop (or, with the app closed, refuse it). A note
@@ -2084,8 +2149,10 @@ impl Phone {
     /// `listmynotes`' answer with the houses' names and states, and the chain's unit.
     async fn notes_answer(&self, mine: Value) -> Result<Value, String> {
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-        let grams = self.grams().await.unwrap_or(false);
-        Ok(notes_view_in(&mine, &houses, grams))
+        // The unit unread is an error: a guess of sECX would show grams 100,000 times too small.
+        let grams = self.grams().await?;
+        let price = if grams { self.payout_price().await.ok().flatten() } else { None };
+        Ok(notes_view_in(&mine, &houses, grams, price))
     }
 
     /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody
@@ -2144,6 +2211,7 @@ impl Phone {
             sats: p.sats,
             kind: p.kind,
             house: p.house,
+            price: p.price,
             at: self.now(),
             why: why.into(),
             req_id: req["id"].clone(),
@@ -2312,7 +2380,7 @@ impl Phone {
         let p = {
             let held = self.held.lock().unwrap();
             let h = held.iter().find(|h| h.confirm == confirm).ok_or("That send is no longer waiting.")?;
-            Pending { kind: h.kind, house: h.house, address: h.address.clone(), sats: h.sats }
+            h.pending()
         };
         if p.kind != Kind::Send {
             return Ok(());
@@ -2329,6 +2397,30 @@ impl Phone {
                 to_ecx(have),
                 to_ecx(need)
             ));
+        }
+        Ok(())
+    }
+
+    /// A held note action, just before the desktop pays it (v0.7.2): the chain must still count notes the way it did when
+    /// the phone asked (its `price` says grams), and on grams its worth is re-priced at the payout price now, so the
+    /// desktop's day count and "Approve sends on my phone" see today's figure; with no price now it waits.
+    async fn recheck_held(&self, confirm: &str) -> Result<(), String> {
+        let p = {
+            let held = self.held.lock().unwrap();
+            held.iter().find(|h| h.confirm == confirm).ok_or("That send is no longer waiting.")?.pending()
+        };
+        if p.kind == Kind::Send {
+            return Ok(());
+        }
+        let grams = self.grams().await?;
+        if grams != p.price.is_some() {
+            return Err("The chain counts notes differently from when the phone asked: ask again from the phone.".into());
+        }
+        if grams {
+            let now = self.payout_price().await?.ok_or(ERR_NO_GOLD_PRICE)?;
+            if let Some(h) = self.held.lock().unwrap().iter_mut().find(|h| h.confirm == confirm) {
+                h.price = Some(now);
+            }
         }
         Ok(())
     }
@@ -2354,7 +2446,7 @@ impl Phone {
         let (skip, p) = {
             let held = self.held.lock().unwrap();
             let h = held.iter().find(|h| h.confirm == confirm).ok_or("That send is no longer waiting.")?;
-            let p = Pending { kind: h.kind, house: h.house, address: h.address.clone(), sats: h.sats };
+            let p = h.pending();
             (h.face_id || h.cleared.is_some(), p)
         };
         if skip {
@@ -2384,7 +2476,7 @@ impl Phone {
                 return Err("That send is being paid right now.".into());
             }
             h.busy = busy;
-            Pending { kind: h.kind, house: h.house, address: h.address.clone(), sats: h.sats }
+            h.pending()
         };
         self.save_held();
         Ok(r)
@@ -2415,6 +2507,7 @@ impl Phone {
         // Not enough sECX for a send: said before a phone is asked or the passphrase is (v0.2.6, the UX walk-through:
         // the passphrase came first, then the payment failed and its dialog closed without a word). It keeps waiting.
         self.enough_for(confirm).await?;
+        self.recheck_held(confirm).await?;
         self.clear_held(confirm).await?;
         let _gate = self.wallet_gate.lock().await;
         // Busy while the wallet is unlocked and paid from: expiry and revoke leave it alone.
@@ -3113,6 +3206,9 @@ pub const CREDIT_PAYMENTS: &[&str] = &[
     "addtokenliquidity",
     "removetokenliquidity",
     "sendissued",
+    // v0.7.2, House tools in grams: gold from this wallet into a house's capital or till (and out of the till).
+    "pledgegold",
+    "movetill",
 ];
 
 /// The node's fee for a gold token call that leaves it out (0.001 sECX).
@@ -3279,7 +3375,8 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
     let fee = match method {
         "transfernote" | "mintnote" => p.get(2).and_then(|v| store::json_to_sats(v).ok()),
         "demandnote" => fee_at(2),
-        "swaptoken" | "sendissued" => fee_at(3),
+        "swaptoken" | "sendissued" | "movetill" => fee_at(3),
+        "pledgegold" => fee_at(4),
         "addtokenliquidity" | "removetokenliquidity" => fee_at(2),
         "retirebill" => p.get(1).and_then(|v| store::json_to_sats(v).ok()),
         "registerhouse" => p.get(5).and_then(|v| store::json_to_sats(v).ok()),
@@ -3340,6 +3437,20 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
             }
         },
         "removetokenliquidity" => (Some(0), format!("Take {} shares out of {tk}'s pool", units(1).map_or("?".into(), |n| n.to_string()))),
+        // v0.7.2: a partner's gold into the house's capital (house, partner, token, units), and gold into or out of its
+        // till (house, token, ±units); what leaves the wallet counts at the payout price, with its token coin.
+        "pledgegold" => {
+            let out = at_price(units(3)).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));
+            (out, format!("Pledge {} g of {tk} to house #{}'s owners' capital (partner {})", g(units(3)), id(0), id(1)))
+        }
+        "movetill" => match p.get(2).and_then(Value::as_i64) {
+            Some(n) if n < 0 => (Some(0), format!("Take {} g of {tk} out of house #{}'s till", g(Some(n.unsigned_abs())), id(0))),
+            n => {
+                let mg = n.and_then(|n| u64::try_from(n).ok());
+                let out = at_price(mg).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));
+                (out, format!("Move {} g of {tk} into house #{}'s till", g(mg), id(0)))
+            }
+        },
         "sendissued" => {
             let to = p.get(2).and_then(Value::as_str).unwrap_or("?");
             let out = at_price(units(1)).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));

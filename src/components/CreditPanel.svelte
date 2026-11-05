@@ -3,6 +3,7 @@
   // holder needs first and the issuer's forms folded under "House tools". Moved here from App.svelte as it was, then
   // reorganised.
   import { R1_HOUSE, R4_POOL, R5_BILL } from "../lib/notice";
+  import HouseGold from "./HouseGold.svelte";
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import {
@@ -1226,7 +1227,7 @@
       </div>
 
       <details class="advanced tools">
-        <summary>House tools: charter a house, attest reserves, your mint's tokens, settle with other houses</summary>
+        <summary>House tools: charter a house{$noteUnit === "mg" ? ", gold for your house" : ""}, attest reserves, your mint's tokens, settle with other houses</summary>
       <div class="card">
         <h3>Charter a house</h3>
         <p class="muted">Open your own note-issuing house, kept honest by convertibility: its notes are paid out on demand. Your node holds the keys.</p>
@@ -1270,6 +1271,7 @@
           <button on:click={() => doAttest(parseInt(attestId))} disabled={regBusy || !attestId}>Attest reserves</button>
         </div>
       </div>
+      {#if $noteUnit === "mg"}<HouseGold {houses} />{/if}
       <div class="card" data-testid="house-mint">
         <h3>Tokens: your house's mint</h3>
         <p class="muted">The mint issues tokens backed by your house's notes, from its own server. The house's keys stay

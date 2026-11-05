@@ -37,6 +37,8 @@ struct MockRpc {
     grams: AtomicBool,
     /// A node from v0.2.19: listmynotes answers with the wallet locked.
     notes_locked_ok: AtomicBool,
+    /// The payout price listtokenpools gives, sats per gram (0: none).
+    gold_price: AtomicU64,
     now: Arc<AtomicU64>,
     wallet: Mutex<MockWallet>,
     /// Hosted wallets (v0.2.8, tests/hosted.rs): a members-only house 5 run by this wallet, the wallets made for
@@ -71,6 +73,7 @@ impl MockRpc {
             lock_after_look: AtomicBool::new(false),
             grams: AtomicBool::new(false),
             notes_locked_ok: AtomicBool::new(false),
+            gold_price: AtomicU64::new(0),
             now,
             wallet: Mutex::new(MockWallet { txcount: 3, ..Default::default() }),
             hosting: AtomicBool::new(false),
@@ -141,6 +144,10 @@ impl Rpc for MockRpc {
                     });
                     let partner = crate::seed::p2pkh_address(&hex::decode(hosted::tests_partner_pubkey()).unwrap());
                     Ok(json!({"isvalid": params[0] == TO || params[0] == TO2 || hosted_first || params[0] == json!(partner)}))
+                }
+                "listtokenpools" => {
+                    let p = self.gold_price.load(Ordering::SeqCst);
+                    Ok(json!({"payout_price_sats_per_gram": if p > 0 { json!(p) } else { Value::Null }, "pools": []}))
                 }
                 "getblockchaininfo" => {
                     let mut i = json!({"blocks": 120, "headers": 120, "initialblockdownload": false});
@@ -2367,7 +2374,7 @@ async fn the_phone_sees_its_notes_and_the_houses() {
         r["ok"][0],
         json!({"house": 3, "name": "Bank of Leith", "state": "o", "state_name": "Open", "amount": 0.05, "demanded": 0.0,
                "redeemable": 0.05, "can_redeem": true, "can_demand": true, "rate_bps": 1000, "type": "open",
-               "unit": "sat", "units_mg": null, "demanded_mg": null})
+               "unit": "sat", "units_mg": null, "demanded_mg": null, "redeemable_mg": null, "price_sats_per_gram": null})
     );
     // Suspended: only the demanded notes can be redeemed, with their interest.
     assert_eq!(r["ok"][1]["state_name"], "Suspended");
@@ -2428,26 +2435,47 @@ async fn a_node_that_lists_notes_locked_shows_them_without_phone_sends() {
 }
 
 #[tokio::test]
-async fn on_a_gram_chain_the_phones_own_note_actions_wait_for_the_desktop() {
-    // v0.7.1: the phone page counts notes in sECX; on a gram-notes chain its amounts, and its daily limit, would be off
-    // by the gold price, so its note actions are refused (an owner's phone here; a hosted one in tests/hosted.rs).
+async fn on_a_gram_chain_the_phones_note_actions_count_grams_at_the_gold_price() {
+    // v0.7.2: on a gram-notes chain the page sends whole mg; the notes count against the daily limit at the payout
+    // price (rounded up), with the fee and carriers; a page that sends an sECX amount, or no price, is refused.
     let mut h = harness(None);
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
     h.rpc.grams.store(true, Ordering::SeqCst);
-    for (id, m, a) in [
-        (1, "note-send", json!({"house": 3, "address": TO, "amount": 0.02})),
-        (2, "note-redeem", json!({"house": 3, "amount": 0.02})),
-        (3, "note-demand", json!({"house": 3, "amount": 0.02})),
-    ] {
-        let r = ask(&mut h, &mut sim, 1, id, m, a).await;
-        assert_eq!(r["err"], ERR_NOTES_IN_GRAMS, "{m}: {r}");
-    }
-    assert!(h.rpc.params_of("transfernote").is_empty() && h.rpc.params_of("redeemnote").is_empty());
-    assert!((limit_left(&mut h, &mut sim, 1).await - 0.1).abs() < 1e-12, "nothing counted");
-    // A plain sECX send still goes.
-    let r = ask(&mut h, &mut sim, 1, 4, "send", json!({"address": TO, "amount": 0.01})).await;
-    assert!(r["ok"].is_string() || r["ok"]["txid"].is_string(), "{r}");
+    // No price: the worth can't be counted.
+    let r = ask(&mut h, &mut sim, 1, 1, "note-send", json!({"house": 3, "address": TO, "units_mg": 500})).await;
+    assert_eq!(r["err"], ERR_NO_GOLD_PRICE, "{r}");
+    h.rpc.gold_price.store(100_000, Ordering::SeqCst);
+    // An older page's sECX amount.
+    let r = ask(&mut h, &mut sim, 1, 2, "note-send", json!({"house": 3, "address": TO, "amount": 0.02})).await;
+    assert_eq!(r["err"], ERR_PAGE_IN_SECX, "{r}");
+    assert!(h.rpc.params_of("transfernote").is_empty());
+    // 0.5 g at 100,000 sats a gram: 50,000 sats, with the fee (100,000) and carriers (2,000): within the limit.
+    let r = ask(&mut h, &mut sim, 1, 3, "note-send", json!({"house": 3, "address": TO, "units_mg": 500})).await;
+    assert!(r["ok"]["txid"].is_string(), "{r}");
+    assert_eq!(h.rpc.params_of("transfernote"), vec![vec![json!(3), json!(500), json!(NOTE_FEE), json!(TO)]]);
+    assert!((limit_left(&mut h, &mut sim, 1).await - 0.09848).abs() < 1e-12);
+    let logged = h.ev.named(EV_SEND);
+    assert_eq!((logged[0]["grams"].clone(), logged[0]["amount"].clone()), (json!(0.5), json!(0.0005)));
+    // 2 kg is worth 2 sECX: over the limit, so it waits for the desktop, which sees it in grams and in sECX.
+    let r = ask(&mut h, &mut sim, 1, 4, "note-redeem", json!({"house": 3, "units_mg": 2_000_000})).await;
+    assert!(r["ok"]["pending"].is_string(), "{r}");
+    let held = h.phone.held();
+    assert_eq!((held[0].grams, held[0].amount), (Some(2000.0), 2.0));
+    assert!(h.rpc.params_of("redeemnote").is_empty());
+    // Confirmed on the desktop: the chain must still count grams; its worth is re-priced at today's price.
+    let confirm = held[0].confirm.clone();
+    h.rpc.grams.store(false, Ordering::SeqCst);
+    let e = h.phone.confirm_send(&confirm, true, None).await.err().unwrap();
+    assert!(e.contains("counts notes differently"), "{e}");
+    h.rpc.grams.store(true, Ordering::SeqCst);
+    h.rpc.gold_price.store(120_000, Ordering::SeqCst);
+    let r = h.phone.confirm_send(&confirm, true, None).await.unwrap();
+    assert!(r.txid.is_some(), "paid");
+    assert_eq!(h.rpc.params_of("redeemnote"), vec![vec![json!(3), json!(2_000_000), json!(NOTE_FEE)]]);
+    let logged = h.ev.named(EV_SEND);
+    let last = logged.last().unwrap();
+    assert_eq!((last["grams"].clone(), last["amount"].clone()), (json!(2000.0), json!(2.4)), "at 120,000 sats a gram");
 }
 
 #[test]
@@ -2461,7 +2489,7 @@ fn the_phone_views_say_the_note_unit() {
     assert_eq!((s["unit"].clone(), s["notes_out_mg"].clone()), (json!("sat"), Value::Null));
     let mine = json!([{"house_id": 1, "units": 300_000, "demanded_units": 1000, "redeemable": true, "demandable": true,
                        "house_status": "o"}]);
-    let n = notes_view_in(&mine, &json!([h]), true);
+    let n = notes_view_in(&mine, &json!([h]), true, Some(100_000));
     assert_eq!((n[0]["unit"].clone(), n[0]["units_mg"].clone(), n[0]["demanded_mg"].clone()),
                (json!("mg"), json!(300_000), json!(1000)));
     assert_eq!(notes_view(&mine, &json!([h]))[0]["unit"], "sat");
@@ -2995,6 +3023,17 @@ fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
     assert_eq!(
         pay("sendissued", json!([T, 5_000, TO]), &f).1,
         Approve::Action { text: format!("Send 5.000 g of GOLDA to {TO}"), sats: Some(651_000) }
+    );
+    // v0.7.2, House tools: gold into a house's capital or till counts at the payout price with its token coin; out of
+    // the till moves nothing out of the wallet but the fee.
+    assert_eq!(
+        pay("pledgegold", json!([1, 0, T, 800_000, 0.001]), &f).1,
+        Approve::Action { text: "Pledge 800.000 g of GOLDA to house #1's owners' capital (partner 0)".into(), sats: Some(88_000_000 + 1_000 + 100_000) }
+    );
+    assert_eq!(cost("movetill", json!([1, T, 200_000, 0.001]), &f), 22_000_000 + 1_000 + fee);
+    assert_eq!(
+        pay("movetill", json!([1, T, -50_000, 0.001]), &f).1,
+        Approve::Action { text: "Take 50.000 g of GOLDA out of house #1's till".into(), sats: Some(fee) }
     );
     // A token that isn't gold (pool shares, dollar tokens): its worth can't be read, so a phone is asked.
     let lp = CreditFacts { gold: false, ticker: Some("LP".into()), ..f.clone() };

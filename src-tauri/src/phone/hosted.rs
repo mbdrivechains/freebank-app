@@ -1321,12 +1321,12 @@ impl Phone {
                     Err(e) => return Err(e.plain()),
                 };
                 let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
-                let grams = self.grams().await.unwrap_or(false);
-                Ok(notes_view_in(&mine, &houses, grams))
+                let grams = self.grams().await?;
+                Ok(notes_view_in(&mine, &houses, grams, None))
             }
             "houses" => {
                 let r = self.rpc.call("listhouses", vec![]).await?;
-                let grams = self.grams().await.unwrap_or(false);
+                let grams = self.grams().await?;
                 Ok(Value::Array(r.as_array().map(|v| v.as_slice()).unwrap_or(&[]).iter().map(|h| house_view_in(h, grams)).collect()))
             }
             "receive" => {
@@ -1339,7 +1339,7 @@ impl Phone {
                 }
                 // v0.7.1: a hosted phone's note actions wait for its page to speak grams, as an owner's do.
                 if m != "send" && self.grams().await? {
-                    return Err(ERR_NOTES_IN_GRAMS.into());
+                    return Err(ERR_HOSTED_NOTES_IN_GRAMS.into());
                 }
                 self.check_assertion(ch, dev, "send", &a["auth"], None)?;
                 // One payment every few seconds per hosted phone (security review of v0.2.8, L8).

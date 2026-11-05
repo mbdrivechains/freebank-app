@@ -9,13 +9,19 @@ export type PaymentKind = "send" | "note-send" | "note-redeem" | "note-demand";
 interface Payment {
   kind?: PaymentKind;
   house?: number | null;
+  /** sECX: a send's amount, or what a note action's notes are worth. */
   amount: number;
+  /** A note action on a gram-notes chain (v0.7.2): its notes in grams; `amount` is then their worth in sECX. */
+  grams?: number | null;
 }
 
 /** What a phone's payment does, in a few words: "send 0.5 sECX", "redeem 0.5 sECX of house #3's notes". */
 export function paymentWhat(p: Payment): string {
   const amt = `${p.amount} ${BASE_TICKER}`;
-  const notes = `${amt} of house #${p.house}'s notes`;
+  const notes =
+    typeof p.grams === "number"
+      ? `${p.grams.toLocaleString("en-US", { maximumFractionDigits: 3 })} g of house #${p.house}'s notes (about ${amt}${p.kind === "note-redeem" ? " before any spread" : ""})`
+      : `${amt} of house #${p.house}'s notes`;
   switch (p.kind ?? "send") {
     case "note-send":
       return `send ${notes}`;
@@ -96,6 +102,8 @@ export interface HeldSend {
   /** Empty for a redeem or a demand. */
   address: string;
   amount: number;
+  /** A note action on a gram-notes chain (v0.7.2): its notes in grams. */
+  grams?: number | null;
   kind?: PaymentKind;
   house?: number | null;
   /** unix seconds: when it was held, and when it stops waiting */
@@ -138,6 +146,8 @@ export interface PhoneSend {
   name: string;
   address: string;
   amount: number;
+  /** A note action on a gram-notes chain (v0.7.2): its notes in grams; `amount` is then their worth in sECX. */
+  grams?: number | null;
   /** v0.2.5: a note action and its house (absent for a send). */
   kind?: PaymentKind;
   house?: number | null;

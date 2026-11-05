@@ -232,18 +232,25 @@ async fn credit_facts(c: &mut FreeBankClient, method: &str, params: &[serde_json
         },
         _ => None,
     };
-    let token_call = matches!(method, "swaptoken" | "addtokenliquidity" | "removetokenliquidity" | "sendissued");
+    let token_call =
+        matches!(method, "swaptoken" | "addtokenliquidity" | "removetokenliquidity" | "sendissued" | "pledgegold" | "movetill");
+    // Where the call names its token: first, except pledgegold (house, partner, token, …) and movetill (house, token, …).
+    let token = match method {
+        "pledgegold" => params.get(2),
+        "movetill" => params.get(1),
+        _ => params.first(),
+    };
     if f.grams || token_call {
         if let Ok(l) = c.call_ui("listtokenpools", vec![]).await {
-            f.price = l["payout_price_sats_per_gram"].as_u64();
-            if let (true, Some(t)) = (token_call, params.first().and_then(|v| v.as_str())) {
+            f.price = l["payout_price_sats_per_gram"].as_u64().filter(|&p| p > 0);
+            if let (true, Some(t)) = (token_call, token.and_then(|v| v.as_str())) {
                 if let Some(pool) = l["pools"].as_array().and_then(|a| a.iter().find(|p| p["token_id"].as_str() == Some(t))) {
                     f.pool = pool["units"].as_u64().zip(pool["sats"].as_u64());
                     f.ticker = pool["ticker"].as_str().map(String::from);
                 }
             }
         }
-        if let (true, Some(t)) = (token_call, params.first()) {
+        if let (true, Some(t)) = (token_call, token) {
             if let Ok(tok) = c.call_ui("getissuedtoken", vec![t.clone()]).await {
                 f.ticker = tok["ticker"].as_str().map(String::from).or(f.ticker.take());
                 f.gold = tok["kind"].as_str() == Some("gold_mg");

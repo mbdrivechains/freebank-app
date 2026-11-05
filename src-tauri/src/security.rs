@@ -118,6 +118,10 @@ pub const RPC_ALLOWED: &[&str] = &[
     "swaptoken",
     "addtokenliquidity",
     "removetokenliquidity",
+    // v0.7.2, House tools in grams: a partner's gold into the house's capital, and gold into or out of its till
+    // (signed by the wallet, behind phone approval like the other credit actions).
+    "pledgegold",
+    "movetill",
 ];
 
 /// Refuse a method the screens may not call (see RPC_ALLOWED).
