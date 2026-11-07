@@ -46,7 +46,57 @@ export interface EcashQuote {
   total: number;
 }
 
+/** v0.7.3: the main eCash wallet for Sparrow or Electrum (ecash_export): its public side, no passphrase. */
+export interface EcashExport {
+  /** "test": Bitcoin's test prefixes (easynet), so the other wallet runs as testnet. */
+  chain: "main" | "test" | "regtest";
+  fingerprint: string;
+  path: string;
+  zpub: string;
+  xpub: string;
+  /** Receive and change in one (BIP389), for Sparrow's Import Wallet › Output Descriptor. */
+  descriptor: string;
+  first_address: string;
+  /** The eCash node, host:port, and its data folder when FreeBank runs it: for Sparrow's Bitcoin Core server. */
+  node: string | null;
+  node_dir: string | null;
+}
+
+/** Its private side, after the passphrase: the eCash root (Sparrow) and the account's zprv (Electrum). */
+export interface EcashSecret {
+  master_xprv: string;
+  zprv: string;
+}
+
+/** v0.7.3: another wallet's coins on eCash, from its words (ecash_other_find), and their move into the main wallet. */
+export interface OtherFound {
+  /** The prepared move ("" when nothing was found). */
+  id: string;
+  kind: "bip39" | "electrum";
+  path: string;
+  first_address: string;
+  coins: number;
+  sats: number;
+  /** What this move takes, of those. */
+  taking: number;
+  taking_sats: number;
+  /** Coins worth less than the fee to move them (they stay), and coins beyond what one move takes. */
+  small: number;
+  left_out: number;
+  /** The main eCash wallet's address they go to. */
+  to: string;
+  arrives: number;
+  fee: number;
+}
+
 export const ecashStatus = () => tauriInvoke("ecash_status") as Promise<EcashStatus>;
+export const ecashOtherFind = (words: string, passphrase: string) =>
+  tauriInvoke("ecash_other_find", { words, passphrase }) as Promise<OtherFound>;
+export const ecashOtherMove = (id: string, words: string, passphrase: string) =>
+  tauriInvoke("ecash_other_move", { id, words, passphrase }) as Promise<string>;
+export const ecashExport = () => tauriInvoke("ecash_export") as Promise<EcashExport>;
+export const ecashExportPrivate = (passphrase: string) =>
+  tauriInvoke("ecash_export_private", { passphrase }) as Promise<EcashSecret>;
 export const ecashSetup = (passphrase: string) => tauriInvoke("ecash_setup", { passphrase }) as Promise<EcashStatus>;
 export const ecashReceive = () => tauriInvoke("ecash_receive") as Promise<string>;
 export const ecashHistory = () => tauriInvoke("ecash_history") as Promise<EcashTx[]>;

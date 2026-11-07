@@ -15,6 +15,7 @@ pub mod commands;
 pub mod conn;
 pub mod deposit;
 pub mod keys;
+pub mod other;
 pub mod sign;
 pub mod wallet;
 

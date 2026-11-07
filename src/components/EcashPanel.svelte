@@ -9,6 +9,8 @@
   import FaucetAsk from "./FaucetAsk.svelte";
   import AddressNote from "./AddressNote.svelte";
   import PathText from "./PathText.svelte";
+  import EcashElsewhere from "./EcashElsewhere.svelte";
+  import EcashBringIn from "./EcashBringIn.svelte";
   import type { CsvSaved } from "../lib/send";
   import { network } from "../lib/network";
   import { L1_TICKER } from "../lib/brand";
@@ -492,6 +494,8 @@
         </ul>
       {/if}
     </div>
+    <EcashElsewhere />
+    <EcashBringIn on:moved={load} />
     {:else}
     <div class="card" data-testid="ecash-bids">
       <h3>Bidding wallet</h3>

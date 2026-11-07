@@ -3,7 +3,8 @@
 //! bidding account's from its owner-only key file. Neither the passphrase nor a private key goes to the node.
 
 use super::conn::{self, Conn};
-use super::keys::{Account, AccountKey, Root};
+use super::keys::{Account, AccountKey, AccountPub, Root};
+use super::other;
 use super::to_coins;
 use super::wallet::{self, Balance, Record, Tx};
 use crate::node::NodeManager;
@@ -122,6 +123,15 @@ fn record_for(mgr: &NodeManager, c: &Conn) -> Option<Record> {
         .then_some(r)
 }
 
+/// The record, if it is for the words this app has, whatever the node says (no node needed).
+fn own_record(mgr: &NodeManager) -> Result<Record, String> {
+    let r = wallet::read_record(&mgr.app_dir).ok_or(NOT_READY)?;
+    if Some(&r.key_id) != crate::seed::sealed_key_id_hex(&mgr.app_dir).as_ref() {
+        return Err(NOT_READY.into());
+    }
+    Ok(r)
+}
+
 /// The wallets, if set up for the words this app has and present in the node.
 pub(crate) async fn ready(mgr: &NodeManager) -> Result<(Conn, Record), String> {
     let c = connect(mgr).await?;
@@ -216,6 +226,241 @@ pub async fn ecash_setup(mgr: State<'_, Arc<NodeManager>>, passphrase: String) -
     wallet::write_record(&mgr.app_dir, &r)?;
     crate::activity::note("ecash: wallets set up");
     Ok(status_of(&mgr).await)
+}
+
+/// "Use this wallet in Sparrow or Electrum" (v0.7.3): the main eCash wallet's public side, for a watch-only copy
+/// there. Whoever has it sees every address and payment of this wallet, but can't spend.
+#[derive(Debug, Serialize)]
+pub struct EcashExport {
+    /// "main", "test" (Bitcoin's test prefixes: the other wallet runs as testnet) or "regtest".
+    pub chain: String,
+    /// The eCash root's fingerprint and the account's path: the key origin Sparrow asks for.
+    pub fingerprint: String,
+    pub path: String,
+    pub zpub: String,
+    pub xpub: String,
+    /// Receive and change in one (BIP389), with the key origin.
+    pub descriptor: String,
+    /// The wallet's first receiving address: the other wallet should show the same one.
+    pub first_address: String,
+    /// The eCash node Sparrow connects to as Bitcoin Core: host:port, and its data folder when FreeBank runs it (where
+    /// Sparrow finds the login). None when unknown.
+    pub node: Option<String>,
+    pub node_dir: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ecash_export(mgr: State<'_, Arc<NodeManager>>) -> Result<EcashExport, String> {
+    let r = own_record(&mgr)?;
+    let p = r.public(Account::Main)?;
+    let s = settings(&mgr).await;
+    Ok(EcashExport {
+        chain: r.chain.clone(),
+        fingerprint: r.fingerprint.clone(),
+        path: p.path(),
+        zpub: p.zpub(),
+        xpub: p.xpub.to_string(),
+        descriptor: p.descriptor_both()?,
+        first_address: p.address(0, 0)?,
+        node: conn::rpc_endpoint(&s).ok().filter(|a| !a.is_empty()),
+        node_dir: s.l1_datadir.clone().filter(|d| !d.trim().is_empty()),
+    })
+}
+
+/// The private side (v0.7.3), after the passphrase: whoever has it can spend this eCash wallet from anywhere. Wiped
+/// when dropped (after it is sent).
+#[derive(Serialize)]
+pub struct EcashSecret {
+    /// The eCash root, a master key: Sparrow's "Master Private Key (BIP32)", native segwit at its usual path.
+    pub master_xprv: String,
+    /// The main account's key: Electrum's "Use a master key".
+    pub zprv: String,
+}
+
+impl std::fmt::Debug for EcashSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EcashSecret { .. }")
+    }
+}
+
+impl Drop for EcashSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.master_xprv.zeroize();
+        self.zprv.zeroize();
+    }
+}
+
+/// Show the main eCash wallet's private keys, once the passphrase opens the words and they give this wallet. While
+/// "Approve sends on my phone" is on, a phone approves it too, as for the recovery words (v0.2.5 review H2).
+#[tauri::command]
+pub async fn ecash_export_private(
+    mgr: State<'_, Arc<NodeManager>>,
+    phone: State<'_, PhoneState>,
+    passphrase: String,
+) -> Result<EcashSecret, String> {
+    let pass = Zeroizing::new(passphrase);
+    if pass.is_empty() {
+        return Err("Please enter your wallet passphrase.".into());
+    }
+    let r = own_record(&mgr)?;
+    let chain = r.chain()?;
+    let (root, _) = root_from_words(&mgr, &pass, chain).await?;
+    let key = root.account(chain, Account::Main)?;
+    if key.public != r.public(Account::Main)? {
+        return Err("These words don't give this eCash wallet's key.".into());
+    }
+    let out = EcashSecret { master_xprv: root.xprv().to_string(), zprv: key.zprv().to_string() };
+    drop(key);
+    drop(root);
+    if let Some(p) = phone.guard(&mgr.app_dir)?.filter(|p| p.approve_over().is_some()) {
+        p.request_approval(Approve::Change { text: "Show the eCash wallet's private key on the desktop".into() }).await?;
+    }
+    crate::activity::note("ecash: private key shown");
+    Ok(out)
+}
+
+/// "Bring in coins from Sparrow or Electrum" (v0.7.3, other.rs): what other words' wallet holds on eCash, and the move
+/// of it all into the main eCash wallet, prepared (`id`; empty when there is nothing to move).
+#[derive(Debug, Serialize)]
+pub struct OtherFound {
+    pub id: String,
+    /// "bip39" or "electrum".
+    pub kind: &'static str,
+    pub path: String,
+    pub first_address: String,
+    pub coins: usize,
+    pub sats: u64,
+    /// What this move takes, of those: coins and their worth.
+    pub taking: usize,
+    pub taking_sats: u64,
+    /// Coins worth less than the fee to move them (left where they are), and coins beyond what one move takes (a
+    /// second move, once this one confirms, brings them).
+    pub small: usize,
+    pub left_out: usize,
+    /// The main eCash wallet's address they go to, what arrives and the fee.
+    pub to: String,
+    pub arrives: u64,
+    pub fee: u64,
+}
+
+struct OtherMove {
+    public: AccountPub,
+    tx: bitcoin::Transaction,
+    spends: Vec<super::sign::Spend>,
+    fee: u64,
+    at: Instant,
+}
+
+static OTHER: LazyLock<Mutex<HashMap<String, OtherMove>>> = LazyLock::new(Default::default);
+
+/// Find the coins of `words` (with the seed's own `passphrase`, empty for none) on eCash, and prepare moving them all
+/// into the main eCash wallet. The words are dropped when this returns; the move needs them again.
+#[tauri::command]
+pub async fn ecash_other_find(mgr: State<'_, Arc<NodeManager>>, words: String, passphrase: String) -> Result<OtherFound, String> {
+    let words = Zeroizing::new(words);
+    let seed_pass = Zeroizing::new(passphrase);
+    let (c, r) = ready(&mgr).await?;
+    // Most likely reading first; the second only when the words are both Electrum's and valid BIP39 (other.rs).
+    let readings: Vec<(other::Kind, AccountPub)> =
+        other::candidates(&words, &seed_pass, c.chain)?.into_iter().map(|(k, key)| (k, key.public.clone())).collect();
+    drop(words);
+    drop(seed_pass);
+    let mut pick = None;
+    for (kind, public) in &readings {
+        let coins = other::scan(&c, public).await?;
+        if !coins.is_empty() || pick.is_none() {
+            let had = !coins.is_empty();
+            pick = Some((*kind, public.clone(), coins));
+            if had {
+                break;
+            }
+        }
+    }
+    let (kind, public, coins) = pick.ok_or("These words give no wallet.")?;
+    let sats = coins.iter().try_fold(0u64, |a, k| a.checked_add(k.value)).ok_or("The coins' amounts don't add up.")?;
+    let mut found = OtherFound {
+        id: String::new(),
+        kind: kind.name(),
+        path: public.path(),
+        first_address: public.address(0, 0)?,
+        coins: coins.len(),
+        sats,
+        taking: 0,
+        taking_sats: 0,
+        small: 0,
+        left_out: 0,
+        to: String::new(),
+        arrives: 0,
+        fee: 0,
+    };
+    if coins.is_empty() {
+        return Ok(found);
+    }
+    let to = wallet::new_address(&c, &r.main_name, &r.public(Account::Main)?).await?;
+    let m = other::sweep(&coins, c.script_of(&to)?, wallet::fee_rate(&c).await)?;
+    found.taking = m.taken;
+    found.taking_sats = m.taken_sats;
+    found.small = m.small;
+    found.left_out = coins.len() - m.taken - m.small;
+    found.to = to;
+    found.arrives = m.arrives;
+    found.fee = m.fee;
+    let id = format!("{:016x}", rand::random::<u64>());
+    {
+        let mut book = OTHER.lock().unwrap();
+        book.retain(|_, m| m.at.elapsed() < QUOTE_LIFE);
+        book.insert(id.clone(), OtherMove { public, tx: m.tx, spends: m.spends, fee: m.fee, at: Instant::now() });
+    }
+    found.id = id;
+    crate::activity::note(&format!("ecash: other words: {} coins found", found.coins));
+    Ok(found)
+}
+
+/// Sign the prepared move with the same words and send it. It pays only the main eCash wallet's address, checked when
+/// it was prepared, so it needs no wallet passphrase: nothing leaves FreeBank's wallets.
+#[tauri::command]
+pub async fn ecash_other_move(
+    mgr: State<'_, Arc<NodeManager>>,
+    id: String,
+    words: String,
+    passphrase: String,
+) -> Result<String, String> {
+    let words = Zeroizing::new(words);
+    let seed_pass = Zeroizing::new(passphrase);
+    let (c, _) = ready(&mgr).await?;
+    let public = {
+        let book = OTHER.lock().unwrap();
+        match book.get(&id) {
+            Some(m) if m.at.elapsed() < QUOTE_LIFE => m.public.clone(),
+            _ => return Err("Those coins were found too long ago. Look for them again.".into()),
+        }
+    };
+    // The words must give the account the coins were found on; only then is the prepared move used up.
+    let key = other::account_for(&words, &seed_pass, c.chain, &public)?;
+    drop(words);
+    drop(seed_pass);
+    let m = {
+        let mut book = OTHER.lock().unwrap();
+        match book.get(&id) {
+            Some(m) if m.at.elapsed() < QUOTE_LIFE && m.public == public => book.remove(&id).unwrap(),
+            _ => return Err("Those coins were found too long ago. Look for them again.".into()),
+        }
+    };
+    let txid = m.tx.compute_txid().to_string();
+    let hex = super::sign::sign(m.tx, &m.spends, &key)?;
+    drop(key);
+    let ceiling = super::sign::max_fee_rate(&hex, m.fee)?;
+    match c.node().call_typed("sendrawtransaction", vec![serde_json::json!(hex), serde_json::json!(ceiling)]).await {
+        Ok(v) if v.as_str() == Some(txid.as_str()) => {
+            crate::activity::note("ecash: other words' coins moved in");
+            Ok(txid)
+        }
+        Ok(_) => Err("The eCash node didn't say it took the payment, so it may have gone out. Look under Payments before \
+                      trying again."
+            .into()),
+        Err(e) => Err(format!("The eCash node didn't take the payment: {}", e)),
+    }
 }
 
 #[tauri::command]

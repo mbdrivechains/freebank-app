@@ -42,6 +42,9 @@ impl Record {
         match a {
             Account::Main => &self.main_name,
             Account::Bids => &self.bids_name,
+            // Another wallet's words are never kept (other.rs): it has no wallet here, and a name no wallet has (never
+            // "", which is the node's default wallet).
+            Account::Other => "freebank-no-other-wallet",
         }
     }
 
@@ -49,6 +52,7 @@ impl Record {
         let x = match a {
             Account::Main => &self.main_xpub,
             Account::Bids => &self.bids_xpub,
+            Account::Other => return Err("FreeBank keeps no other wallet.".into()),
         };
         AccountPub::from_record(x, &self.fingerprint, self.chain()?, a)
     }

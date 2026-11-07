@@ -4,7 +4,7 @@
 // a step needs it: L1 wallet creation, L2 a deposit, L4 the changer, R1 house tools, R4 pools, R5 bills.
 
 /** Bumped when the first-run notice changes, so it is shown, and agreed to, again. */
-export const NOTICE_VERSION = "2026-11";
+export const NOTICE_VERSION = "2026-11-06";
 
 /** The standard notice (N). The sentence on grams is for gram-notes chains (FreeBank v1.1.0 and later: easynet now);
  *  a chain whose notes count ECX goes without it. */
@@ -15,7 +15,8 @@ export function noticeN(grams: boolean): string[] {
     "Houses are run by independent operators, not by FreeBank's developers. A house can suspend payment or fail, and " +
       "its notes may not be paid in full. " +
       (grams
-        ? "Notes are denominated in grams of gold and paid in sECX (ECX held on FreeBank) at an on-chain price. "
+        ? "Notes are denominated in grams of gold and paid in sECX (ECX held on FreeBank) at an on-chain price, or in " +
+          "gold tokens. "
         : "") +
       "Moving sECX back to eCash is slow and needs eCash miners' approval, and sECX can trade below ECX.",
     "Running a house, issuing tokens, reporting prices or lending to consumers may need a licence where you do it. " +
@@ -95,9 +96,13 @@ export const NOTICE_F: { title: string; text: string[]; list?: string[]; after?:
   {
     title: "Grams and sECX",
     text: [
-      "Notes are denominated in grams of gold and paid in sECX at an on-chain gold price. If no price is available, a " +
-        "house may pay in gold tokens. sECX is ECX held on FreeBank. Moving it back to eCash is slow, needs eCash " +
-        "miners' approval and isn't guaranteed, and sECX can trade below ECX. ECX's price can fall.",
+      "Notes are denominated in grams of gold. A house pays them in sECX at an on-chain gold price, or in gold " +
+        "tokens, gram for gram. When you redeem, you sign for what you are paid. If you make a formal demand, the " +
+        "house can pay it without you, and it chooses: sECX at a recent on-chain price, or gold tokens, the only " +
+        "choice when no price is available. Gold tokens can trade below gold and can be frozen by their issuer. If no " +
+        "price is available, a redemption in sECX needs an amount you both sign. sECX is ECX held on FreeBank. " +
+        "Moving it back to eCash is slow, needs eCash miners' approval and isn't guaranteed, and sECX can trade " +
+        "below ECX. ECX's price can fall.",
     ],
   },
   {

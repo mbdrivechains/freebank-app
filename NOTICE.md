@@ -21,8 +21,11 @@ Houses are run by independent operators. A house can suspend payment (it then ow
 up to 12 months) or fail. If it fails, holders are paid from what the chain can seize, and that may not cover them
 in full. Every note shows what its house holds and how it can fail.
 
-**Grams and sECX.** Notes are denominated in grams of gold and paid in sECX at an on-chain gold price. If no price
-is available, a house may pay in gold tokens. sECX is ECX held on FreeBank. Moving it back to eCash is slow, needs
+**Grams and sECX.** Notes are denominated in grams of gold. A house pays them in sECX at an on-chain gold price, or
+in gold tokens, gram for gram. When you redeem, you sign for what you are paid. If you make a formal demand, the house
+can pay it without you, and it chooses: sECX at a recent on-chain price, or gold tokens, the only choice when no price
+is available. Gold tokens can trade below gold and can be frozen by their issuer. If no price is available, a
+redemption in sECX needs an amount you both sign. sECX is ECX held on FreeBank. Moving it back to eCash is slow, needs
 eCash miners' approval and isn't guaranteed, and sECX can trade below ECX. ECX's price can fall.
 
 **Gold tokens and pools.** A gold token is only as good as its issuer, who holds the backing elsewhere, and some

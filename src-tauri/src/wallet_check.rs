@@ -88,6 +88,7 @@ fn found(chain: Chain, account: Account, branch: u32, index: u32) -> String {
     let wallet = match account {
         Account::Main => "your eCash wallet's",
         Account::Bids => "your bidding wallet's",
+        Account::Other => "another wallet's",
     };
     let kind = if branch == 0 { "receiving" } else { "change" };
     format!(

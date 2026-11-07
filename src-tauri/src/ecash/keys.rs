@@ -17,20 +17,31 @@ use bitcoin::bip32::{ChainCode, ChildNumber, DerivationPath, Fingerprint, Xpriv,
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::{Address, CompressedPublicKey, KnownHrp, NetworkKind, ScriptBuf};
 use std::str::FromStr;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Which of the app's eCash wallets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Account {
     Main,
     Bids,
+    /// Another wallet's account, from words of Sparrow's or Electrum's (v0.7.3, `other.rs`): its path is its own.
+    Other,
 }
 
 impl Account {
     pub fn index(self) -> u32 {
         match self {
-            Account::Main => 0,
+            Account::Main | Account::Other => 0,
             Account::Bids => 1,
+        }
+    }
+
+    /// The app's own accounts' path from the eCash root: m/84'/c'/a' (hardened). Another wallet's path is its own
+    /// (`AccountKey::other`): asking for it here is refused, never answered with the main wallet's.
+    fn origin(self, chain: Chain) -> Result<Vec<u32>, String> {
+        match self {
+            Account::Other => Err("Another wallet's path isn't one of FreeBank's own.".into()),
+            _ => Ok(vec![84, coin(chain), self.index()]),
         }
     }
 }
@@ -63,6 +74,21 @@ const ECASH_ROOT_PATH: [u32; 3] = [83_696_968, 32, 0];
 /// The highest address index taken as this wallet's (re-review L-E): a node naming one far beyond would put coins where
 /// a restore from the words, with any usual gap limit, never looks.
 pub const MAX_INDEX: u32 = 100_000;
+
+/// A BIP84 key in SLIP-132's form (v0.7.3, Sparrow and Electrum): zpub/zprv, or vpub/vprv with Bitcoin's test
+/// prefixes. Electrum reads the script type (native segwit) from these version bytes; Sparrow takes them too.
+fn slip132(data: &mut [u8; 78], kind: NetworkKind, private: bool) -> String {
+    let v: u32 = match (kind, private) {
+        (NetworkKind::Main, false) => 0x04b2_4746,
+        (NetworkKind::Main, true) => 0x04b2_430c,
+        (NetworkKind::Test, false) => 0x045f_1cf6,
+        (NetworkKind::Test, true) => 0x045f_18bc,
+    };
+    data[..4].copy_from_slice(&v.to_be_bytes());
+    let s = bitcoin::base58::encode_check(&data[..]);
+    data.zeroize();
+    s
+}
 
 /// The eCash root (a master key); wiped when dropped.
 pub struct Root(Xpriv);
@@ -102,13 +128,21 @@ impl Root {
         self.0.fingerprint(&Secp256k1::new())
     }
 
+    /// The eCash root as a master extended private key (xprv; tprv with test prefixes), for another wallet (v0.7.3):
+    /// Sparrow's "Master Private Key (BIP32)" with native segwit's usual path gives the main eCash wallet, and any BIP85
+    /// tool's "XPRV, index 0" from the words gives this same key.
+    pub fn xprv(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.0.to_string())
+    }
+
     /// An account's private key, with its public side.
     pub fn account(&self, chain: Chain, account: Account) -> Result<AccountKey, String> {
         let secp = Secp256k1::new();
-        let path = hardened(&[84, coin(chain), account.index()])?;
+        let origin = account.origin(chain)?;
+        let path = hardened(&origin)?;
         let mut xprv = self.0.derive_priv(&secp, &path).map_err(|e| e.to_string())?;
         xprv.network = network_kind(chain);
-        let public = AccountPub { fingerprint: self.fingerprint(), chain, account, xpub: Xpub::from_priv(&secp, &xprv) };
+        let public = AccountPub { fingerprint: self.fingerprint(), chain, account, xpub: Xpub::from_priv(&secp, &xprv), origin };
         Ok(AccountKey { xprv, public })
     }
 }
@@ -121,17 +155,39 @@ pub struct AccountPub {
     pub chain: Chain,
     pub account: Account,
     pub xpub: Xpub,
+    /// The account's path from the root, every step hardened: m/84'/c'/a' for the app's own (v0.7.3: m/0' for an
+    /// Electrum segwit wallet's).
+    pub origin: Vec<u32>,
 }
 
 impl AccountPub {
+    /// m/84'/c'/a', as wallets ask for it.
+    pub fn path(&self) -> String {
+        let steps: Vec<String> = self.origin.iter().map(|i| format!("{i}'")).collect();
+        format!("m/{}", steps.join("/"))
+    }
+
+    /// The account's public key as zpub (vpub with test prefixes), for a watch-only copy in Electrum or Sparrow.
+    pub fn zpub(&self) -> String {
+        slip132(&mut self.xpub.encode(), network_kind(self.chain), false)
+    }
+
     /// m/84'/c'/a', as key origins write it.
     fn origin(&self) -> String {
-        format!("[{}/84h/{}h/{}h]", self.fingerprint, coin(self.chain), self.account.index())
+        let steps: Vec<String> = self.origin.iter().map(|i| format!("{i}h")).collect();
+        format!("[{}/{}]", self.fingerprint, steps.join("/"))
     }
 
     /// The public descriptor of a branch (0 receive, 1 change), checksummed, for `importdescriptors`.
     pub fn descriptor(&self, branch: u32) -> Result<String, String> {
         let body = format!("wpkh({}{}/{}/*)", self.origin(), self.xpub, branch);
+        let sum = checksum(&body).ok_or("A descriptor had a character it can't hold.")?;
+        Ok(format!("{}#{}", body, sum))
+    }
+
+    /// Receive and change in one descriptor (BIP389's `<0;1>`), as Sparrow imports and exports it (v0.7.3).
+    pub fn descriptor_both(&self) -> Result<String, String> {
+        let body = format!("wpkh({}{}/<0;1>/*)", self.origin(), self.xpub);
         let sum = checksum(&body).ok_or("A descriptor had a character it can't hold.")?;
         Ok(format!("{}#{}", body, sum))
     }
@@ -158,12 +214,13 @@ impl AccountPub {
         if fingerprint != self.fingerprint {
             return None;
         }
-        let want = hardened(&[84, coin(self.chain), self.account.index()]).ok()?;
+        let want = hardened(&self.origin).ok()?;
+        let n = want.len();
         let p: Vec<ChildNumber> = path.into_iter().copied().collect();
-        if p.len() != 5 || p[..3] != want[..] {
+        if p.len() != n + 2 || p[..n] != want[..] {
             return None;
         }
-        match (p[3], p[4]) {
+        match (p[n], p[n + 1]) {
             (ChildNumber::Normal { index: b }, ChildNumber::Normal { index: i }) if b <= 1 && i <= MAX_INDEX => Some((b, i)),
             _ => None,
         }
@@ -194,6 +251,7 @@ impl AccountPub {
             chain,
             account,
             xpub: Xpub::from_str(xpub).map_err(|e| e.to_string())?,
+            origin: account.origin(chain)?,
         })
     }
 }
@@ -222,6 +280,12 @@ impl AccountKey {
         Ok(s)
     }
 
+    /// The account's private key as zprv (vprv with test prefixes): Electrum's "Use a master key" makes this wallet
+    /// from it (v0.7.3).
+    pub fn zprv(&self) -> Zeroizing<String> {
+        Zeroizing::new(slip132(&mut self.xprv.encode(), self.xprv.network, true))
+    }
+
     /// The bidding key file's form: the account xprv and the root fingerprint.
     pub fn to_file(&self) -> Zeroizing<String> {
         Zeroizing::new(format!("{} {}", self.xprv, self.public.fingerprint))
@@ -237,6 +301,22 @@ impl AccountKey {
             chain,
             account,
             xpub: Xpub::from_priv(&secp, &xprv),
+            origin: account.origin(chain)?,
+        };
+        Ok(AccountKey { xprv, public })
+    }
+
+    /// Another wallet's account (v0.7.3, `other.rs`): `origin` (hardened steps) from its own master key.
+    pub fn other(master: &Xpriv, chain: Chain, origin: &[u32]) -> Result<AccountKey, String> {
+        let secp = Secp256k1::new();
+        let mut xprv = master.derive_priv(&secp, &hardened(origin)?).map_err(|e| e.to_string())?;
+        xprv.network = network_kind(chain);
+        let public = AccountPub {
+            fingerprint: master.fingerprint(&secp),
+            chain,
+            account: Account::Other,
+            xpub: Xpub::from_priv(&secp, &xprv),
+            origin: origin.to_vec(),
         };
         Ok(AccountKey { xprv, public })
     }
@@ -297,6 +377,30 @@ mod tests {
             r.0.to_string(),
             "xprv9s21ZrQH143K2srSbCSg4m4kLvPMzcWydgmKEnMmoZUurYuBuYG46c6P71UGXMzmriLzCCBvKQWBUv3vPB3m1SATMhp3uEjXHJ42jFg7myX"
         );
+    }
+
+    /// BIP84's published vectors ("abandon" x11 "about", no passphrase): account 0's zprv and zpub, and its first
+    /// address, as Electrum and Sparrow show them.
+    #[test]
+    fn slip132_keys_are_bip84s() {
+        let seed = hex_to_bytes("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4");
+        let master = Xpriv::new_master(NetworkKind::Main, &seed).unwrap();
+        let fake = Root(master);
+        let acct = fake.account(Chain::Main, Account::Main).unwrap();
+        assert_eq!(&*acct.zprv(), "zprvAdG4iTXWBoARxkkzNpNh8r6Qag3irQB8PzEMkAFeTRXxHpbF9z4QgEvBRmfvqWvGp42t42nvgGpNgYSJA9iefm1yYNZKEm7z6qUWCroSQnE");
+        assert_eq!(acct.public.zpub(), "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs");
+        assert_eq!(acct.public.address(0, 0).unwrap(), "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        assert_eq!(acct.public.path(), "m/84'/0'/0'");
+        // Test prefixes: vpub/vprv, and the xprv of the root is a tprv.
+        let t = Root(Xpriv::new_master(NetworkKind::Test, &seed).unwrap());
+        let ta = t.account(Chain::Test, Account::Main).unwrap();
+        assert!(ta.public.zpub().starts_with("vpub") && ta.zprv().starts_with("vprv"));
+        assert_eq!(ta.public.path(), "m/84'/1'/0'");
+        assert!(t.xprv().starts_with("tprv") && fake.xprv().starts_with("xprv"));
+    }
+
+    fn hex_to_bytes(h: &str) -> Vec<u8> {
+        (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect()
     }
 
     #[test]

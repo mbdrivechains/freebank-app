@@ -5,7 +5,8 @@
 >
 > Houses are run by independent operators, not by FreeBank's developers. A house can suspend payment or fail, and its
 > notes may not be paid in full. Notes are denominated in grams of gold and paid in sECX (ECX held on FreeBank) at an
-> on-chain price. Moving sECX back to eCash is slow and needs eCash miners' approval, and sECX can trade below ECX.
+> on-chain price, or in gold tokens. Moving sECX back to eCash is slow and needs eCash miners' approval, and sECX can
+> trade below ECX.
 >
 > Running a house, issuing tokens, reporting prices or lending to consumers may need a licence where you do it.
 > Nothing here is an offer of a financial product, or financial, legal or tax advice. FreeBank is not offered where
