@@ -2,20 +2,20 @@ Acquire-By-Hash: yes
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sat, 07 Nov 2026 10:17:10 +0000
+Date: Sun, 08 Nov 2026 15:57:35 +0000
 Description: FreeBank desktop app
 Label: FreeBank
 Origin: FreeBank
 Suite: stable
 MD5Sum:
- b59e99777a394cda423833f3d2f13c81            38683 main/binary-amd64/Packages
- 3a0d99f01392eb7ac6c421d6b7ba78f1             8688 main/binary-amd64/Packages.gz
+ 14853e230ba347fff4199f0e6c7308d8            39723 main/binary-amd64/Packages
+ 3e09063d163efd5612aa3bb7f49c8599             8899 main/binary-amd64/Packages.gz
 SHA1:
- 6fb7a0e49fe161d3332f11788980960f091d3a76            38683 main/binary-amd64/Packages
- d571c7c4d53498cc271dc7e95aa8096a656f591b             8688 main/binary-amd64/Packages.gz
+ e485ab356376a189355060dfa95344612fd67c59            39723 main/binary-amd64/Packages
+ 7a80019dcf0880b565027307bd5b17d776bbad55             8899 main/binary-amd64/Packages.gz
 SHA256:
- d21ac632e68c893770b27bd9ee2914af9e1404e88faae8b6c3202595f9a74e56            38683 main/binary-amd64/Packages
- 866b4d6f0b8ab47adf71ae6b4a35b070e333ccd6f66fa52213311f57e814b177             8688 main/binary-amd64/Packages.gz
+ 447e35465fca4ce7f901fc728fe298cd46d5e62036b07462062e0d46bbba611f            39723 main/binary-amd64/Packages
+ a7c4c56ca3ce481201be49b94dcf9b2fc87a1a24ce5dd72693846b3f52b26902             8899 main/binary-amd64/Packages.gz
 SHA512:
- 68a2f6ae382959739f88ea3a06734ddf5c566ccc0827cae16bc9bee3f569019b6b40642dc285fca953c69bbcf1e28bcb3913ff9ee56a644585b1b125ba41fdfc            38683 main/binary-amd64/Packages
- 736dc85c4bd12184477d5437265a98788aa3c0ec1975646e5471b06f717bc3aba120ae1fbe94741e2487deddcee698c6775823d68e77464063caf65ad0e6e5a9             8688 main/binary-amd64/Packages.gz
+ 5d450b93c61eb660f4d48741637d5fa0a7e4852c1090eaa71e4f143f461f747a9689e6d0f770d5d5dde789ab34f3a70ef0f9a1b98e38af41f740e48c168602c9            39723 main/binary-amd64/Packages
+ 302ea13284dd188e0703c995cd2223bd49b3a526554e3c5dcacf4f691bfd42138084bb07c12d5a76a96f6edc167f22bcb7b3fe06b40f5e567dd8d1eb69a62dc5             8899 main/binary-amd64/Packages.gz
