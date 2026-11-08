@@ -68,13 +68,13 @@ export interface House {
   id: number;
   classid: string;          // the note-class name
   tier: number;
-  lambdax10: number;        // leverage λ × 10 (tier's max notes per unit reserve)
+  lambdax10?: number;       // leverage λ × 10 (tier's max notes per unit reserve); gone in node v1.2.0
   status: string;           // stored status
   effective_status: string; // consensus-operative status at the tip: open/stressed/deferred/insolvent/wounddown
   mintedunits: number;      // outstanding note liabilities (units, 1 = 1 sat)
   mintcapunits: number;     // max mintable given reserves
   activeescrow: number;     // pledged reserve (sECX)
-  attestedratiobps: number; // last attested reserve ratio (basis points)
+  attestedratiobps?: number; // last attested reserve ratio (basis points); gone from node v1.1.0's gram chains on
   lastattestheight: number;
   lastattestreserves: number; // sECX
   denominationmggold: number; // unit-of-account label (mg gold); inert in v1
@@ -84,6 +84,12 @@ export interface House {
   depositunits?: number;       // deposit principal (note units: mg on a gram node)
   brassagebps?: number;        // the spread a redemption owes now; on a gram node (v1.1.0) 0 while the house is open,
                                // else from its counted till: 0 at or above 2% of its notes, rising to 4% (400) at 0.5%
+  // Gold B (node v1.2.0): the protest, the cure (blocks) and the failure.
+  tillratiobps?: number;
+  protest_height?: number;
+  cure_insolvent_height?: number;
+  next_cure_height?: number;
+  insolventheight?: number;
   [k: string]: unknown;
 }
 
@@ -144,6 +150,7 @@ export interface Bill {
   acceptor_pubkey?: string;
   holder_pubkey?: string;
   owner_house_id?: number; // the house whose loan book holds it (0: none); node v0.2.27 lets the drawee repay in its notes
+  ref_house_id?: number;   // Gold B (node v1.2.0): the house whose 30-day highest ask a repayment in sECX is at
   roles?: string[];      // this wallet's role(s): holder / drawer / acceptor
   [k: string]: unknown;
 }
@@ -601,8 +608,12 @@ export const api = {
   },
 
   /** Draw + accept a bill. bodyHex = hex of the (encrypted) body; maturityHeight absolute. */
-  async issueBill(bodyHex: string, amount: number, escrow: number, maturityHeight: number, graceBlocks = 1008, fee = 0.001): Promise<string> {
-    const r = (await fbCall('issuebill', [bodyHex, amount, escrow, maturityHeight, graceBlocks, fee])) as { txid: string };
+  /** Gold B (node v1.2.0): `refHouse`, required on a gram chain, is the house whose 30-day highest ask the drawee repays
+   *  at in sECX while the bill is privately held; older nodes take no 7th argument. */
+  async issueBill(bodyHex: string, amount: number, escrow: number, maturityHeight: number, graceBlocks = 1008, fee = 0.001, refHouse?: number): Promise<string> {
+    const params: unknown[] = [bodyHex, amount, escrow, maturityHeight, graceBlocks, fee];
+    if (refHouse !== undefined) params.push(refHouse);
+    const r = (await fbCall('issuebill', params)) as { txid: string };
     return r.txid;
   },
 

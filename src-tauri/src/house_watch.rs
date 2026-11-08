@@ -267,6 +267,18 @@ pub async fn round(c: &mut FreeBankClient, guard: &RelockState, state: &AutoAtte
 async fn round_on(c: &mut FreeBankClient, guard: &RelockState, state: &AutoAttest, pass: &str, w: &str) -> Result<Vec<Attested>, String> {
     let (height, houses) = houses_run(c, state).await?;
     let mut out = Vec::new();
+    // One op per house per block: an attestation sent while the wallet's own last op is still pooled is refused by the
+    // mempool (house-op-in-mempool; the walk, 11-08). While the wallet holds an unconfirmed coin this round waits; the
+    // next minute's tries again.
+    let fresh = c
+        .call_ui("listunspent", vec![json!(0), json!(0)])
+        .await
+        .ok()
+        .and_then(|v| v.as_array().map(|a| !a.is_empty()))
+        .unwrap_or(false);
+    if fresh {
+        return Ok(out);
+    }
     for h in houses.iter().filter(|v| due(v, AUTO_WITHIN)) {
         let id = h["id"].as_u64().unwrap_or(0);
         let last_try = state.tried.lock().unwrap().get(&(w.to_string(), id)).cloned();

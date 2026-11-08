@@ -41,17 +41,32 @@ export function nice(e: unknown): string {
   if (/Request failed|error sending request|Connection refused|RPC not configured|busy; try again/i.test(m)) {
     return "Your FreeBank node isn't answering. It may be stopped or still starting; the Node tab shows which.";
   }
-  // Gram notes: every sECX payout is priced at the tip, and the node refuses one when the feed is stale and no pool is
-  // deep ("No payout price...").
-  if (/no payout price/i.test(m)) {
-    return "There is no gold price on FreeBank right now, so payouts in sECX wait. Nothing is lost: try again once the price is reported. Until then, bills don't fall overdue.";
+  if (/Pledge below the consensus minimum/i.test(m)) {
+    return "A house's sECX escrow must be at least 0.1 sECX for each owner. Nothing was sent.";
   }
-  // Gram nodes, the gold token wallet's refusals (the user's own pool and token actions).
+  // One change per house per block (node v1.2.1: a rate post sent while another op on the house waits is refused).
+  if (/op for this house is pending/i.test(m)) {
+    return "Another action on this house is waiting for a block. Try again after the next block (about ten minutes). Nothing was sent.";
+  }
+  // Gold B (node v1.2.0): each house posts its own rate; a payout or an issue needs one in effect.
+  if (/has no rate in effect/i.test(m)) {
+    return "This house has no rate posted right now, so it can't pay out in sECX or issue notes until it posts one. Nothing was done.";
+  }
+  if (/no rate key yet/i.test(m)) {
+    return "This house has no rate key yet. Under House tools, Your house's rate registers one the first time you post.";
+  }
+  if (/doesn't hold the house's rate key/i.test(m)) {
+    return "This wallet doesn't hold the key that signs this house's rates, so it can't post them.";
+  }
+  if (/a house with no rate posted can't issue/i.test(m)) {
+    return "The house can't issue that much: it needs a rate posted in the last 24 hours, and enough sECX escrow for the notes (Houses shows both).";
+  }
+  // Gram nodes, the token wallet's refusals (the user's own pool and token actions).
   if (/Insufficient plain funds/i.test(m)) {
     return "Not enough spendable sECX for this and its fee. sECX still on its way can be used once it's in a block: wait a block and try again.";
   }
   if (/Insufficient unfrozen token units/i.test(m)) {
-    return "You don't have that much of this gold token to use: some may be on its way (wait a block), or frozen by its issuer.";
+    return "You don't have that much of this token to use: some may be on its way (wait a block), or frozen by its issuer.";
   }
   if (/Insufficient LP shares/i.test(m)) {
     return "You don't have that many shares of this pool.";

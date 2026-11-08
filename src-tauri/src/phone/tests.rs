@@ -37,8 +37,8 @@ struct MockRpc {
     grams: AtomicBool,
     /// A node from v0.2.19: listmynotes answers with the wallet locked.
     notes_locked_ok: AtomicBool,
-    /// The payout price listtokenpools gives, sats per gram (0: none).
-    gold_price: AtomicU64,
+    /// The house rate gethousecapital gives (bid, ask and 30-day highest ask), sats per gram (0: none posted; Gold B).
+    rate: AtomicU64,
     now: Arc<AtomicU64>,
     wallet: Mutex<MockWallet>,
     /// Hosted wallets (v0.2.8, tests/hosted.rs): a members-only house 5 run by this wallet, the wallets made for
@@ -73,7 +73,7 @@ impl MockRpc {
             lock_after_look: AtomicBool::new(false),
             grams: AtomicBool::new(false),
             notes_locked_ok: AtomicBool::new(false),
-            gold_price: AtomicU64::new(0),
+            rate: AtomicU64::new(0),
             now,
             wallet: Mutex::new(MockWallet { txcount: 3, ..Default::default() }),
             hosting: AtomicBool::new(false),
@@ -145,9 +145,11 @@ impl Rpc for MockRpc {
                     let partner = crate::seed::p2pkh_address(&hex::decode(hosted::tests_partner_pubkey()).unwrap());
                     Ok(json!({"isvalid": params[0] == TO || params[0] == TO2 || hosted_first || params[0] == json!(partner)}))
                 }
-                "listtokenpools" => {
-                    let p = self.gold_price.load(Ordering::SeqCst);
-                    Ok(json!({"payout_price_sats_per_gram": if p > 0 { json!(p) } else { Value::Null }, "pools": []}))
+                "listtokenpools" => Ok(json!({"pools": []})),
+                "gethousecapital" => {
+                    let p = self.rate.load(Ordering::SeqCst);
+                    let r = if p > 0 { json!(p) } else { Value::Null };
+                    Ok(json!({"bid": r, "ask": r, "ask_30d_high": r, "rate_fresh": p > 0}))
                 }
                 "getblockchaininfo" => {
                     let mut i = json!({"blocks": 120, "headers": 120, "initialblockdownload": false});
@@ -2435,17 +2437,18 @@ async fn a_node_that_lists_notes_locked_shows_them_without_phone_sends() {
 }
 
 #[tokio::test]
-async fn on_a_gram_chain_the_phones_note_actions_count_grams_at_the_gold_price() {
-    // v0.7.2: on a gram-notes chain the page sends whole mg; the notes count against the daily limit at the payout
-    // price (rounded up), with the fee and carriers; a page that sends an sECX amount, or no price, is refused.
+async fn on_a_gram_chain_the_phones_note_actions_count_grams_at_the_house_rate() {
+    // v0.7.2: on a gram-notes chain the page sends whole mg; the notes count against the daily limit at the house's
+    // rate (Gold B: its 30-day highest ask, rounded up), with the fee and carriers; a page that sends an sECX amount, or
+    // a house with no rate posted, is refused.
     let mut h = harness(None);
     let mut sim = Sim::new();
     paired(&mut h, &mut sim, 1).await;
     h.rpc.grams.store(true, Ordering::SeqCst);
-    // No price: the worth can't be counted.
+    // No rate posted: the worth can't be counted.
     let r = ask(&mut h, &mut sim, 1, 1, "note-send", json!({"house": 3, "address": TO, "units_mg": 500})).await;
-    assert_eq!(r["err"], ERR_NO_GOLD_PRICE, "{r}");
-    h.rpc.gold_price.store(100_000, Ordering::SeqCst);
+    assert_eq!(r["err"], ERR_NO_RATE, "{r}");
+    h.rpc.rate.store(100_000, Ordering::SeqCst);
     // An older page's sECX amount.
     let r = ask(&mut h, &mut sim, 1, 2, "note-send", json!({"house": 3, "address": TO, "amount": 0.02})).await;
     assert_eq!(r["err"], ERR_PAGE_IN_SECX, "{r}");
@@ -2463,13 +2466,13 @@ async fn on_a_gram_chain_the_phones_note_actions_count_grams_at_the_gold_price()
     let held = h.phone.held();
     assert_eq!((held[0].grams, held[0].amount), (Some(2000.0), 2.0));
     assert!(h.rpc.params_of("redeemnote").is_empty());
-    // Confirmed on the desktop: the chain must still count grams; its worth is re-priced at today's price.
+    // Confirmed on the desktop: the chain must still count grams; its worth is re-priced at the house's rate now.
     let confirm = held[0].confirm.clone();
     h.rpc.grams.store(false, Ordering::SeqCst);
     let e = h.phone.confirm_send(&confirm, true, None).await.err().unwrap();
     assert!(e.contains("counts notes differently"), "{e}");
     h.rpc.grams.store(true, Ordering::SeqCst);
-    h.rpc.gold_price.store(120_000, Ordering::SeqCst);
+    h.rpc.rate.store(120_000, Ordering::SeqCst);
     let r = h.phone.confirm_send(&confirm, true, None).await.unwrap();
     assert!(r.txid.is_some(), "paid");
     assert_eq!(h.rpc.params_of("redeemnote"), vec![vec![json!(3), json!(2_000_000), json!(NOTE_FEE)]]);
@@ -2489,9 +2492,11 @@ fn the_phone_views_say_the_note_unit() {
     assert_eq!((s["unit"].clone(), s["notes_out_mg"].clone()), (json!("sat"), Value::Null));
     let mine = json!([{"house_id": 1, "units": 300_000, "demanded_units": 1000, "redeemable": true, "demandable": true,
                        "house_status": "o"}]);
-    let n = notes_view_in(&mine, &json!([h]), true, Some(100_000));
+    let n = notes_view_in(&mine, &json!([h]), true, &HashMap::from([(1, 100_000)]));
     assert_eq!((n[0]["unit"].clone(), n[0]["units_mg"].clone(), n[0]["demanded_mg"].clone()),
                (json!("mg"), json!(300_000), json!(1000)));
+    assert_eq!(n[0]["price_sats_per_gram"], 100_000, "the house's bid (Gold B)");
+    assert_eq!(notes_view_in(&mine, &json!([h]), true, &HashMap::new())[0]["price_sats_per_gram"], Value::Null, "no rate posted");
     assert_eq!(notes_view(&mine, &json!([h]))[0]["unit"], "sat");
 }
 
@@ -2966,14 +2971,15 @@ fn the_credit_tabs_payments_cost_what_leaves_the_wallet() {
 }
 
 #[test]
-fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
+fn on_a_gram_node_notes_count_at_their_house_rate_and_tokens_at_their_pool() {
     const T: &str = "b7d5ee5160e1f5a76944ac3e0cee8fd0ba6b5275bf06610524ae11d8d87d2d75";
     let fee = 100_000;
-    // 0.0011 sECX a gram; GOLDA's pool holds 600 g against 0.66 sECX (the same price).
-    let f = CreditFacts { grams: true, price: Some(110_000), pool: Some((600_000, 66_000_000)), ticker: Some("GOLDA".into()), bill: None, gold: true };
+    // Gold B (node v1.2.0): the house's 30-day highest ask is 0.0011 sECX a gram; USDX's pool holds 600,000 units against
+    // 0.66 sECX.
+    let f = CreditFacts { grams: true, price: Some(110_000), pool: Some((600_000, 66_000_000)), ticker: Some("USDX".into()), bill: None };
     let pay = |m: &str, p: Value, f: &CreditFacts| credit_payment_with(m, p.as_array().unwrap(), f).unwrap();
     let cost = |m: &str, p: Value, f: &CreditFacts| pay(m, p, f).0;
-    // 300 g of notes to an address: 0.33 sECX at the payout price, not 300,000 sats.
+    // 300 g of notes to an address: 0.33 sECX at the house's rate, not 300,000 sats.
     assert_eq!(cost("transfernote", json!([1, 300_000, 0.001, TO]), &f), 33_000_000 + 2_000 + fee);
     assert_eq!(
         pay("transfernote", json!([1, 300_000, 0.001, TO]), &f).1,
@@ -2986,7 +2992,7 @@ fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
     assert_eq!(cost("demandnote", json!([1, 9_000]), &f), 2_000 + fee, "the node's default fee");
     assert_eq!(cost("demandnote", json!([1, 9_000, 0.001, TO]), &f), 990_000 + 2_000 + fee);
     assert_eq!(cost("demandnote", json!([1, 9_000, 0.001, TO]), &CreditFacts { price: None, ..f.clone() }), u64::MAX);
-    // The gold token pool: what goes in, at the pool's price; the fee is the node's default when left out.
+    // A token's pool: what goes in, at the pool's price; the fee is the node's default when left out.
     assert_eq!(cost("swaptoken", json!([T, "sell", 1_000]), &f), 110_000 + fee);
     assert_eq!(cost("swaptoken", json!([T, "buy", 110_000]), &f), 110_000 + fee);
     assert_eq!(cost("swaptoken", json!([T, "sell", 1_000, 0.0002]), &f), 110_000 + 20_000);
@@ -2994,7 +3000,7 @@ fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
     assert_eq!(cost("addtokenliquidity", json!([T, 10_000]), &f), u64::MAX);
     assert_eq!(
         pay("addtokenliquidity", json!([T, 10_000]), &f).1,
-        Approve::Action { text: "Add 10.000 g of GOLDA and about 0.011 sECX (at the pool's price when it goes in) to its pool".into(), sats: None }
+        Approve::Action { text: "Add 10000 units of USDX and about 0.011 sECX (at the pool's price when it goes in) to its pool".into(), sats: None }
     );
     // With max_sats (node v1.1.0) the sECX side is bounded: the token's worth and that bound count; 0 is no bound.
     assert_eq!(cost("addtokenliquidity", json!([T, 10_000, 0.001, 1_107_312]), &f), 1_100_000 + 1_107_312 + fee);
@@ -3002,44 +3008,37 @@ fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
     assert_eq!(cost("addtokenliquidity", json!([T, 10_000, 0.001, "1107312"]), &f), u64::MAX, "the node refuses a string");
     assert_eq!(
         pay("addtokenliquidity", json!([T, 10_000, 0.001, 1_107_312]), &f).1,
-        Approve::Action { text: "Add 10.000 g of GOLDA and at most 0.01107312 sECX to its pool".into(), sats: Some(2_307_312) }
+        Approve::Action { text: "Add 10000 units of USDX and at most 0.01107312 sECX to its pool".into(), sats: Some(2_307_312) }
     );
     // A swap's min_out changes nothing counted: a sale counts the token's worth, a buy what goes in.
     assert_eq!(cost("swaptoken", json!([T, "sell", 1_000, 0.001, 108_393]), &f), 110_000 + fee);
     assert_eq!(cost("swaptoken", json!([T, "buy", 110_000, 0.001, 980]), &f), 110_000 + fee);
-    // A sale counts at the higher of the pool's price and the payout price (either can be pushed down).
-    let dumped = CreditFacts { pool: Some((6_000_000, 66_000_000)), ..f.clone() };
-    assert_eq!(cost("swaptoken", json!([T, "sell", 1_000]), &dumped), 110_000 + fee, "the pool at a tenth: the payout price");
+    // A sale counts at the pool's price alone: a token on FreeBank has no gram price since Gold B.
     let pumped = CreditFacts { pool: Some((60_000, 66_000_000)), ..f.clone() };
-    assert_eq!(cost("swaptoken", json!([T, "sell", 1_000]), &pumped), 1_100_000 + fee, "the pool higher: the pool");
+    assert_eq!(cost("swaptoken", json!([T, "sell", 1_000]), &pumped), 1_100_000 + fee);
     assert_eq!(cost("swaptoken", json!([T, "sell", 1_000]), &CreditFacts { price: None, ..f.clone() }), 110_000 + fee);
     assert_eq!(cost("removetokenliquidity", json!([T, 104_706]), &f), fee);
     assert_eq!(
         pay("swaptoken", json!([T, "sell", 1_000]), &f).1,
-        Approve::Action { text: "Sell 1.000 g of GOLDA in its pool".into(), sats: Some(210_000) }
+        Approve::Action { text: "Sell 1000 units of USDX in its pool".into(), sats: Some(210_000) }
     );
-    // A gold token sent: its worth at the payout price, and the 1,000 sats its coin carries.
-    assert_eq!(cost("sendissued", json!([T, 5_000, TO]), &f), 550_000 + 1_000 + fee);
+    // A token sent on: its worth can't be read, so a phone is asked.
+    assert_eq!(pay("sendissued", json!([T, 5_000, TO]), &f).1, Approve::Action { text: format!("Send 5000 units of USDX to {TO}"), sats: None });
+    // Gold B, Run a house: the rate key and a rate cost only their fee (the node's default when left out).
+    assert_eq!(pay("sethouseratekey", json!([1]), &f).1, Approve::Action { text: "Set house #1's rate key".into(), sats: Some(fee) });
+    assert_eq!(cost("sethouseratekey", json!([1, "", 0.0002]), &f), 20_000);
     assert_eq!(
-        pay("sendissued", json!([T, 5_000, TO]), &f).1,
-        Approve::Action { text: format!("Send 5.000 g of GOLDA to {TO}"), sats: Some(651_000) }
+        pay("posthouserate", json!([1, 100_000, 101_000]), &f).1,
+        Approve::Action { text: "Post house #1's rate: it pays 0.001 sECX a gram and asks 0.00101 sECX".into(), sats: Some(fee) }
     );
-    // v0.7.2, House tools: gold into a house's capital or till counts at the payout price with its token coin; out of
-    // the till moves nothing out of the wallet but the fee.
-    assert_eq!(
-        pay("pledgegold", json!([1, 0, T, 800_000, 0.001]), &f).1,
-        Approve::Action { text: "Pledge 800.000 g of GOLDA to house #1's owners' capital (partner 0)".into(), sats: Some(88_000_000 + 1_000 + 100_000) }
-    );
-    assert_eq!(cost("movetill", json!([1, T, 200_000, 0.001]), &f), 22_000_000 + 1_000 + fee);
-    assert_eq!(
-        pay("movetill", json!([1, T, -50_000, 0.001]), &f).1,
-        Approve::Action { text: "Take 50.000 g of GOLDA out of house #1's till".into(), sats: Some(fee) }
-    );
-    // A token that isn't gold (pool shares, dollar tokens): its worth can't be read, so a phone is asked.
-    let lp = CreditFacts { gold: false, ticker: Some("LP".into()), ..f.clone() };
-    assert_eq!(pay("sendissued", json!([T, 5_000, TO]), &lp).1, Approve::Action { text: format!("Send 5000 units of LP to {TO}"), sats: None });
-    // Bills: the face is whole mg (face_mg), paid at the payout price; the bond is sECX.
+    assert_eq!(cost("posthouserate", json!([1, 100_000, 101_000, 0.0002]), &f), 20_000);
+    // The removed gold calls (node v1.2.0) are no credit payments here: the app no longer makes them.
+    assert!(credit_payment_with("pledgegold", json!([1, 0, T, 800_000, 0.001]).as_array().unwrap(), &f).is_none());
+    assert!(credit_payment_with("movetill", json!([1, T, 200_000, 0.001]).as_array().unwrap(), &f).is_none());
+    // Bills: the face is whole mg (face_mg), paid at the reference house's rate; the bond is sECX.
     assert_eq!(cost("issuebill", json!(["00", 50_000, 0.001, 900, 1008, 0.001]), &f), 100_000 + fee);
+    // Gold B (node v1.2.0): the reference house comes after the fee and is no fee.
+    assert_eq!(cost("issuebill", json!(["00", 50_000, 0.001, 900, 1008, 0.001, 4]), &f), 100_000 + fee);
     assert_eq!(
         pay("issuebill", json!(["00", 50_000, 0.001, 900, 1008, 0.001]), &f).1,
         Approve::Action { text: "Issue a bill for 50.000 g, bonded with 0.001 sECX".into(), sats: Some(200_000) }
@@ -3058,7 +3057,7 @@ fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
     assert_eq!(crate::phone::bill_face(&json!({"face_mg": 0.5})), None, "not whole mg: unknown, so a phone is asked");
     assert_eq!(crate::phone::bill_face(&json!({"amount": 0.0005})), Some(50_000));
     assert_eq!(crate::phone::bill_face(&json!({"escrow": 1})), None);
-    // No payout price, no pool, a bill (not yet in grams): the cost can't be read, so a phone is asked.
+    // No rate posted, no pool, a bill (not yet in grams): the cost can't be read, so a phone is asked.
     let none = CreditFacts { grams: true, ..CreditFacts::default() };
     assert_eq!(cost("transfernote", json!([1, 300_000, 0.001, TO]), &none), u64::MAX);
     assert_eq!(cost("sendissued", json!([T, 5_000, TO]), &none), u64::MAX);
@@ -3066,6 +3065,10 @@ fn on_a_gram_node_notes_and_gold_tokens_count_at_their_worth() {
     assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), &CreditFacts { bill: Some(70), ..none.clone() }), u64::MAX);
     assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), &f), u64::MAX, "no bill amount");
     assert_eq!(cost("swaptoken", json!([T, "sideways", 1_000]), &f), u64::MAX);
+    // A house's rate from gethousecapital: its bid, and the 30-day highest ask that limits count at.
+    assert_eq!(rate_of(&json!({"bid": 100_000, "ask": 101_000, "ask_30d_high": 125_000})), (Some(100_000), Some(125_000)));
+    assert_eq!(rate_of(&json!({"bid": 100_000, "ask": 101_000})), (Some(100_000), Some(101_000)));
+    assert_eq!(rate_of(&json!({"bid": null, "ask": null, "ask_30d_high": 0})), (None, None), "no rate posted");
     // A token the node didn't name, in words that can't break on odd input.
     let anon = CreditFacts { ticker: None, ..f.clone() };
     assert_eq!(pay("removetokenliquidity", json!(["é漢字abcdefgh", 5]), &anon).1, Approve::Action {

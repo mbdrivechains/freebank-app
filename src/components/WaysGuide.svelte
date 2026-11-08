@@ -25,7 +25,7 @@
   // On a gram-notes chain (v1.1.0) house note pools are closed, and the guides still speak of sECX notes (v0.7.0).
   $: ways = WAYS.filter((w) => w.id !== "pools" || $notePoolsOpen);
   const GRAMS_NOTE =
-    "On this chain, notes, bills and deposits count in grams of gold, and are paid out in sECX at the chain's payout price for gold. These guides still give amounts in sECX; the screens show grams.";
+    "On this chain, notes, bills and deposits count in grams of gold, and are paid out in sECX at a rate each house sets itself. These guides still give amounts in sECX; the screens show grams.";
 
   const IN_APP: Record<Way["inApp"], string> = {
     yes: "In the app",

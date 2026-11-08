@@ -2,11 +2,12 @@
 //
 //   npm run check:grams
 //
-// Fails if grams are formatted or parsed wrong, if the unit check misreads getblockchaininfo, if the per-note card's ratios,
-// issuers or trust warnings are wrong, if the disclosure drops a clause legal's condition 4 requires or uses a word legal
-// rules out for grams ("gold-backed", "gold reserves", "bank", "currency", "safe", "stable"), or if the token pool
-// estimates part from the node's own maths; or if the notice (src/lib/notice.ts) reads differently in the app, the README,
-// the release notes and NOTICE.md.
+// Fails if grams are formatted or parsed wrong, if the unit check misreads getblockchaininfo, if the per-note card (Gold B,
+// node v1.2.0: the house's own rate, its sECX escrow and till, the protest, cure and failure) is wrong, if a failed house
+// says "insolvent" instead of legal's "Failed: demand unpaid", if the overdue bills read as complete, if the disclosure
+// drops one of legal's sentences (USER_WARNINGS §2.6) or uses a word legal rules out ("gold-backed", "gold reserves",
+// "bank", "currency", "safe", "stable"; under B "equity", "solvent", "proven", "backed"); or if the notice
+// (src/lib/notice.ts) reads differently in the app, the README, the release notes and NOTICE.md.
 import { buildSync } from "esbuild";
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -84,86 +85,71 @@ const gold = {
     { kind: "till", partner: 0, token_id: "aa", units: 50000 },
   ],
 };
-const tokens = new Map([
-  ["aa", { token_id: "aa", ticker: "GOLDA", upstream: "acme-gold" }],
-  ["bb", { token_id: "bb", ticker: "GOLDB", upstream: "" }],
-]);
+// Gold B (node v1.2.0): gethouse and gethousecapital as the node gives them.
+const open = { effective_status: "open", lastattestheight: 812 };
+const cap = {
+  bid: 100000, ask: 101000, ask_30d_high: 125000, bid_90d_high: 100000, rate_fresh: true, rate_fresh_until: 1794100000,
+  escrow_sats: 50000000, escrow_mg: 400000, till_attested_sats: 12500000, till_mg: 100000,
+  notes_mg: 3000000, deposits_mg: 1000000, demand_interest_mg: 0, overdue_bills_seen: 2, overdue_bill_ids: [4, 9],
+};
 
 check("houseCard", () => {
-  const c = g.houseCard("open", 0, gold, tokens);
-  assert.equal(c.capitalRatio, 1);
-  assert.equal(c.tillRatio, 0.05);
-  assert.deepEqual(c.issuers, ["GOLDA (acme-gold)", "GOLDB"]);
-  assert.equal(c.goldPerGram, null);
-  // Deposits count with notes for capital, not for the till.
-  const d = g.houseCard("open", 2000000, gold, tokens);
-  assert.equal(d.capitalRatio, 0.5);
-  assert.equal(d.tillRatio, 0.05);
-  // A failed house: gold left per gram of notes.
-  const f = g.houseCard("insolvent", 0, { ...gold, capital_raw_mg: 900000, till_raw_mg: 100000 }, tokens);
-  assert.equal(f.goldPerGram, 0.5);
-  // Nothing issued: no ratios rather than a division by zero.
-  const e = g.houseCard("open", 0, { ...gold, notes_mg: 0 }, tokens);
-  assert.equal(e.capitalRatio, null);
-  assert.equal(e.tillRatio, null);
+  const c = g.houseCard(open, cap);
+  assert.equal(c.bid, 100000);
+  assert.equal(c.ask, 101000);
+  assert.equal(c.ask30, 125000);
+  assert.equal(c.rateFresh, true);
+  assert.equal(c.escrowRatio, 0.1, "escrow over notes and deposits");
+  assert.equal(c.tillRatio, 100000 / 3000000, "till over notes");
+  assert.equal(c.tillAt, 812);
+  assert.equal(c.overdueSeen, 2);
+  assert.equal(c.failedAt, null);
+  const none = g.houseCard(open, { ...cap, bid: null, ask: null, ask_30d_high: null, rate_fresh: false, escrow_mg: null, till_mg: null, notes_mg: 0, deposits_mg: 0 });
+  assert.deepEqual([none.bid, none.ask, none.ask30, none.escrowRatio, none.tillRatio], [null, null, null, null, null]);
+  assert.equal(g.rateWords(none), "no rate posted");
+  assert.equal(g.rateWords(c), "pays 0.00100000 sECX a gram, asks 0.00101000 sECX");
+});
+
+check("status words: protested, failed with its dates, never insolvent", () => {
+  assert.equal(g.statusWords("open"), "Open");
+  const s = g.houseCard({ effective_status: "stressed", protest_height: 900, cure_insolvent_height: 1908 }, cap);
+  assert.equal(g.statusWords(s.status, s), "Protested: a demand went unpaid; it has until about block 1,908 to pay or suspend payment");
+  const f = g.houseCard({ effective_status: "insolvent", protest_height: 900, insolventheight: 1908 }, cap);
+  assert.equal(g.statusWords(f.status, f), "Failed: demand unpaid (protested at block 900, failed at block 1,908)");
+  assert.equal(g.statusWords("insolvent"), "Failed: demand unpaid");
+  assert.equal(g.statusWords("deferred"), "Suspended: demands are queued and earn interest until paid");
+  for (const st of ["open", "stressed", "deferred", "insolvent", "wounddown"]) {
+    assert.ok(!/insolvent/i.test(g.statusWords(st, f)), `no "insolvent" for ${st}`);
+  }
+});
+
+check("overdue bills: never complete", () => {
+  assert.equal(g.overdueWords(1), "1 bill the chain sees as overdue. A house can repay a bill for its borrower, so not every bad loan shows.");
+  assert.ok(g.overdueWords(2).startsWith("2 bills"));
 });
 
 check("disclosure", () => {
-  const t = g.disclosure(g.houseCard("open", 0, { ...gold, capital_counted_mg: 250000 }, tokens));
-  assert.match(t, /^This house holds gold tokens issued by GOLDA \(acme-gold\) and GOLDB and lends the rest\./);
-  assert.match(t, /Its owners' capital, 12\.5% of notes, takes losses first\./);
+  const d = g.disclosure(g.houseCard(open, cap));
   for (const clause of [
-    "paid in sECX at the gold price",
-    "slow to move back to eCash",
-    "needs eCash miners' approval",
-    "can trade below ECX",
-    "or a gold issuer fails, it may not pay in full",
-    "If no gold price is available, it may pay in gold tokens.",
-  ]) {
-    assert.ok(t.includes(clause), clause);
-  }
-  // Never the 10% floor as what the house holds.
-  assert.ok(!/\b10(\.0)?%/.test(t));
-  for (const banned of [/gold[- ]backed/i, /backed by gold/i, /gold reserves/i, /\bbank\b/i, /currency/i, /\bsafe\b/i, /\bstable\b/i]) {
-    assert.ok(!banned.test(t), String(banned));
+    "A note is a claim on the house that issued it, not on FreeBank, its developers or any gold.",
+    "paid in sECX at a rate the house sets itself (now 0.00100000 sECX a gram), or in gold tokens on Ethereum if the house delivers them.",
+    "FreeBank checks only a house's sECX, never its gold tokens, and shows whether the house pays.",
+    "Its sECX escrow is 10.0% of its notes and deposits.",
+    "holders are paid from what the chain can seize, mainly its sECX escrow, and that may not cover them in full.",
+    "can trade below ECX.",
+  ]) assert.ok(d.includes(clause), `has: ${clause}`);
+  assert.ok(g.disclosure(g.houseCard(open, { ...cap, bid: null })).includes("(it has none posted now)"));
+  // Words legal rules out for grams, and under B.
+  for (const w of [/gold-backed/i, /gold reserves/i, /\bbank\b/i, /currency/i, /\bsafe\b/i, /\bstable\b/i, /equity/i, /solvent/i, /proven/i, /\bbacked\b/i]) {
+    assert.ok(!w.test(d), `no ${w}`);
   }
 });
 
-check("payout price and words", () => {
-  const fix = { payout_view_sats_per_gram: 110000, stale: false };
-  // The chain's own price (listtokenpools) wins, null included; the oracle's median only when that call failed.
-  assert.equal(g.payoutPrice(fix, null), 110000);
-  assert.equal(g.payoutPrice({ ...fix, stale: true, payout_view_sats_per_gram: null }, null), null);
-  assert.equal(g.payoutPrice({ ...fix, stale: true }, { payout_price_sats_per_gram: 115000, pools: [] }), 115000);
-  assert.equal(g.payoutPrice(fix, { payout_price_sats_per_gram: null, pools: [] }), null);
-  assert.equal(g.payoutWords(300000, 110000), "about 0.33000000 sECX at today's price");
-  assert.equal(g.payoutWords(300000, null), null);
-  assert.equal(g.payoutWords(300000, 110000, 0), "about 0.33000000 sECX at today's price");
-  assert.equal(g.payoutWords(300000, 110000, 400), "about 0.31680000 sECX at today's price, after the house's 4% spread (a house that isn't open owes one while its till is under 2% of its notes)");
-  assert.equal(g.payoutWords(300000, 110000, 25), "about 0.32917500 sECX at today's price, after the house's 0.25% spread (a house that isn't open owes one while its till is under 2% of its notes)");
-});
-
-check("trust, frozen gold and equity on the card", () => {
-  const t2 = new Map(tokens);
-  t2.set("bb", { token_id: "bb", ticker: "GOLDB", upstream: "beta-gold", trusted: false, untrusted_since: 812 });
-  const c = g.houseCard("open", 0, { ...gold, frozen: [{ token_id: "aa", frozen: 4000, grace_ends: 900, counts_zero: false }], equity_mg: -5, demand_interest_mg: 120 }, t2);
-  assert.deepEqual(c.untrusted, ["GOLDB (beta-gold) has failed the chain's checks on gold tokens since block 812 (an issuer bond, backing reports that cover its supply, and redemptions paid on time): its gold stops counting about 30 days after"]);
-  assert.equal(c.frozenMg, 4000);
-  assert.equal(c.equityMg, -5);
-  assert.equal(c.demandInterestMg, 120);
-  // An older gram build without the fields: nothing to warn about.
-  const o = g.houseCard("open", 0, gold, tokens);
-  assert.deepEqual(o.untrusted, []);
-  assert.equal(o.frozenMg, 0);
-  assert.equal(o.equityMg, null);
-  assert.equal(o.demandInterestMg, 0);
-});
-
-check("pool bounds: 1% each way", () => {
-  assert.equal(g.leastOut(109488), 108393);
-  assert.equal(g.mostIn(1096348), 1107312);
-  assert.equal(g.leastOut(0), 0);
-  assert.equal(g.mostIn(1), 2, "rounded up");
+check("payout words at the house's bid", () => {
+  assert.equal(g.payoutWords(300000, 100000), "about 0.30000000 sECX at the house's rate now");
+  assert.equal(g.payoutWords(300000, null), null, "no rate posted");
+  assert.ok(g.payoutWords(300000, 100000, 200).includes("after the house's 2% spread"));
+  assert.ok(g.payoutWords(300000, 100000, 200).startsWith("about 0.29400000 sECX"));
 });
 
 check("bill faces: face_mg (whole mg) on a gram node, amount (8-decimal sECX) before", () => {
@@ -174,37 +160,6 @@ check("bill faces: face_mg (whole mg) on a gram node, amount (8-decimal sECX) be
   assert.equal(g.billUnits({}), 0);
   assert.equal(g.billArg(20000, "mg"), 20000);
   assert.equal(g.billArg(20000, "sat"), 0.0002);
-});
-
-check("gold price words", () => {
-  const fix = { payout_view_sats_per_gram: 110000, stale: false, gold_ecx_last_fix: { value: 110000, reporters: 3, fixheight: 73, ageblocks: 2 }, gold_usd_last_fix: null };
-  assert.equal(g.goldFixWords(fix, 110000), "0.00110000 sECX a gram, from 3 reporters, 2 blocks ago");
-  assert.match(g.goldFixWords({ ...fix, stale: true, payout_view_sats_per_gram: null }, null), /^None right now: the reporters' last price is 2 blocks ago, too old to pay at\. Payouts in sECX wait, and bills don't fall overdue\.$/);
-  assert.match(g.goldFixWords(null, null), /^None yet: no reporter/);
-});
-
-check("token pool maths match the node", () => {
-  // pool.cpp PoolSwapOut: inFee = in * (10000 - fee); out = inFee * Rout / (Rin * 10000 + inFee), floored.
-  assert.equal(g.swapOut(1000, 600000, 66000000, 30), 109488); // sell 1 g: worked out separately in Python
-  assert.equal(g.swapOut(110000, 66000000, 600000, 30), 995); // buy with 0.0011 sECX
-  assert.equal(g.swapOut(0, 600000, 66000000, 30), null);
-  assert.equal(g.swapOut(1000, 0, 66000000, 30), null);
-  assert.equal(g.swapOut(1, 1, 1, 30), null); // would empty the out side, or pay nothing
-  const pool = { token_id: "aa", lp_token_id: "lp", units: 600000, sats: 66000000, lp_supply: 6292853, fee_bps: 30 };
-  assert.equal(g.addSats(1000, pool), 110000);
-  assert.equal(g.addSats(1, { ...pool, sats: 66000001 }), 111); // rounded up, as the wallet does
-  assert.deepEqual(g.shareOf(6292853, pool), { units: 600000, sats: 66000000 });
-  assert.deepEqual(g.shareOf(0, pool), { units: 0, sats: 0 });
-});
-
-check("wallet holdings", () => {
-  const h = g.holdings([
-    { token_id: "aa", units: 300, frozen: 0 },
-    { token_id: "aa", units: 200, frozen: 50 },
-    { token_id: "bb", units: 7, frozen: 0 },
-  ]);
-  assert.deepEqual(h.get("aa"), { units: 500, frozen: 50 });
-  assert.deepEqual(h.get("bb"), { units: 7, frozen: 0 });
 });
 
 // The notice (src/lib/notice.ts): the same words in the app, the README, the release notes and NOTICE.md.

@@ -100,7 +100,7 @@
     <p class="small ee-warn" data-testid="ecash-elsewhere-warn">
       Point them at your eCash node, never at a Bitcoin one. eCash addresses look like Bitcoin's and many payments made
       on one chain can be repeated on the other, so send eCash from FreeBank where you can: it marks each payment so it
-      can't be repeated on Bitcoin, and Sparrow and Electrum don't.
+      can't be repeated on Bitcoin, as Electrum for eCash does; Sparrow doesn't.
     </p>
     <h4>First, set Sparrow up for eCash</h4>
     <p class="small">Before you make the wallet there, so Sparrow never asks a Bitcoin server about its addresses:</p>
@@ -127,10 +127,17 @@
         {/if}
       </li>
     </ol>
-    <p class="muted small">
-      Electrum needs an eCash Electrum server, and FreeBank doesn't run one yet: don't open this wallet in Electrum on its
-      usual servers, which are Bitcoin's.
-    </p>
+    {#if testnet}
+      <p class="muted small" data-testid="ecash-elsewhere-electrum">
+        Electrum can't follow this test network, Electrum for eCash included: use Sparrow here.
+      </p>
+    {:else}
+      <p class="muted small" data-testid="ecash-elsewhere-electrum">
+        Stock Electrum can't follow eCash; <strong>Electrum for eCash</strong> (github.com/ecash-com/electrum-ecash) can. It
+        is a separate project, not part of FreeBank, and its releases carry checksums, not signatures. Electrum servers for
+        eCash: explorer.ecash.ninja. Any server you use sees your IP address and the addresses your wallet looks up.
+      </p>
+    {/if}
 
 
     <h4>To watch it (can't spend)</h4>
@@ -150,10 +157,11 @@
         <span class="mono ee-desc">{ex.descriptor}</span>
         <button class="link-btn small" on:click={() => copy(ex?.descriptor ?? "")}>{copied === ex.descriptor ? "Copied" : "Copy"}</button>
       </li>
-      <li>
-        <strong>Electrum</strong>, once it can reach an eCash Electrum server: New wallet › Standard wallet › <em>Use a
-        master key</em>, with the {testnet ? "vpub" : "zpub"}.
-      </li>
+      {#if !testnet}
+        <li>
+          <strong>Electrum for eCash:</strong> New wallet › Standard wallet › <em>Use a master key</em>, with the zpub.
+        </li>
+      {/if}
     </ul>
     <p class="small">
       Check: its first receiving address should be <span class="mono" data-testid="ecash-elsewhere-first">{ex.first_address}</span>.
@@ -182,11 +190,13 @@
       <div class="ee-secret mono" on:copy|preventDefault on:cut|preventDefault on:contextmenu|preventDefault data-testid="ecash-elsewhere-master">{master}</div>
       <button class="link-btn small" on:click={() => (qr = qr === master ? "" : master)}>{qr === master ? "Hide the QR" : "Show as a QR"}</button>
       {#if qr && qr === master}<div class="ee-qr"><QrCode text={qr} size={220} /></div>{/if}
-      <p class="small"><strong>Electrum:</strong> New wallet › Standard wallet › <em>Use a master key</em>:</p>
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="ee-secret mono" on:copy|preventDefault on:cut|preventDefault on:contextmenu|preventDefault data-testid="ecash-elsewhere-zprv">{zprv}</div>
-      <button class="link-btn small" on:click={() => (qr = qr === zprv ? "" : zprv)}>{qr === zprv ? "Hide the QR" : "Show as a QR"}</button>
-      {#if qr && qr === zprv}<div class="ee-qr"><QrCode text={qr} size={220} /></div>{/if}
+      {#if !testnet}
+        <p class="small"><strong>Electrum for eCash:</strong> New wallet › Standard wallet › <em>Use a master key</em>:</p>
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="ee-secret mono" on:copy|preventDefault on:cut|preventDefault on:contextmenu|preventDefault data-testid="ecash-elsewhere-zprv">{zprv}</div>
+        <button class="link-btn small" on:click={() => (qr = qr === zprv ? "" : zprv)}>{qr === zprv ? "Hide the QR" : "Show as a QR"}</button>
+        {#if qr && qr === zprv}<div class="ee-qr"><QrCode text={qr} size={220} /></div>{/if}
+      {/if}
       <p class="small">
         Anyone who has either key can spend this eCash wallet from anywhere. They can't be copied here: type them, or scan
         the QR with Sparrow's or Electrum's camera. They cover this eCash wallet and the bidding wallet, not your FreeBank

@@ -4,13 +4,14 @@
 > into it. FreeBank is not a bank. Nothing on it is insured or guaranteed by any government or by its developers.
 >
 > Houses are run by independent operators, not by FreeBank's developers. A house can suspend payment or fail, and its
-> notes may not be paid in full. Notes are denominated in grams of gold and paid in sECX (ECX held on FreeBank) at an
-> on-chain price, or in gold tokens. Moving sECX back to eCash is slow and needs eCash miners' approval, and sECX can
-> trade below ECX.
+> notes may not be paid in full. Notes are denominated in grams of gold and paid in sECX (ECX held on FreeBank) at a
+> rate each house sets itself, or in gold tokens on Ethereum if the house delivers them. FreeBank checks only a
+> house's sECX, never its gold tokens, and shows whether the house pays. Moving sECX back to eCash is slow and needs
+> eCash miners' approval, and sECX can trade below ECX.
 >
-> Running a house, issuing tokens, reporting prices or lending to consumers may need a licence where you do it.
-> Nothing here is an offer of a financial product, or financial, legal or tax advice. FreeBank is not offered where
-> using it would be unlawful. You are responsible for the laws and taxes that apply to you.
+> Running a house, issuing tokens or lending to consumers may need a licence where you do it. Nothing here is an offer
+> of a financial product, or financial, legal or tax advice. FreeBank is not offered where using it would be unlawful.
+> You are responsible for the laws and taxes that apply to you.
 >
 > The full notice: [NOTICE.md](NOTICE.md), and in the app under Settings › Help › About and legal.
 

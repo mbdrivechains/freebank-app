@@ -3,11 +3,11 @@
   // holder needs first and the issuer's forms folded under "House tools". Moved here from App.svelte as it was, then
   // reorganised.
   import { R1_HOUSE, R4_POOL, R5_BILL } from "../lib/notice";
-  import HouseGold from "./HouseGold.svelte";
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import {
     api,
+    fbCall,
     houseType,
     type Bill,
     type House,
@@ -29,29 +29,23 @@
     billUnits,
     detectNoteUnit,
     disclosure,
-    getGoldFix,
-    getHouseGold,
-    getIssuedToken,
-    listTokenPools,
-    goldFixWords,
+    getHouseCapital,
     houseCard,
     noteAmounts,
     noteUnit,
     notePoolsOpen,
-    payoutPrice,
+    overdueWords,
     payoutWords,
     pct1,
+    rateWords,
     statusWords,
-    type GoldFix,
     type HouseCard,
-    type IssuedToken,
   } from "../lib/grams";
   import { nice } from "../lib/errors";
   import { walletLocked, withUnlock } from "../lib/wallet";
   import { showReceipt } from "../lib/receipts";
   import Notice from "./Notice.svelte";
   import NoteChanger from "./NoteChanger.svelte";
-  import TokenPools from "./TokenPools.svelte";
   import { lockHexFrom, parseKeysetFile, saveFloat, savedFloat, type MintKeyset } from "../lib/tokenhouse";
 
   /** The wallet's spendable sECX, sats (for "you need coins first"). */
@@ -137,7 +131,11 @@
   let actionAddress = "";
   let actionBusy = false;
   const STATUS_LABEL: Record<string, string> = {
-    o: "Open", s: "Stressed", d: "Suspended", i: "Insolvent", w: "Wound down",
+    o: "Open", s: "Stressed", d: "Suspended", i: "Failed", w: "Wound down",
+  };
+  // A house's full status name as a badge word (legal: a failed house is never shown as "insolvent").
+  const STATUS_WORD: Record<string, string> = {
+    open: "open", stressed: "stressed", deferred: "suspended", insolvent: "failed", wounddown: "wound down",
   };
 
   // A house's type (node v0.2.19): open, members only or redeem only. It takes the list, so it re-renders when the
@@ -184,6 +182,8 @@
       else error = nice(e);
     }
     notesLoading = false;
+    // The cards' figures move with the notes (the walk, 11-08: a mint confirmed but the card kept its old escrow ratio).
+    if ($noteUnit === "mg" && houses.length) loadGold();
   }
 
   async function unlockNotes() {
@@ -269,8 +269,12 @@
     } catch (e) {
       error = nice(e);
       // A redeem or a demand takes one holder's coins summing exactly to the amount (the node: "... sum exactly ...").
+      // The walk (11-08): with one 50 g coin a 20 g demand can't work, so "gather them first" didn't fit; say what does.
       if (type !== "send" && /sum exactly/.test(error))
-        error += " Your notes of this house may sit at more than one of your addresses: gather them first (Send, with the address left empty), then try again.";
+        error =
+          "A redeem or a demand takes whole note coins adding up to exactly that amount, and your notes of this house " +
+          "don't. Use the full amount you hold, or first move that amount to yourself (Send, with the address left " +
+          "empty) to make a coin of that size, then try again after the next block.";
     }
     actionBusy = false;
   }
@@ -284,6 +288,9 @@
   let regName = "";
   let regTier = "0";
   let regEscrow = "";
+  /** The node's least pledge per owner (house.h HOUSE_MIN_PLEDGE): 0.1 sECX. */
+  const MIN_PLEDGE = 0.1;
+  $: regEscrowLow = regEscrow !== "" && regEscrow !== null && Number(regEscrow) < MIN_PLEDGE;
   let regType: HouseType = "open";
   let regBusy = false;
   let attestId = "";
@@ -314,31 +321,22 @@
     if ((await detectNoteUnit()) === "mg") loadGold();
   }
 
-  // Gram notes (the gram-notes release): note amounts in the node's unit, and each house's card (status, owners'
-  // capital and till as ratios, the issuers behind its gold) with the disclosure, from gethousegold.
+  // Gram notes: note amounts in the node's unit, and each house's card with the disclosure (Gold B, node v1.2.0: its
+  // status with the protest, cure or failure, its own rate, its sECX escrow and till as ratios, the overdue bills the
+  // chain sees), from gethouse and gethousecapital.
   $: A = noteAmounts($noteUnit);
   let cards: Record<number, HouseCard> = {};
-  const tokens = new Map<string, IssuedToken>();
-  /** The payout price now, sats per gram (null: none, so payouts in sECX wait). */
-  let goldPrice: number | null = null;
-  let goldFix: GoldFix | null = null;
 
   async function loadGold() {
     const next: Record<number, HouseCard> = {};
     for (const h of houses) {
       try {
-        const g = await getHouseGold(h.id);
-        for (const v of g.vaults) {
-          if (!tokens.has(v.token_id)) tokens.set(v.token_id, await getIssuedToken(v.token_id));
-        }
-        next[h.id] = houseCard(h.effective_status, h.depositunits ?? 0, g, tokens);
+        next[h.id] = houseCard(h, await getHouseCapital(h.id));
       } catch {
-        // A house the node can't describe yet: no card.
+        // A house the node can't describe yet, or a node from before Gold B: no card.
       }
     }
     cards = next;
-    goldFix = await getGoldFix().catch(() => null);
-    goldPrice = payoutPrice(goldFix, await listTokenPools().catch(() => null));
   }
 
   async function doRegister() {
@@ -348,7 +346,8 @@
     regBusy = true;
     error = "";
     try {
-      const txid = await withUnlock(() => api.registerHouse(name, parseInt(regTier), escrow, 1000, 1, 0.001, regType), {
+      const tier = $noteUnit === "mg" ? 0 : parseInt(regTier);
+      const txid = await withUnlock(() => api.registerHouse(name, tier, escrow, 1000, 1, 0.001, regType), {
         what: "charter the house",
       });
       const kind = regType === "open" ? "house" : regType === "members" ? "members-only house" : "redeem-only house";
@@ -405,8 +404,78 @@
     regBusy = true;
     error = "";
     try {
-      const txid = await withUnlock(() => api.attestHouse(houseId), { what: `attest House #${houseId}'s reserves` });
-      showReceipt({ txid, what: `Attested House #${houseId}'s reserves` });
+      const what = $noteUnit === "mg" ? "till" : "reserves";
+      // The walk (11-08): one op per house per block, so an attestation sent while the house's rate post was still
+      // pooled was refused by the node's mempool (house-op-in-mempool), yet the wallet returned a txid and only
+      // re-broadcast it half an hour later (freebankd will make attesthouse say "Refused"). Wait for the block first.
+      const fresh = await fbCall("listunspent", [0, 0]).catch(() => []);
+      if (Array.isArray(fresh) && fresh.length > 0) {
+        error =
+          "Your wallet has a payment still waiting for a block. One change per house goes in each block, so attest " +
+          "after the next block (about ten minutes).";
+        regBusy = false;
+        return;
+      }
+      const txid = await withUnlock(() => api.attestHouse(houseId), { what: `attest House #${houseId}'s ${what}` });
+      showReceipt({ txid, what: `Attested House #${houseId}'s ${what}` });
+      await loadHouses();
+    } catch (e) {
+      error = nice(e);
+    }
+    regBusy = false;
+  }
+
+  // Gold B (node v1.2.0), Run a house: the house posts its own rate in sats a gram (bid: what it pays; ask: what it
+  // charges), signed by a rate key its partners register once (sethouseratekey). The node refuses an ask below the bid
+  // or more than 2% above it, and a bid that rises more than 25% in 24 hours; issuing needs a rate under 24 hours old.
+  let rateHouse = "";
+  let rateBid = "";
+  let rateAsk = "";
+  $: rateBidSats = parseEcx(rateBid);
+  $: rateAskSats = parseEcx(rateAsk);
+  $: rateProblem =
+    !rateBid || !rateAsk
+      ? ""
+      : !rateBidSats || !rateAskSats
+        ? ECX_PROBLEM
+        : rateAskSats < rateBidSats
+          ? "The ask can't be below the bid."
+          : rateAskSats * 10_000 > rateBidSats * 10_200
+            ? "The ask can be at most 2% above the bid."
+            : "";
+  $: rateOk = !!rateHouse && !!rateBidSats && !!rateAskSats && !rateProblem;
+  const txOf = (r: unknown) => (typeof r === "string" ? r : String((r as { txid?: unknown })?.txid ?? ""));
+
+  async function doPostRate() {
+    const id = parseInt(rateHouse);
+    const bid = rateBidSats ?? 0;
+    const ask = rateAskSats ?? 0;
+    regBusy = true;
+    error = "";
+    try {
+      // One unlock for both (the walk, 11-08: two prompts in a row read as a mistake): the rate, or the first time the
+      // key that signs the house's rates, after which the rate goes once that is in a block.
+      let keyed = false;
+      const txid = txOf(
+        await withUnlock(
+          async () => {
+            try {
+              return await fbCall("posthouserate", [id, bid, ask]);
+            } catch (e) {
+              if (!/no rate key/i.test(String(nice(e)))) throw e;
+              keyed = true;
+              return await fbCall("sethouseratekey", [id]);
+            }
+          },
+          { what: `post House #${id}'s rate` },
+        ),
+      );
+      showReceipt({
+        txid,
+        what: keyed
+          ? `Set House #${id}'s rate key. Post the rate again once that is in a block (about ten minutes).`
+          : `Posted House #${id}'s rate: it pays ${fmtEcx(bid)} ${BASE_TICKER} a gram and asks ${fmtEcx(ask)} ${BASE_TICKER}`,
+      });
       await loadHouses();
     } catch (e) {
       error = nice(e);
@@ -738,10 +807,17 @@
   let billEscrow = "";
   let billMatureIn = "1000";
   let billGrace = "1008";
+  /** Gold B: the bill's reference house (its 30-day highest ask prices repayment in sECX); a house with a rate. */
+  let billRefHouse = "";
+  $: rateHouses = houses.filter((h) => cards[h.id]?.ask30);
   /** A bill's face in the node's unit (sats, or mg on a gram node): `face_mg` on a gram node, `amount` before. */
   const faceUnits = (b: Bill) => billUnits(b);
-  /** What a face in mg is worth in sats at today's gold price (null: no price). */
-  const faceWorth = (mg: number) => (goldPrice ? Math.ceil((mg * goldPrice) / 1000) : null);
+  /** What a bill's face in mg is worth in sats when repaid in sECX (Gold B: at its reference house's highest ask of the
+   *  last 30 days; null: no such house or no rate). */
+  const faceWorth = (b: Bill) => {
+    const r = b.ref_house_id ? cards[b.ref_house_id]?.ask30 : null;
+    return r ? Math.ceil((faceUnits(b) * r) / 1000) : null;
+  };
   const BILL_STATUS: Record<string, string> = {
     a: "Active", r: "Retired", d: "Defaulted", x: "Disputed",
   };
@@ -785,8 +861,11 @@
       if (face === null) throw new Error(A.problem);
       const escrow = parseFloat(billEscrow);
       // The face goes as the node reads it: whole mg on a gram node, else an 8-decimal amount of sECX.
+      // Gold B (node v1.2.0): on a gram chain the node needs the reference house (the walk, 11-08: without it, refused).
+      const ref = $noteUnit === "mg" ? Number(billRefHouse) || undefined : undefined;
+      if ($noteUnit === "mg" && !ref) throw new Error("Choose the bill's reference house first.");
       const txid = await withUnlock(
-        () => api.issueBill(bodyHex, billArg(face, $noteUnit), escrow, maturity, parseInt(billGrace || "1008")),
+        () => api.issueBill(bodyHex, billArg(face, $noteUnit), escrow, maturity, parseInt(billGrace || "1008"), 0.001, ref),
         { what: "issue the bill" },
       );
       showReceipt({
@@ -971,7 +1050,7 @@
             {#if !housesLoading && houses.length === 0}
               <p class="muted small">{syncing ? "Your node is still catching up; houses and their notes show once it has." : "Notes are issued by houses, and there are no houses on this network yet."}</p>
             {:else}
-              <p class="muted small">Anyone can send you a note at one of your addresses (see Receive), or you can buy one in a pool.</p>
+              <p class="muted small">Anyone can send you a note at one of your addresses (see Receive){$noteUnit === "sat" || $notePoolsOpen ? ", or you can buy one in a pool" : ""}.</p>
             {/if}
             {#if balance === 0}<p class="muted small">{NEED_COINS}</p>{/if}
           </div>
@@ -990,14 +1069,11 @@
               {#if cards[n.house_id]}
                 <div class="house-card">
                   <div class="house-stats">
-                    <div><span class="stat-label">House</span> {statusWords(cards[n.house_id].status)}</div>
-                    {#if cards[n.house_id].capitalRatio !== null}<div><span class="stat-label">Owners' capital</span> {pct1(cards[n.house_id].capitalRatio ?? 0)} of notes and deposits</div>{/if}
-                    {#if cards[n.house_id].tillRatio !== null}<div><span class="stat-label">Till</span> {pct1(cards[n.house_id].tillRatio ?? 0)} of notes</div>{/if}
-                    <div><span class="stat-label">Holds gold tokens from</span> {cards[n.house_id].issuers.join(", ") || "no one yet"}</div>
-                    {#if cards[n.house_id].goldPerGram !== null}<div><span class="stat-label">Left for claims</span> {(cards[n.house_id].goldPerGram ?? 0).toFixed(3)} g of gold tokens per gram of notes</div>{/if}
-                    {#if cards[n.house_id].frozenMg > 0}<div><span class="stat-label">Frozen by an issuer</span> {A.fmt(cards[n.house_id].frozenMg)} of its gold, which no payout takes</div>{/if}
-                    {#each cards[n.house_id].untrusted as u}<div class="blocked-why">{u}</div>{/each}
-                    {#if payoutWords(n.units, goldPrice, spreadOf(n.house_id))}<div><span class="stat-label">Paid out now</span> {payoutWords(n.units, goldPrice, spreadOf(n.house_id))}</div>{/if}
+                    <div><span class="stat-label">House</span> {statusWords(cards[n.house_id].status, cards[n.house_id])}</div>
+                    <div><span class="stat-label">Rate</span> {rateWords(cards[n.house_id])}</div>
+                    {#if cards[n.house_id].escrowSats > 0}<div><span class="stat-label">{BASE_TICKER} escrow</span> {fmtEcx(cards[n.house_id].escrowSats)} {BASE_TICKER}{cards[n.house_id].escrowRatio !== null ? `, ${pct1(cards[n.house_id].escrowRatio ?? 0)} of notes and deposits` : ""}</div>{/if}
+                    {#if cards[n.house_id].tillSats > 0}<div><span class="stat-label">Till</span> {fmtEcx(cards[n.house_id].tillSats)} {BASE_TICKER}{cards[n.house_id].tillRatio !== null ? `, ${pct1(cards[n.house_id].tillRatio ?? 0)} of notes` : ""}{cards[n.house_id].tillAt ? `, at block ${(cards[n.house_id].tillAt ?? 0).toLocaleString("en-US")} (it may have spent it since)` : ""}</div>{/if}
+                    {#if payoutWords(n.units, cards[n.house_id].bid, spreadOf(n.house_id))}<div><span class="stat-label">Paid out now</span> {payoutWords(n.units, cards[n.house_id].bid, spreadOf(n.house_id))}</div>{/if}
                   </div>
                   <p class="hint disclosure">{disclosure(cards[n.house_id])}</p>
                 </div>
@@ -1029,7 +1105,11 @@
                     <input type="number" bind:value={actionUnits} placeholder={A.unit === "mg" ? "0.000" : "0.00000000"} step={A.unit === "mg" ? "0.001" : "0.00000001"} min="0" />
                   </label>
                   {#if A.unit === "mg" && action.type !== "send" && A.parse(actionUnits)}
-                    <p class="hint">{payoutWords(A.parse(actionUnits) ?? 0, goldPrice, spreadOf(n.house_id)) ?? "No gold price on FreeBank right now: payouts in sECX wait until there is one."}</p>
+                    <p class="hint">{payoutWords(A.parse(actionUnits) ?? 0, cards[n.house_id]?.bid ?? null, spreadOf(n.house_id)) ?? "This house has no rate posted right now."}</p>
+                    <!-- Legal's wording (USER_WARNINGS §2.6 F, "Grams and sECX"). -->
+                    <p class="hint">{action.type === "demand"
+                      ? "A formal demand is paid in sECX at no less than the house's rate when you make it; a later cut doesn't reduce it."
+                      : "When you redeem, you sign for what you are paid."}</p>
                   {/if}
                   {#if unitsEcho(actionUnits)}
                     <p class="hint">{unitsEcho(actionUnits)}</p>
@@ -1082,7 +1162,7 @@
       <div class="card">
         <h3>Mint notes</h3>
         {#if A.unit === "mg"}
-          <p class="muted">Issue new notes from a house your node controls. Enter the amount in grams. The house issues only while its counted owners' capital is at least 10% of notes and deposits and its till at least 2% of notes.</p>
+          <p class="muted">Issue new notes from a house your node controls. Enter the amount in grams. The house issues only with a rate posted in the last 24 hours, its {BASE_TICKER} escrow at least 10% of its notes and deposits, and its till at least 2% of its notes, both counted at its highest ask of the last 30 days.</p>
         {:else}
           <p class="muted">Issue new notes from a house your node controls. Enter the amount in {BASE_TICKER}: notes are base-native, 1 unit = 1 sat.</p>
         {/if}
@@ -1124,8 +1204,8 @@
             {housesLoading ? "…" : "Refresh"}
           </button>
         </div>
-        <p class="muted">Every note-issuing house on the chain. A note is only as sound as the house behind it — check its status{A.unit === "mg" ? ", owners' capital and till" : " and reserves"} before you trust its notes.</p>
-        {#if A.unit === "mg"}<p class="muted small">Gold price: {goldFixWords(goldFix, goldPrice)}</p>{/if}
+        <p class="muted">Every note-issuing house on the chain. A note is only as sound as the house behind it — check its status{A.unit === "mg" ? ", its rate and whether it pays" : " and reserves"} before you trust its notes.</p>
+        {#if A.unit === "mg"}<p class="muted small">FreeBank sets no gold price: each house pays its notes at a rate it sets itself.</p>{/if}
         {#if houses.length === 0}
           <div class="empty">
             <p>{syncing ? "Your node is still catching up; houses show once it has." : "No houses on this network yet."}</p>
@@ -1139,23 +1219,21 @@
               <div class="note-top">
                 <div>
                   <span class="note-house">#{h.id} · {h.classid}</span>
-                  <span class="badge badge-{h.effective_status.charAt(0)}">{h.effective_status}</span>
+                  <span class="badge badge-{h.effective_status.charAt(0)}">{STATUS_WORD[h.effective_status] ?? h.effective_status}</span>
                   {#if houseType(h) !== "open"}<span class="badge badge-members">{TYPE_LABEL[houseType(h)]}</span>{/if}
                 </div>
-                {#if A.unit === "sat"}<div class="note-units" title="Tier {h.tier}">notes up to {(h.lambdax10 / 10).toFixed(1).replace(/\.0$/, "")}× its reserve</div>{/if}
+                {#if A.unit === "sat" && typeof h.lambdax10 === "number"}<div class="note-units" title="Tier {h.tier}">notes up to {(h.lambdax10 / 10).toFixed(1).replace(/\.0$/, "")}× its reserve</div>{/if}
               </div>
               {#if A.unit === "mg"}
               <div class="house-stats">
                 <div><span class="stat-label">Notes outstanding</span> {A.fmt(h.mintedunits)}{h.mintcapunits > 0 ? ` of a ${A.fmt(h.mintcapunits)} limit` : ""}</div>
                 {#if cards[h.id]}
-                  {#if cards[h.id].capitalRatio !== null}<div><span class="stat-label">Owners' capital</span> {pct1(cards[h.id].capitalRatio ?? 0)} of notes and deposits</div>{/if}
-                  {#if cards[h.id].tillRatio !== null}<div><span class="stat-label">Till</span> {pct1(cards[h.id].tillRatio ?? 0)} of notes</div>{/if}
-                  <div><span class="stat-label">Holds gold tokens from</span> {cards[h.id].issuers.join(", ") || "no one yet"}</div>
-                  {#if cards[h.id].goldPerGram !== null}<div><span class="stat-label">Left for claims</span> {(cards[h.id].goldPerGram ?? 0).toFixed(3)} g of gold tokens per gram of notes</div>{/if}
-                    {#if cards[h.id].frozenMg > 0}<div><span class="stat-label">Frozen by an issuer</span> {A.fmt(cards[h.id].frozenMg)} of its gold, which no payout takes</div>{/if}
-                    {#each cards[h.id].untrusted as u}<div class="blocked-why">{u}</div>{/each}
-                    {#if cards[h.id].demandInterestMg > 0}<div><span class="stat-label">Interest owed on demanded notes</span> {A.fmt(cards[h.id].demandInterestMg)}</div>{/if}
-                    {#if cards[h.id].equityMg !== null}<div><span class="stat-label">Owners' equity</span> {A.fmt(cards[h.id].equityMg ?? 0)} at today's gold price{cards[h.id].demandInterestMg > 0 ? ", after that interest" : ""}{(cards[h.id].equityMg ?? 0) < 0 ? ": below zero, so anyone can open claims on it" : ""}</div>{/if}
+                  <div><span class="stat-label">Status</span> {statusWords(cards[h.id].status, cards[h.id])}</div>
+                  <div><span class="stat-label">Rate</span> {rateWords(cards[h.id])}{cards[h.id].bid && !cards[h.id].rateFresh ? ": older than 24 hours, so it can't issue until it posts again" : ""}</div>
+                  {#if cards[h.id].escrowSats > 0}<div><span class="stat-label">{BASE_TICKER} escrow</span> {fmtEcx(cards[h.id].escrowSats)} {BASE_TICKER}{cards[h.id].escrowRatio !== null ? `, ${pct1(cards[h.id].escrowRatio ?? 0)} of notes and deposits` : ""}</div>{/if}
+                  {#if cards[h.id].tillSats > 0}<div><span class="stat-label">Till</span> {fmtEcx(cards[h.id].tillSats)} {BASE_TICKER}{cards[h.id].tillRatio !== null ? `, ${pct1(cards[h.id].tillRatio ?? 0)} of notes` : ""}{cards[h.id].tillAt ? `, at block ${(cards[h.id].tillAt ?? 0).toLocaleString("en-US")} (it may have spent it since)` : ""}</div>{/if}
+                  {#if cards[h.id].demandInterestMg > 0}<div><span class="stat-label">Interest owed on demanded notes</span> {A.fmt(cards[h.id].demandInterestMg)}</div>{/if}
+                  {#if cards[h.id].overdueSeen > 0}<div><span class="stat-label">Overdue bills</span> {overdueWords(cards[h.id].overdueSeen)}</div>{/if}
                 {/if}
               </div>
               {#if cards[h.id]}<p class="hint disclosure">{disclosure(cards[h.id])}</p>{/if}
@@ -1163,7 +1241,7 @@
               <div class="house-stats">
                 <div><span class="stat-label">Reserve pledged</span> {h.activeescrow} {BASE_TICKER}</div>
                 <div><span class="stat-label">Notes outstanding</span> {fmtEcx(h.mintedunits)} of {fmtEcx(h.mintcapunits)} {BASE_TICKER} cap</div>
-                {#if h.mintedunits > 0}
+                {#if h.mintedunits > 0 && typeof h.attestedratiobps === "number"}
                   <div><span class="stat-label">Reserves against notes</span> {pct(h.attestedratiobps)}</div>
                 {/if}
                 <div><span class="stat-label">Last attested</span> {h.lastattestheight > 0 ? `block ${h.lastattestheight} · ${h.lastattestreserves} sECX` : "never"}</div>
@@ -1227,7 +1305,7 @@
       </div>
 
       <details class="advanced tools">
-        <summary>House tools: charter a house{$noteUnit === "mg" ? ", gold for your house" : ""}, attest reserves, your mint's tokens, settle with other houses</summary>
+        <summary>House tools: charter a house{$noteUnit === "mg" ? ", your house's rate, attest its till" : ", attest reserves"}, your mint's tokens, settle with other houses</summary>
       <div class="card">
         <h3>Charter a house</h3>
         <p class="muted">Open your own note-issuing house, kept honest by convertibility: its notes are paid out on demand. Your node holds the keys.</p>
@@ -1237,13 +1315,20 @@
             Name (note-class id)
             <input type="text" bind:value={regName} placeholder="e.g. clyde — a–z 0–9, ≤16 chars" />
           </label>
+          {#if $noteUnit === "mg"}
+            <!-- Gold B (node v1.2.0, freebankd 11-08): tier no longer sets how much a house may issue (the escrow ramp
+                 and the till do); it sets who owns it. The app charters with one owner, so solo (tier 0). -->
+            <p class="hint">Ownership: solo, one owner signing for the house. A partnership (two or more owners, fixed or
+              open to new ones) is chartered from the command line for now.</p>
+          {:else}
           <label>
             Tier (0–3): a higher tier may issue more notes for each sECX of reserve
             <input type="number" bind:value={regTier} min="0" max="3" />
           </label>
+          {/if}
           <label>
-            Pledged reserve (sECX)
-            <input type="number" bind:value={regEscrow} placeholder="e.g. 1.0" step="0.00000001" />
+            {$noteUnit === "mg" ? "sECX escrow" : "Pledged reserve (sECX)"}
+            <input type="number" bind:value={regEscrow} placeholder="at least {MIN_PLEDGE}, e.g. 1.0" step="0.00000001" />
           </label>
           <label>
             Who may hold its notes (fixed for the life of the house)
@@ -1253,28 +1338,62 @@
               <option value="redeem">Members only, and notes pass only between the house and the holder</option>
             </select>
           </label>
-          <button on:click={doRegister} disabled={regBusy || !regName || !regEscrow || balance === 0}>
+          {#if regEscrowLow}<p class="blocked-why">A house's {BASE_TICKER} escrow must be at least {MIN_PLEDGE} {BASE_TICKER}.</p>{/if}
+          <button on:click={doRegister} disabled={regBusy || !regName || !regEscrow || regEscrowLow || balance === 0}>
             {regBusy ? "…" : "Charter house"}
           </button>
           {#if balance === 0 && houses.length > 0}<p class="blocked-why">{NEED_COINS}</p>{/if}
         </div>
       </div>
+      {#if $noteUnit === "mg"}
+      <div class="card" data-testid="house-rate">
+        <h3>Your house's rate</h3>
+        <p class="muted">Your house pays its notes in {BASE_TICKER} at a rate it sets itself, in {BASE_TICKER} a gram: what it
+          pays (bid) and what it charges (ask). FreeBank sets no gold price. The house can issue notes only with a rate
+          posted in the last 24 hours. The ask can be at most 2% above the bid; the bid can rise at most 25% in a day and
+          fall any amount. A formal demand is paid at no less than the bid when it's made, so a later cut doesn't reduce it.</p>
+        <p class="hint role-line">{R1_HOUSE}</p>
+        <div class="form">
+          <label>
+            House #
+            <input type="number" bind:value={rateHouse} placeholder="e.g. 1" />
+          </label>
+          {#if cards[Number(rateHouse)]}
+            <p class="hint">Now: {rateWords(cards[Number(rateHouse)])}{cards[Number(rateHouse)].bid ? (cards[Number(rateHouse)].rateFresh ? "" : ". Older than 24 hours: it can't issue until you post again.") : ""}</p>
+          {/if}
+          <label>
+            It pays ({BASE_TICKER} a gram)
+            <input type="number" bind:value={rateBid} placeholder="0.00100000" step="0.00000001" min="0" />
+          </label>
+          <label>
+            It asks ({BASE_TICKER} a gram)
+            <input type="number" bind:value={rateAsk} placeholder="0.00101000" step="0.00000001" min="0" />
+          </label>
+          {#if rateProblem}<p class="blocked-why">{rateProblem}</p>{/if}
+          <button on:click={doPostRate} disabled={regBusy || !rateOk}>Post this rate</button>
+          <p class="hint">The first time, this registers the key that signs your house's rates; post again once that is in a block.
+            A rate waiting for a block gives way to any other action on the house (FreeBank v1.2.1): if it doesn't
+            confirm, post it again after the next block.</p>
+        </div>
+      </div>
+      {/if}
       <div class="card">
-        <h3>Attest reserves</h3>
-        <p class="muted">A house your node holds the keys of shows its reserves on chain, so holders can see what backs its notes.</p>
+        <h3>{$noteUnit === "mg" ? "Attest the till" : "Attest reserves"}</h3>
+        <p class="muted">{$noteUnit === "mg"
+          ? `A house your node holds the keys of shows on chain the ${BASE_TICKER} it controls (its till), checked at that block. It can spend it afterwards, and it isn't seized if the house fails; only the escrow is.`
+          : "A house your node holds the keys of shows its reserves on chain, so holders can see what backs its notes."}</p>
         <p class="hint role-line">{R1_HOUSE}</p>
         <div class="form">
           <label>
             House #
             <input type="number" bind:value={attestId} placeholder="e.g. 1" />
           </label>
-          <button on:click={() => doAttest(parseInt(attestId))} disabled={regBusy || !attestId}>Attest reserves</button>
+          <button on:click={() => doAttest(parseInt(attestId))} disabled={regBusy || !attestId}>{$noteUnit === "mg" ? "Attest the till" : "Attest reserves"}</button>
         </div>
       </div>
-      {#if $noteUnit === "mg"}<HouseGold {houses} />{/if}
       <div class="card" data-testid="house-mint">
         <h3>Tokens: your house's mint</h3>
-        <p class="muted">The mint issues tokens backed by your house's notes, from its own server. The house's keys stay
+        <p class="muted">The mint issues tokens redeemable for your house's notes, from its own server. The house's keys stay
           here: the mint issues nothing until you record its keyset, and its batch locks need your approval.</p>
         <h4>Record the mint's keyset</h4>
         <div class="form">
@@ -1412,8 +1531,12 @@
       {/if}
       </details>
     {:else if seg === "pools"}
-      {#if $noteUnit === "mg"}
-        <TokenPools {houses} on:error={(e) => (error = e.detail)} />
+      {#if $noteUnit === "mg" && !$notePoolsOpen}
+        <div class="card" data-testid="pools-grams">
+          <h3>Pools</h3>
+          <p class="muted">No pools on this chain yet. FreeBank doesn't hold, count or check gold tokens: they live on
+            Ethereum, and a house names in its charter the ones it pays out.</p>
+        </div>
       {/if}
       {#if $noteUnit === "sat" || $notePoolsOpen}
       <!-- Pools (M3): notes ⇄ sECX, a constant-product pool -->
@@ -1596,9 +1719,9 @@
           </button>
         </div>
         {#if A.unit === "mg"}
-          <p class="muted">A bill is a promise to pay a set weight of gold on a set date, paid in {BASE_TICKER} at the gold price on the day, backed by a bond in {BASE_TICKER} held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+          <p class="muted">A bill is a promise to pay, on a set date, an amount set in grams of gold: repaid in its house's notes at par, or in {BASE_TICKER} at the highest rate that house asked in the last 30 days, with a bond in {BASE_TICKER} held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
         {:else}
-          <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, backed by a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+          <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, with a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
         {/if}
         {#if locked.bills}
           <p class="muted small">—</p>
@@ -1623,7 +1746,7 @@
               </div>
               <div class="house-stats">
                 {#if A.unit === "mg" && b.status === "a"}
-                  <div><span class="stat-label">Paid in {BASE_TICKER}</span> {faceWorth(faceUnits(b)) !== null ? `about ${fmtEcx(faceWorth(faceUnits(b)) ?? 0)} ${BASE_TICKER} at today's gold price` : "at the gold price, once there is one again (until then it doesn't fall due)"}</div>
+                  <div><span class="stat-label">Paid in {BASE_TICKER}</span> {faceWorth(b) !== null ? `about ${fmtEcx(faceWorth(b) ?? 0)} ${BASE_TICKER}, at its house's highest ask of the last 30 days` : "at its house's highest ask of the last 30 days, or in that house's notes at par"}</div>
                 {/if}
                 <div><span class="stat-label">Bond</span> {b.escrow} {BASE_TICKER}</div>
                 {#if b.status === "a"}<div><span class="stat-label">Matures</span> {b.maturity_height > height ? `in about ${days(b.maturity_height - height)}` : "now"} (block {b.maturity_height}), then {days(b.grace_blocks)} to pay</div>{/if}
@@ -1654,7 +1777,7 @@
                   </label>
                   <p class="hint">
                     The rest, {A.fmt(Math.max(0, faceUnits(b) - (A.parse(retireNotes) ?? 0)))},
-                    is paid in {BASE_TICKER}{A.unit === "mg" ? " at the gold price" : ""}; your bond comes back.
+                    is paid in {BASE_TICKER}{A.unit === "mg" ? " at its house's highest ask of the last 30 days" : ""}; your bond comes back.
                   </p>
                   {#if retireError}<p class="soft-error small">{retireError}</p>{/if}
                   <div class="note-form-actions">
@@ -1701,7 +1824,7 @@
         <summary>House tools: issue a bill</summary>
       <div class="card">
         <h3>Issue a bill</h3>
-        <p class="muted">Draw and accept a bill: a dated promise for a face amount, backed by a bond the holder can claim if it isn't paid.</p>
+        <p class="muted">Draw and accept a bill: a dated promise for a face amount, with a bond the holder can claim if it isn't paid.</p>
         <p class="hint role-line" data-testid="notice-bill">{R5_BILL}</p>
         <div class="form">
           <label>
@@ -1709,9 +1832,22 @@
             <input type="text" bind:value={billBody} placeholder="e.g. 90-day trade bill" />
           </label>
           <label>
-            Face amount ({A.label}){A.unit === "mg" ? ", paid in sECX at the gold price when it's repaid" : ""}
+            Face amount ({A.label}){A.unit === "mg" ? ", repaid in a house's notes at par or in sECX at its highest ask of the last 30 days" : ""}
             <input type="number" bind:value={billAmount} placeholder={A.unit === "mg" ? "e.g. 50.000" : "e.g. 1.0"} step={A.unit === "mg" ? "0.001" : "0.00000001"} />
           </label>
+          {#if A.unit === "mg"}
+            <label>
+              Reference house: while the bill is privately held, it is repaid in {BASE_TICKER} at this house's highest ask
+              of the last 30 days
+              <select bind:value={billRefHouse}>
+                <option value="">Choose a house with a rate</option>
+                {#each rateHouses as h (h.id)}
+                  <option value={String(h.id)}>#{h.id} · {h.classid}: {fmtEcx(cards[h.id]?.ask30 ?? 0)} {BASE_TICKER} a gram</option>
+                {/each}
+              </select>
+            </label>
+            {#if rateHouses.length === 0}<p class="blocked-why">No house has posted a rate yet, and a bill needs one to refer to.</p>{/if}
+          {/if}
           <label>
             Escrow bond ({BASE_TICKER})
             <input type="number" bind:value={billEscrow} placeholder="e.g. 0.1" step="0.00000001" />
@@ -1724,7 +1860,7 @@
             Then blocks to pay it in{billGrace ? `: about ${days(parseInt(billGrace) || 0)}` : ""}
             <input type="number" bind:value={billGrace} placeholder="1008" />
           </label>
-          <button on:click={doIssueBill} disabled={billBusy || !billAmount || !billEscrow || balance === 0}>
+          <button on:click={doIssueBill} disabled={billBusy || !billAmount || !billEscrow || balance === 0 || (A.unit === "mg" && !billRefHouse)}>
             {billBusy ? "…" : "Issue bill"}
           </button>
           {#if balance === 0}<p class="blocked-why">Issuing a bill takes a bond in sECX. {NEED_COINS}</p>{/if}

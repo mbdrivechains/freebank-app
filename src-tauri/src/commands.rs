@@ -220,40 +220,41 @@ fn send_token_params(token: &str, units: u64, address: &str) -> Result<Vec<serde
     Ok(vec![serde_json::json!(token), serde_json::json!(units), serde_json::json!(address)])
 }
 
-/// What a credit payment's cost is read with, from the node: a bill's amount, and on a gram node the payout price and
-/// the token's pool and ticker. A failed look leaves the fact out, so the cost can't be read and a phone is asked.
+/// What a credit payment's cost is read with, from the node: a bill's amount, and on a gram node the price its notes or
+/// bill count at (Gold B, node v1.2.0: the house's highest ask in the last 30 days, `phone::rate_of`; a bill's is its
+/// reference house's) and a token's pool and ticker. A failed look leaves the fact out, so the cost can't be read and a
+/// phone is asked.
 async fn credit_facts(c: &mut FreeBankClient, method: &str, params: &[serde_json::Value]) -> Result<crate::phone::CreditFacts, String> {
     let mut f = crate::phone::CreditFacts::default();
     f.grams = c.call_ui("getblockchaininfo", vec![]).await?["note_unit"].as_str() == Some("mg");
-    f.bill = match (method, params.first()) {
-        ("endorsebill" | "retirebill", Some(id)) => match c.call_ui("getbill", vec![id.clone()]).await {
-            Ok(b) => crate::phone::bill_face(&b),
-            Err(_) => None,
-        },
+    let bill = match (method, params.first()) {
+        ("endorsebill" | "retirebill", Some(id)) => c.call_ui("getbill", vec![id.clone()]).await.ok(),
         _ => None,
     };
-    let token_call =
-        matches!(method, "swaptoken" | "addtokenliquidity" | "removetokenliquidity" | "sendissued" | "pledgegold" | "movetill");
-    // Where the call names its token: first, except pledgegold (house, partner, token, …) and movetill (house, token, …).
-    let token = match method {
-        "pledgegold" => params.get(2),
-        "movetill" => params.get(1),
-        _ => params.first(),
-    };
-    if f.grams || token_call {
-        if let Ok(l) = c.call_ui("listtokenpools", vec![]).await {
-            f.price = l["payout_price_sats_per_gram"].as_u64().filter(|&p| p > 0);
-            if let (true, Some(t)) = (token_call, token.and_then(|v| v.as_str())) {
-                if let Some(pool) = l["pools"].as_array().and_then(|a| a.iter().find(|p| p["token_id"].as_str() == Some(t))) {
+    f.bill = bill.as_ref().and_then(crate::phone::bill_face);
+    if f.grams {
+        // The house whose rate counts: a note call names it first; a bill pays at its reference house's.
+        let house = match method {
+            "transfernote" | "mintnote" | "redeemnote" | "demandnote" => params.first().and_then(|v| v.as_u64()),
+            "endorsebill" | "retirebill" => bill.as_ref().and_then(|b| b["ref_house_id"].as_u64()),
+            _ => None,
+        };
+        if let Some(h) = house {
+            if let Ok(cap) = c.call_ui("gethousecapital", vec![serde_json::json!(h)]).await {
+                f.price = crate::phone::rate_of(&cap).1;
+            }
+        }
+    }
+    if matches!(method, "swaptoken" | "addtokenliquidity" | "removetokenliquidity" | "sendissued") {
+        if let Some(t) = params.first() {
+            if let Ok(l) = c.call_ui("listtokenpools", vec![]).await {
+                if let Some(pool) = l["pools"].as_array().and_then(|a| a.iter().find(|p| p["token_id"] == *t)) {
                     f.pool = pool["units"].as_u64().zip(pool["sats"].as_u64());
                     f.ticker = pool["ticker"].as_str().map(String::from);
                 }
             }
-        }
-        if let (true, Some(t)) = (token_call, token) {
             if let Ok(tok) = c.call_ui("getissuedtoken", vec![t.clone()]).await {
                 f.ticker = tok["ticker"].as_str().map(String::from).or(f.ticker.take());
-                f.gold = tok["kind"].as_str() == Some("gold_mg");
             }
         }
     }

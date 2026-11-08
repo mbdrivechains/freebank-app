@@ -1322,7 +1322,7 @@ impl Phone {
                 };
                 let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
                 let grams = self.grams().await?;
-                Ok(notes_view_in(&mine, &houses, grams, None))
+                Ok(notes_view_in(&mine, &houses, grams, &HashMap::new()))
             }
             "houses" => {
                 let r = self.rpc.call("listhouses", vec![]).await?;

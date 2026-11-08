@@ -3,7 +3,8 @@
   // house that misses its deadline turns stressed (no new notes), and insolvent after 1008 blocks stressed. The
   // deadline counts blocks, so FreeBank watches it: Attest now, or attest automatically while FreeBank is open.
   import { onDestroy, onMount } from "svelte";
-  import { api } from "../lib/api";
+  import { api, fbCall } from "../lib/api";
+  import { noteUnit } from "../lib/grams";
   import { autoAttestOff, autoAttestOn, housesDue, type HouseDue } from "../lib/houses";
   import { nice } from "../lib/errors";
   import { showReceipt } from "../lib/receipts";
@@ -57,8 +58,15 @@
     busy = true;
     error = "";
     try {
-      const txid = await withUnlock(() => api.attestHouse(h.id), { what: `attest ${h.name}'s reserves` });
-      showReceipt({ txid, what: `${h.name} attested its reserves` });
+      // One op per house per block: an attestation sent while another is pooled is refused (the walk, 11-08).
+      const fresh = await fbCall("listunspent", [0, 0]).catch(() => []);
+      if (Array.isArray(fresh) && fresh.length > 0) {
+        error = "Your wallet has a payment still waiting for a block. Attest after the next block (about ten minutes).";
+        return;
+      }
+      const what = $noteUnit === "mg" ? "till" : "reserves";
+      const txid = await withUnlock(() => api.attestHouse(h.id), { what: `attest ${h.name}'s ${what}` });
+      showReceipt({ txid, what: `${h.name} attested its ${what}` });
       await load();
     } catch (e) {
       error = nice(e);

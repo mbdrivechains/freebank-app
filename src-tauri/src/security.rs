@@ -105,23 +105,22 @@ pub const RPC_ALLOWED: &[&str] = &[
     "getpool",
     "getbill",
     "listbills",
-    // Read-only, gram nodes (the gram-notes release): a house's gold, the tokens behind it, the gold price and the
-    // token pools (the per-note card and the payout price).
-    "gethousegold",
+    // Read-only, gram nodes: a house's capital and rate (Gold B, node v1.2.0: escrow, till, bid and ask, the per-note
+    // card), and the tokens and token pools.
+    "gethousecapital",
     "getissuedtoken",
-    "getgoldfix",
     "listtokenpools",
-    // Gram nodes, the Pools segment's gold tokens: the wallet's token coins (read-only), and a token's one pool
+    // Gram nodes, the Pools segment's tokens: the wallet's token coins (read-only), and a token's one pool
     // against sECX (swap, add, take out), which sign with the wallet like the credit actions and pay only the wallet.
     // (Sending a token to an address is a send: it belongs with send.rs, behind phone approval, not here.)
     "listissued",
     "swaptoken",
     "addtokenliquidity",
     "removetokenliquidity",
-    // v0.7.2, House tools in grams: a partner's gold into the house's capital, and gold into or out of its till
-    // (signed by the wallet, behind phone approval like the other credit actions).
-    "pledgegold",
-    "movetill",
+    // Gold B (node v1.2.0), Run a house: the key that signs the house's rates, and a rate posted with it (signed by the
+    // wallet, behind phone approval like the other credit actions).
+    "sethouseratekey",
+    "posthouserate",
 ];
 
 /// Refuse a method the screens may not call (see RPC_ALLOWED).

@@ -135,7 +135,7 @@ pub struct Network {
     /// FreeBank's network bytes on this chain: each record in its block files starts with them. A folder whose first
     /// block file starts with other bytes holds an earlier FreeBank chain on the same eCash chain, and moves aside as an
     /// eCash reset's does (node/restart.rs). Easynet's fresh start on v1.1.0 (v0.7.0) moved them from fb4bea03 to
-    /// fb4bea05. None: not checked.
+    /// fb4bea05, and on v1.2.0, Gold B (v0.7.4), to fb4bea06. None: not checked.
     pub fb_magic: Option<[u8; 4]>,
     /// The oldest node release this network's chain runs on: an older installed release isn't started, and updating
     /// from it starts the new one (v0.7.0: easynet's new chain needs v1.1.0).
@@ -345,11 +345,12 @@ pub static EASYNET: Network = Network {
     pin_hash: "000000018a449eb24e2c55744a19ad02db5928fa89296f87cbb2059784b2b211",
     // easynet-4's genesis time (2026-10-29 05:11:59 UTC); the old chain's FreeBank blocks are all older.
     restarted: Some(1_793_250_719),
-    // The fresh FreeBank chain of v1.1.0 (gram notes), on the same eCash chain: freebankd's 71d3207 (chainparams.cpp).
-    fb_magic: Some([0xfb, 0x4b, 0xea, 0x05]),
-    min_tag: Some("v1.1.0"),
-    // Block 1 of the v1.1.0 chain (cae681ab…, 2026-11-04 22:30 UTC); the old chain's last block (1,011) was before it.
-    fb_since: Some(1_793_831_413),
+    // The fresh FreeBank chain of v1.2.0 (Gold B), on the same eCash chain: freebankd's dcd5215 (chainparams.cpp: magic
+    // fb4bea06, genesis 485b81d7…, deposits from L1 1,676). v1.1.0's chain was fb4bea05.
+    fb_magic: Some([0xfb, 0x4b, 0xea, 0x06]),
+    min_tag: Some("v1.2.0"),
+    // Block 1 of the v1.2.0 chain (4bf2c7a4…, 2026-11-08 06:11 UTC); the v1.1.0 chain stopped before it.
+    fb_since: Some(1_794_118_278),
     l1_chain: "",
     l1_names: &["easynet"],
     l1_kind: L1Kind::Test,
@@ -751,14 +752,14 @@ mod tests {
     }
 
     #[test]
-    fn easynets_new_chain_needs_v1_1_0() {
-        assert!(below_min(&EASYNET, "v1.0.2") && below_min(&EASYNET, "v0.2.29"));
-        assert!(!below_min(&EASYNET, "v1.1.0") && !below_min(&EASYNET, "v1.1.1") && !below_min(&EASYNET, "v1.2.0"));
+    fn easynets_new_chain_needs_v1_2_0() {
+        assert!(below_min(&EASYNET, "v1.0.2") && below_min(&EASYNET, "v0.2.29") && below_min(&EASYNET, "v1.1.0"));
+        assert!(!below_min(&EASYNET, "v1.2.0") && !below_min(&EASYNET, "v1.2.1") && !below_min(&EASYNET, "v1.3.0"));
         assert!(below_min(&EASYNET, "v0.3.5"), "outside the line counts as older");
         assert!(!below_min(&BETA, "v0.2.16") && !below_min(&MAINNET, "v1.0.0"), "no oldest release there");
-        let said = too_old(&EASYNET, "v1.0.2");
-        assert!(said.starts_with("FreeBank on easynet started a new chain on v1.1.0, and your node is v1.0.2."), "{said}");
-        assert_eq!(EASYNET.fb_magic, Some([0xfb, 0x4b, 0xea, 0x05]));
+        let said = too_old(&EASYNET, "v1.1.0");
+        assert!(said.starts_with("FreeBank on easynet started a new chain on v1.2.0, and your node is v1.1.0."), "{said}");
+        assert_eq!(EASYNET.fb_magic, Some([0xfb, 0x4b, 0xea, 0x06]));
     }
 
     #[test]

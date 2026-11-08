@@ -189,9 +189,10 @@ pub const NOTE_FEE: f64 = 0.001;
 /// A phone page that predates v0.7.2 asking for a note action on a gram-notes chain: it counts in sECX.
 pub const ERR_PAGE_IN_SECX: &str = "On this chain notes count in grams of gold, and this phone page counts them in sECX: \
                                     reload the page, or move the notes from FreeBank on your desktop.";
-/// A note action on a gram-notes chain with no payout price: its worth, and so the daily limit, can't be counted.
-pub const ERR_NO_GOLD_PRICE: &str = "There is no gold price on FreeBank right now, so these notes' worth can't be \
-                                     counted against this phone's limit: try again later, or move them from your desktop.";
+/// A note action on a gram-notes chain whose house has no rate posted (Gold B, node v1.2.0: each house posts its own;
+/// there is no chain price): its worth, and so the daily limit, can't be counted.
+pub const ERR_NO_RATE: &str = "This house has no rate posted right now, so these notes' worth can't be counted \
+                               against this phone's limit: try again later, or move them from your desktop.";
 /// A hosted wallet's phone asking for a note action on a gram-notes chain: not yet (v0.7.2).
 pub const ERR_HOSTED_NOTES_IN_GRAMS: &str = "On this chain notes count in grams of gold, and a hosted wallet's notes \
                                              can't move from the phone yet.";
@@ -397,7 +398,7 @@ pub struct HeldView {
     pub device: String,
     pub name: String,
     pub address: String,
-    /// sECX: a send's amount, or what a note action's notes are worth (at the payout price on a gram-notes chain).
+    /// sECX: a send's amount, or what a note action's notes are worth (on a gram-notes chain at the house's rate, Gold B).
     pub amount: f64,
     /// A note action on a gram-notes chain (v0.7.2): its notes in grams.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -626,8 +627,9 @@ pub struct Pending {
     pub house: Option<u64>,
     pub address: String,
     pub sats: u64,
-    /// A note action on a gram-notes chain (v0.7.2): `sats` is mg of notes, and they are worth this many sats a gram
-    /// (the payout price when the phone asked). None: sats, or note units of 1 sat.
+    /// A note action on a gram-notes chain (v0.7.2): `sats` is mg of notes, and they count at this many sats a gram
+    /// (Gold B: the house's highest ask in the last 30 days when the phone asked, `rate_of`). None: sats, or note
+    /// units of 1 sat.
     pub price: Option<u64>,
 }
 
@@ -800,12 +802,13 @@ fn history_view(r: &Value) -> Value {
 
 /// A wallet's notes (`listmynotes`) as the phone shows them, with their houses' names, states and types.
 fn notes_view(mine: &Value, houses: &Value) -> Value {
-    notes_view_in(mine, houses, false, None)
+    notes_view_in(mine, houses, false, &HashMap::new())
 }
 
 /// The same, saying the chain's note unit (v0.7.1): on a gram-notes chain each line carries its mg as well, for the
-/// phone page to show grams (its "amount" fields stay as before for a page that predates it).
-fn notes_view_in(mine: &Value, houses: &Value, grams: bool, price: Option<u64>) -> Value {
+/// phone page to show grams (its "amount" fields stay as before for a page that predates it), and its house's bid in
+/// sats a gram (Gold B: `bids`, house id to bid; absent: no rate posted).
+fn notes_view_in(mine: &Value, houses: &Value, grams: bool, bids: &HashMap<u64, u64>) -> Value {
     let houses = houses.as_array().map(|v| v.as_slice()).unwrap_or(&[]);
     let list = mine
         .as_array()
@@ -836,7 +839,7 @@ fn notes_view_in(mine: &Value, houses: &Value, grams: bool, price: Option<u64>) 
                 "units_mg": if grams { json!(units) } else { Value::Null },
                 "demanded_mg": if grams { n["demanded_units"].clone() } else { Value::Null },
                 "redeemable_mg": if grams { json!(redeemable) } else { Value::Null },
-                "price_sats_per_gram": if grams { json!(price) } else { Value::Null },
+                "price_sats_per_gram": if grams { json!(bids.get(&id)) } else { Value::Null },
             })
         })
         .collect();
@@ -2038,10 +2041,11 @@ impl Phone {
         let a = &req["a"];
         let house = a["house"].as_u64().ok_or("Which house's notes?")?;
         // v0.7.2: on a gram-notes chain (or when the unit can't be read: refused) the page sends whole mg, and the notes
-        // count against the daily limit at the payout price; a page that sends an sECX amount there is refused.
+        // count against the daily limit at the house's highest ask in the last 30 days (Gold B, `rate_of`); a page that
+        // sends an sECX amount there is refused.
         let (sats, price) = if self.grams().await? {
             let mg = a["units_mg"].as_u64().ok_or(ERR_PAGE_IN_SECX)?;
-            (mg, Some(self.payout_price().await?.ok_or(ERR_NO_GOLD_PRICE)?))
+            (mg, Some(self.house_rate(house).await?.1.ok_or(ERR_NO_RATE)?))
         } else {
             (store::json_to_sats(&a["amount"])?, None)
         };
@@ -2064,10 +2068,10 @@ impl Phone {
         self.act(dev, req, Pending { kind, house: Some(house), address, sats, price }, face_id).await
     }
 
-    /// The chain's payout price now, sats per gram (listtokenpools; None: there is none).
-    async fn payout_price(&self) -> Result<Option<u64>, String> {
-        let r = self.rpc.call("listtokenpools", vec![]).await.map_err(|e| e.plain())?;
-        Ok(r["payout_price_sats_per_gram"].as_u64().filter(|&p| p > 0))
+    /// A house's rate now (`gethousecapital`, Gold B): its bid, and the price a limit counts its notes at (`rate_of`).
+    async fn house_rate(&self, house: u64) -> Result<(Option<u64>, Option<u64>), String> {
+        let r = self.rpc.call("gethousecapital", vec![json!(house)]).await.map_err(|e| e.plain())?;
+        Ok(rate_of(&r))
     }
 
     /// Pay `p` within the phone's limit, or hold it for the desktop (or, with the app closed, refuse it). A note
@@ -2151,8 +2155,17 @@ impl Phone {
         let houses = self.rpc.call("listhouses", vec![]).await.unwrap_or(Value::Null);
         // The unit unread is an error: a guess of sECX would show grams 100,000 times too small.
         let grams = self.grams().await?;
-        let price = if grams { self.payout_price().await.ok().flatten() } else { None };
-        Ok(notes_view_in(&mine, &houses, grams, price))
+        let mut bids = HashMap::new();
+        if grams {
+            let ids: std::collections::BTreeSet<u64> =
+                mine.as_array().into_iter().flatten().filter_map(|n| n["house_id"].as_u64()).collect();
+            for id in ids {
+                if let Ok((Some(bid), _)) = self.house_rate(id).await {
+                    bids.insert(id, bid);
+                }
+            }
+        }
+        Ok(notes_view_in(&mine, &houses, grams, &bids))
     }
 
     /// Hold a send for the desktop, or with the app closed (the background part), refuse it: nobody
@@ -2402,8 +2415,8 @@ impl Phone {
     }
 
     /// A held note action, just before the desktop pays it (v0.7.2): the chain must still count notes the way it did when
-    /// the phone asked (its `price` says grams), and on grams its worth is re-priced at the payout price now, so the
-    /// desktop's day count and "Approve sends on my phone" see today's figure; with no price now it waits.
+    /// the phone asked (its `price` says grams), and on grams its worth is re-priced at the house's rate now (`rate_of`),
+    /// so the desktop's day count and "Approve sends on my phone" see today's figure; with no rate posted it waits.
     async fn recheck_held(&self, confirm: &str) -> Result<(), String> {
         let p = {
             let held = self.held.lock().unwrap();
@@ -2417,7 +2430,8 @@ impl Phone {
             return Err("The chain counts notes differently from when the phone asked: ask again from the phone.".into());
         }
         if grams {
-            let now = self.payout_price().await?.ok_or(ERR_NO_GOLD_PRICE)?;
+            let house = p.house.ok_or("Which house's notes?")?;
+            let now = self.house_rate(house).await?.1.ok_or(ERR_NO_RATE)?;
             if let Some(h) = self.held.lock().unwrap().iter_mut().find(|h| h.confirm == confirm) {
                 h.price = Some(now);
             }
@@ -3200,21 +3214,21 @@ pub const CREDIT_PAYMENTS: &[&str] = &[
     "addhousemembers",
     "removehousemembers",
     "purgehousemembers",
-    // Gram nodes (the gram-notes release): a gold token's one pool against sECX, and a gold token sent to an address
-    // (send_token's own command; the generic path never takes sendissued).
+    // Gram nodes: a token's one pool against sECX, and a token sent to an address (send_token's own command; the
+    // generic path never takes sendissued). Since Gold B (node v1.2.0) these are dollar tokens: gold tokens live on
+    // Ethereum, not on FreeBank.
     "swaptoken",
     "addtokenliquidity",
     "removetokenliquidity",
     "sendissued",
-    // v0.7.2, House tools in grams: gold from this wallet into a house's capital or till (and out of the till).
-    "pledgegold",
-    "movetill",
+    // Gold B (node v1.2.0), Run a house: the key that signs the house's rates, and a rate posted with it. Each pays a
+    // fee; nothing else leaves the wallet.
+    "sethouseratekey",
+    "posthouserate",
 ];
 
-/// The node's fee for a gold token call that leaves it out (0.001 sECX).
+/// The node's fee for a token or house-rate call that leaves it out (0.001 sECX, the node's ParseFee default).
 const TOKEN_FEE_DEFAULT_SATS: u64 = 100_000;
-/// The plain sECX a token coin carries to its new owner (the node's ISSUED_COIN_VALUE), paid by the sender.
-const TOKEN_COIN_SATS: u64 = 1_000;
 
 /// What a credit payment's cost is read with besides its arguments, as the desktop finds them before asking.
 #[derive(Debug, Clone, Default)]
@@ -3223,14 +3237,22 @@ pub struct CreditFacts {
     pub bill: Option<u64>,
     /// The node counts notes, bills and gold tokens in mg (getblockchaininfo's `note_unit`, the gram-notes release).
     pub grams: bool,
-    /// The chain's payout price now, sats per gram (listtokenpools); None: none.
+    /// The price a note or bill counts at, sats per gram (Gold B, node v1.2.0: the house's highest ask in the last 30
+    /// days, `rate_of`; a bill's is its reference house's). None: none, or not a note or bill call.
     pub price: Option<u64>,
     /// The token's pool, (units, sats), for swaptoken and addtokenliquidity.
     pub pool: Option<(u64, u64)>,
     /// The token's ticker, for the words.
     pub ticker: Option<String>,
-    /// The token is a gold token (getissuedtoken's kind "gold_mg"): only then is a unit a mg of gold.
-    pub gold: bool,
+}
+
+/// A house's rate under Gold B (node v1.2.0), from `gethousecapital`: (its bid, what it pays a gram now; the price
+/// limits count its notes at, its highest ask in the last 30 days, which can't be pushed down the way a rate can be
+/// cut at once). None: no rate posted.
+pub fn rate_of(cap: &Value) -> (Option<u64>, Option<u64>) {
+    let n = |k: &str| cap[k].as_u64().filter(|&p| p > 0);
+    let bid = n("bid");
+    (bid, n("ask_30d_high").or(n("ask")).or(bid))
 }
 
 /// A bill's face from getbill, in the note unit: `face_mg` (whole mg) on a gram node (FreeBank v1.1.0 and later),
@@ -3261,10 +3283,10 @@ pub fn credit_payment(method: &str, p: &[Value], bill: Option<u64>) -> Option<(u
     credit_payment_with(method, p, &CreditFacts { bill, ..CreditFacts::default() })
 }
 
-/// credit_payment with what the node said besides. On a gram node, notes, bills and gold tokens count at what they're
-/// worth in sECX at the payout price (a token sold: at the pool's price if that is higher). Where the cost can't be
-/// read (no price, a token that isn't gold, an add to a pool, which the node prices from pending trades with no cap),
-/// a phone is asked.
+/// credit_payment with what the node said besides. On a gram node, notes and bills count at what they're worth in
+/// sECX at their house's highest ask in the last 30 days (Gold B, `rate_of`), and a token sold at its pool's price.
+/// Where the cost can't be read (no rate posted, a token sent on, an add to a pool, which the node prices from pending
+/// trades with no cap), a phone is asked.
 pub fn credit_payment_with(method: &str, p: &[Value], f: &CreditFacts) -> Option<(u64, Approve)> {
     if !CREDIT_PAYMENTS.contains(&method) {
         return None;
@@ -3283,7 +3305,7 @@ pub fn credit_payment_with(method: &str, p: &[Value], f: &CreditFacts) -> Option
     let fee = match method {
         "transfernote" | "mintnote" | "demandnote" => p.get(2),
         "retirebill" => p.get(1),
-        "registerhouse" => p.get(5),
+        "registerhouse" | "issuebill" => p.get(5),
         _ => p.last(),
     };
     let fee = fee.and_then(|v| store::json_to_sats(v).ok());
@@ -3355,14 +3377,8 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
     let g = |n: Option<u64>| n.map_or("?".to_string(), grams_of);
     let e = |s: Option<u64>| s.map_or("?".to_string(), |s| to_ecx(s).to_string());
     let at_price = |mg: Option<u64>| mg.zip(f.price).and_then(|(m, pr)| worth(m, pr, 1000));
-    // A token's worth: the higher of the pool's confirmed price and the payout price, as either can be pushed down.
-    let token_worth = |n: Option<u64>| {
-        let pool = n.zip(f.pool).and_then(|(n, (u, s))| worth(n, s, u));
-        match (pool, at_price(n)) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (a, b) => a.or(b),
-        }
-    };
+    // A token's worth: its pool's price (Gold B: tokens on FreeBank are dollar tokens, with no gram price).
+    let token_worth = |n: Option<u64>| n.zip(f.pool).and_then(|(n, (u, s))| worth(n, s, u));
     let tk = f.ticker.clone().unwrap_or_else(|| {
         let t = p.first().and_then(Value::as_str).unwrap_or("?");
         format!("token {}…", t.chars().take(8).collect::<String>())
@@ -3375,11 +3391,11 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
     let fee = match method {
         "transfernote" | "mintnote" => p.get(2).and_then(|v| store::json_to_sats(v).ok()),
         "demandnote" => fee_at(2),
-        "swaptoken" | "sendissued" | "movetill" => fee_at(3),
-        "pledgegold" => fee_at(4),
-        "addtokenliquidity" | "removetokenliquidity" => fee_at(2),
+        "swaptoken" | "sendissued" | "posthouserate" => fee_at(3),
+        "addtokenliquidity" | "removetokenliquidity" | "sethouseratekey" => fee_at(2),
         "retirebill" => p.get(1).and_then(|v| store::json_to_sats(v).ok()),
-        "registerhouse" => p.get(5).and_then(|v| store::json_to_sats(v).ok()),
+        // issuebill's fee is its 6th argument: Gold B (node v1.2.0) adds the reference house after it.
+        "registerhouse" | "issuebill" => p.get(5).and_then(|v| store::json_to_sats(v).ok()),
         _ => p.last().and_then(|v| store::json_to_sats(v).ok()),
     };
     let (out, text): (Option<u64>, String) = match method {
@@ -3419,7 +3435,7 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
         }
         "purgehousemembers" => (Some(0), format!("Clear removed members' records from house #{}", id(0))),
         "swaptoken" => match p.get(1).and_then(Value::as_str) {
-            Some("sell") => (token_worth(units(2)), format!("Sell {} g of {tk} in its pool", g(units(2)))),
+            Some("sell") => (token_worth(units(2)), format!("Sell {} units of {tk} in its pool", units(2).map_or("?".into(), |n| n.to_string()))),
             Some("buy") => (units(2), format!("Buy {tk} with {} sECX in its pool", e(units(2)))),
             _ => (None, format!("Swap {tk} in its pool")),
         },
@@ -3429,42 +3445,36 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
         "addtokenliquidity" => match p.get(3).and_then(Value::as_u64).filter(|&m| m > 0) {
             Some(most) => (
                 token_worth(units(1)).map(|w| w.saturating_add(most)),
-                format!("Add {} g of {tk} and at most {} sECX to its pool", g(units(1)), e(Some(most))),
+                format!("Add {} units of {tk} and at most {} sECX to its pool", units(1).map_or("?".into(), |n| n.to_string()), e(Some(most))),
             ),
             None => {
                 let with = units(1).zip(f.pool).and_then(|(n, (u, s))| worth(n, s, u));
-                (None, format!("Add {} g of {tk} and about {} sECX (at the pool's price when it goes in) to its pool", g(units(1)), e(with)))
+                (None, format!("Add {} units of {tk} and about {} sECX (at the pool's price when it goes in) to its pool", units(1).map_or("?".into(), |n| n.to_string()), e(with)))
             }
         },
         "removetokenliquidity" => (Some(0), format!("Take {} shares out of {tk}'s pool", units(1).map_or("?".into(), |n| n.to_string()))),
-        // v0.7.2: a partner's gold into the house's capital (house, partner, token, units), and gold into or out of its
-        // till (house, token, ±units); what leaves the wallet counts at the payout price, with its token coin.
-        "pledgegold" => {
-            let out = at_price(units(3)).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));
-            (out, format!("Pledge {} g of {tk} to house #{}'s owners' capital (partner {})", g(units(3)), id(0), id(1)))
-        }
-        "movetill" => match p.get(2).and_then(Value::as_i64) {
-            Some(n) if n < 0 => (Some(0), format!("Take {} g of {tk} out of house #{}'s till", g(Some(n.unsigned_abs())), id(0))),
-            n => {
-                let mg = n.and_then(|n| u64::try_from(n).ok());
-                let out = at_price(mg).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));
-                (out, format!("Move {} g of {tk} into house #{}'s till", g(mg), id(0)))
-            }
-        },
+        // Gold B (node v1.2.0): the house's rate key (house, pubkey, fee) and a rate (house, bid, ask, fee), in sats a
+        // gram. Only the fee leaves the wallet.
+        "sethouseratekey" => (Some(0), format!("Set house #{}'s rate key", id(0))),
+        "posthouserate" => (
+            Some(0),
+            format!("Post house #{}'s rate: it pays {} sECX a gram and asks {} sECX", id(0), e(units(1)), e(units(2))),
+        ),
+        // A token sent on: its coin's sECX goes with it; the token itself (a dollar token since Gold B) has no gram
+        // price, so a phone is asked unless the limit is off.
         "sendissued" => {
             let to = p.get(2).and_then(Value::as_str).unwrap_or("?");
-            let out = at_price(units(1)).filter(|_| f.gold).map(|o| o.saturating_add(TOKEN_COIN_SATS));
-            let what = if f.gold { format!("{} g of {tk}", g(units(1))) } else { format!("{} units of {tk}", units(1).map_or("?".into(), |n| n.to_string())) };
-            (out, format!("Send {what} to {to}"))
+            (None, format!("Send {} units of {tk} to {to}", units(1).map_or("?".into(), |n| n.to_string())))
         }
-        // Bills on a gram node: the face is whole mg (`face_mg`), paid in sECX at the payout price; the bond is sECX.
+        // Bills on a gram node: the face is whole mg (`face_mg`), paid in sECX at the reference house's highest ask in
+        // the last 30 days (Gold B); the bond is sECX.
         "issuebill" => {
             let face = p.get(1).and_then(Value::as_u64);
             let bond = p.get(2).and_then(|v| store::json_to_sats(v).ok());
             (bond, format!("Issue a bill for {} g, bonded with {} sECX", g(face), e(bond)))
         }
         "endorsebill" => (at_price(f.bill), format!("Hand bill #{} ({} g) to another holder", id(0), g(f.bill))),
-        "retirebill" => (at_price(f.bill), format!("Repay bill #{}: {} g, paid in sECX at the gold price", id(0), g(f.bill))),
+        "retirebill" => (at_price(f.bill), format!("Repay bill #{}: {} g, paid in sECX at its house's rate", id(0), g(f.bill))),
         _ => (None, method.to_string()),
     };
     let cost = out.zip(fee).map_or(u64::MAX, |(o, f)| o.saturating_add(f));
