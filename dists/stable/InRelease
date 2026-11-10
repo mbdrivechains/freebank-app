@@ -5,27 +5,27 @@ Acquire-By-Hash: yes
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sun, 08 Nov 2026 15:57:35 +0000
+Date: Tue, 10 Nov 2026 18:53:30 +0000
 Description: FreeBank desktop app
 Label: FreeBank
 Origin: FreeBank
 Suite: stable
 MD5Sum:
- 14853e230ba347fff4199f0e6c7308d8            39723 main/binary-amd64/Packages
- 3e09063d163efd5612aa3bb7f49c8599             8899 main/binary-amd64/Packages.gz
+ dd4f5c289c095b760d62a0e45cd0a142            40763 main/binary-amd64/Packages
+ 5989e2c8247e77a5a9ae56ae817e4c44             9089 main/binary-amd64/Packages.gz
 SHA1:
- e485ab356376a189355060dfa95344612fd67c59            39723 main/binary-amd64/Packages
- 7a80019dcf0880b565027307bd5b17d776bbad55             8899 main/binary-amd64/Packages.gz
+ 5d82e7e6e0440f2881e67d03ad09b596eaa758ff            40763 main/binary-amd64/Packages
+ 16ab658247fa77cd3f13364cdeb85c15d20c88ba             9089 main/binary-amd64/Packages.gz
 SHA256:
- 447e35465fca4ce7f901fc728fe298cd46d5e62036b07462062e0d46bbba611f            39723 main/binary-amd64/Packages
- a7c4c56ca3ce481201be49b94dcf9b2fc87a1a24ce5dd72693846b3f52b26902             8899 main/binary-amd64/Packages.gz
+ 7fb29eb04ae87bffb857bd3055c33357dac32396979a77c4a8b57870a07b5b2f            40763 main/binary-amd64/Packages
+ b12c6454902e5934568a920a523dc187cbbc6b41db71c314090dc77e616e4a68             9089 main/binary-amd64/Packages.gz
 SHA512:
- 5d450b93c61eb660f4d48741637d5fa0a7e4852c1090eaa71e4f143f461f747a9689e6d0f770d5d5dde789ab34f3a70ef0f9a1b98e38af41f740e48c168602c9            39723 main/binary-amd64/Packages
- 302ea13284dd188e0703c995cd2223bd49b3a526554e3c5dcacf4f691bfd42138084bb07c12d5a76a96f6edc167f22bcb7b3fe06b40f5e567dd8d1eb69a62dc5             8899 main/binary-amd64/Packages.gz
+ 48467108e0bf234553303459f2e2653a94dcf766ef62639b2354b15a0eb404549a26ed016a37f9436725754051e884442c04c0688a06afa1b5fe038f754911e8            40763 main/binary-amd64/Packages
+ e61429c047080fabdb7615f265ebc5e99dec3c99a4486a88b5a83baba924ba1b1a132d412288c6a1ecc9686013adde197e2af500806710dee8a009cb6e2eafb2             9089 main/binary-amd64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQitK9YVWUJ/FXtBtp6gMfMN8lgOwUCavCb7wAKCRB6gMfMN8lg
-O+UgAPoDT9EOgBgxDJ1GZJ/zIjrzh+NFd47umSaPNF+dQ//kuAD9F0jNTrZilfZB
-M009IiTMQx5Jsz4XzC4CIj5M/KOcywI=
-=d7CJ
+iHUEARYKAB0WIQQitK9YVWUJ/FXtBtp6gMfMN8lgOwUCavNoKgAKCRB6gMfMN8lg
+O2LnAQCPCbJKacDUR8KEmi3GbpFyd0M/yrMQLQxNMOgAF/9HWQD+NSgKmtgmOnqI
+ku4KQzflb51LkicfCElY27n5GztewAU=
+=bu7c
 -----END PGP SIGNATURE-----

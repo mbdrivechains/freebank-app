@@ -893,3 +893,26 @@ Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivecha
  houses are run by independent operators and can fail. Not advice. Full notice:
  https://github.com/mbdrivechains/freebank-app/blob/main/NOTICE.md
 
+Package: freebank
+Architecture: amd64
+Version: 0.7.5
+Priority: optional
+Maintainer: The FreeBank developers
+Installed-Size: 14948
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
+Conflicts: free-bank
+Replaces: free-bank
+Filename: pool/main/f/freebank/freebank_0.7.5_amd64.deb
+Size: 5313188
+MD5sum: 417f60c4ccf27b91ef8897e88932f3cf
+SHA1: bf1868f6af3bbb3f7f12116da80bb05ef011343e
+SHA256: a7dd85d17d7d8a89aae10efa19931d8d9ff32ed2ae3ce311ddadd1dc3839b469
+SHA512: 57974bbb045a6283661acfbab727c65f097f69beb1278b94358790e0a162b762a54e691f47c58bf5c365fd58206743d1595149693caddcab2d347c2cba019871
+Homepage: https://github.com/mbdrivechains/freebank-app
+Description: FreeBank: set up, run and use a FreeBank node (BIP 300/301 drivechain, slot 130)
+ Sets up and runs a FreeBank node beside an eCash node, and is its wallet.
+ .
+ FreeBank is experimental software: you can lose what you put in. It is not a bank;
+ houses are run by independent operators and can fail. Not advice. Full notice:
+ https://github.com/mbdrivechains/freebank-app/blob/main/NOTICE.md
+
