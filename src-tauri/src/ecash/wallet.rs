@@ -381,19 +381,25 @@ pub async fn quote(conn: &Conn, name: &str, address: &str, sats: Option<u64>) ->
     if max {
         opts["subtractFeeFromOutputs"] = json!([0]);
     }
-    let r = conn
-        .wallet(name)
-        .call_typed(
-            "walletcreatefundedpsbt",
-            vec![json!([]), json!([{ address: to_coins(amount) }]), json!(super::replay_locktime()), opts, json!(true)],
-        )
-        .await
-        .map_err(|e| match e {
-            RpcError::Rpc { code: -4, message } if message.contains("Insufficient funds") => {
-                "There isn't enough ECX for that and its fee.".to_string()
-            }
-            e => say(e),
-        })?;
+    // Nodes on Core 32 (eCash 1.2.0, easynet-4.1) answer with a version-2 PSBT unless asked for version 0, the only one
+    // the signing here reads: so ask for transaction version 2 (the default) and PSBT version 0. An older node takes
+    // neither argument and answers with its help text (code -1): then ask again without them.
+    let args = vec![json!([]), json!([{ address: to_coins(amount) }]), json!(super::replay_locktime()), opts, json!(true)];
+    let mut v0 = args.clone();
+    v0.extend([json!(2), json!(0)]);
+    let w = conn.wallet(name);
+    let r = match w.call_typed("walletcreatefundedpsbt", v0).await {
+        Err(RpcError::Rpc { code: -1, message }) if message.starts_with("walletcreatefundedpsbt") => {
+            w.call_typed("walletcreatefundedpsbt", args).await
+        }
+        r => r,
+    }
+    .map_err(|e| match e {
+        RpcError::Rpc { code: -4, message } if message.contains("Insufficient funds") => {
+            "There isn't enough ECX for that and its fee.".to_string()
+        }
+        e => say(e),
+    })?;
     let fee = sats_of(&r["fee"]).ok_or("The eCash node didn't say the fee.")?;
     let psbt = r["psbt"].as_str().ok_or("The eCash node gave no transaction.")?.to_string();
     let sats = if max { amount.saturating_sub(fee) } else { amount };

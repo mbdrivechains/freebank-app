@@ -246,6 +246,8 @@ button:focus-visible {
   border-radius: 10px;
   margin-bottom: 16px;
   font-size: 14px;
+  /* A long web address in an error (a failed download, 11-09 on a Mac) breaks onto the next line, not past the box. */
+  overflow-wrap: anywhere;
 }
 
 /* Node-custodial explainer on the connect screen */
@@ -835,6 +837,7 @@ button.wide {
   padding: 10px 12px;
   border-radius: 10px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 /* Advanced settings */
@@ -1269,6 +1272,7 @@ button.wide {
   color: #e0a458;
   text-align: center;
   margin-top: 8px;
+  overflow-wrap: anywhere;
 }
 
 .cancelled-note {

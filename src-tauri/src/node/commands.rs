@@ -115,6 +115,7 @@ pub fn validate_tag(tag: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn install_start(mgr: State<'_, Mgr>, tag: String, move_aside: bool) -> Result<(), String> {
+    super::process::freebank_on()?;
     install::validate_tag(&tag)?;
     // An install under way (a second click, or the screen reloaded) keeps its task, so "Cancel"
     // can still stop it.

@@ -130,6 +130,50 @@
   let actionUnits = "";
   let actionAddress = "";
   let actionBusy = false;
+  // v0.7.5: a demand the house leaves unpaid for its window can be protested, which starts its cure (7 days to pay or
+  // suspend payment, else it fails; once in any 180 days). The window is the node's nDemandWindow: 1008 blocks, about a
+  // week, on easynet and mainnet (not reported by the node, so kept here).
+  const DEMAND_WINDOW = 1008;
+  /** How long a failed house's notes can be claimed: the node's nInsolventClaimWindow, 105,120 blocks (about 2 years). */
+  const CLAIM_WINDOW = 105_120;
+  const demandDue = (n: NoteHolding) => (n.oldest_demand_height ? n.oldest_demand_height + DEMAND_WINDOW : null);
+  const unprotested = (n: NoteHolding) => Math.max(0, (n.preauth_units ?? 0) - (n.protested_units ?? 0));
+  $: protestable = (n: NoteHolding) => {
+    const due = demandDue(n);
+    return (n.house_status === "o" || n.house_status === "s") && unprotested(n) > 0 && due !== null && height > due;
+  };
+  let protestBusy: number | null = null;
+
+  async function doProtest(houseId: number) {
+    protestBusy = houseId;
+    error = "";
+    try {
+      const txid = await withUnlock(() => api.protestNote(houseId), { what: `protest the unpaid demand on ${nameOf(houses, houseId)}` });
+      // Legal (11-09): no days promised here: a protest can join a running cure, or fail the house at once.
+      showReceipt({ txid, what: `Protested the unpaid demand on ${nameOf(houses, houseId)} notes. Once this is in a block, the note card shows the house's deadline to pay or suspend payment, or that it has failed.` });
+      await loadNotes();
+    } catch (e) {
+      error = nice(e);
+    }
+    protestBusy = null;
+  }
+
+  async function doClaim(houseId: number, units: number) {
+    protestBusy = houseId;
+    error = "";
+    try {
+      const txid = await withUnlock(() => api.claimNote(houseId, units), { what: `claim on ${nameOf(houses, houseId)}` });
+      showReceipt({ txid, what: `Your ${A.fmt(units)} of ${nameOf(houses, houseId)} notes were burned for their share of what the chain seized from the house` });
+      await loadNotes();
+    } catch (e) {
+      error = nice(e);
+      if (/sum exactly/.test(error))
+        error =
+          "A claim takes whole note coins adding up to exactly that amount, held at one of your addresses. Gather them " +
+          "first (Send, with the address left empty), then claim after the next block.";
+    }
+    protestBusy = null;
+  }
   const STATUS_LABEL: Record<string, string> = {
     o: "Open", s: "Stressed", d: "Suspended", i: "Failed", w: "Wound down",
   };
@@ -1083,10 +1127,34 @@
                   {#if n.house_status === "d"}
                     {A.fmt(n.demanded_units)} in the house's payout queue, earning {queueRate(houses, n.house_id)}
                   {:else if n.house_status === "o" || n.house_status === "s"}
-                    {A.fmt(n.demanded_units)} demanded: the house must pay it within the demand window
+                    {A.fmt(n.demanded_units)} demanded{demandDue(n) ? `: the house must pay by about block ${(demandDue(n) ?? 0).toLocaleString("en-US")}` : ": the house must pay it within the demand window"}
+                    {#if (n.protested_units ?? 0) > 0}<br />{A.fmt(n.protested_units ?? 0)} protested: the house must pay or suspend payment{cards[n.house_id]?.cureUntil ? ` by about block ${(cards[n.house_id]?.cureUntil ?? 0).toLocaleString("en-US")}` : ""}, otherwise it fails.{/if}
                   {:else}
-                    {A.fmt(n.demanded_units)} demanded; the house has failed, so holders are paid from what it has left
+                    {A.fmt(n.demanded_units)} demanded; the house has failed, so holders are paid from what the chain can seize
                   {/if}
+                </div>
+                {#if protestable(n)}
+                  <!-- Legal's wording (USER_WARNINGS §2.6 F, "Houses and notes"). -->
+                  <div class="note-protest">
+                    <p class="hint">The house didn't pay your demand within its window. A protest gives it 7 days to pay or to
+                      suspend payment, or what is left of a cure already running; otherwise it fails. The 7 days are given
+                      once in any 180 days: a protest within 180 days of its last one, or of the end of a suspension, fails
+                      the house at once.</p>
+                    <button on:click={() => doProtest(n.house_id)} disabled={protestBusy === n.house_id}>
+                      {protestBusy === n.house_id ? "…" : "Protest the unpaid demand"}
+                    </button>
+                  </div>
+                {/if}
+              {/if}
+              {#if n.house_status === "i"}
+                <div class="note-protest">
+                  <p class="hint">This house has failed. A claim burns these notes for their share of what the chain can seize,
+                    mainly its {BASE_TICKER} escrow{A.unit === "mg" ? ", each gram at its highest bid of the 90 days before it failed" : ""}.
+                    That may not cover them in full. Claims close 2 years after the house failed{cards[n.house_id]?.failedAt ? ` (about block ${((cards[n.house_id]?.failedAt ?? 0) + CLAIM_WINDOW).toLocaleString("en-US")})` : ""};
+                    after that these notes can't be claimed.</p>
+                  <button on:click={() => doClaim(n.house_id, n.units)} disabled={protestBusy === n.house_id}>
+                    {protestBusy === n.house_id ? "…" : `Claim ${A.fmt(n.units)}`}
+                  </button>
                 </div>
               {/if}
               <div class="note-actions">

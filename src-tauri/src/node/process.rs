@@ -15,6 +15,7 @@ use std::time::Duration;
 /// FreeBank's node running after I close the app" on, the node starts in its own session, so it
 /// outlives the app; otherwise (on Linux) the kernel stops it if the app dies.
 pub async fn start(mgr: &NodeManager) -> Result<(), String> {
+    freebank_on()?;
     let unclean = stopped_uncleanly(Path::new(&mgr.settings.lock().await.datadir));
     ensure_stack(mgr).await?;
     if unclean {
@@ -189,7 +190,18 @@ fn exit_reason(mgr: &NodeManager, datadir: &Path) -> Option<String> {
         .map(|l| l.chars().take(400).collect())
 }
 
+/// v0.7.5: on a network where FreeBank isn't open (eCash's mainnet for now) no FreeBank node starts.
+pub fn freebank_on() -> Result<(), String> {
+    if crate::network::current().freebank_on {
+        Ok(())
+    } else {
+        // Legal (11-09): never "starts with a later release", which reads as a promise.
+        Err(format!("FreeBank isn't open on {}'s mainnet yet: only the eCash wallet works there.", crate::network::current().l1))
+    }
+}
+
 async fn start_opts(mgr: &NodeManager, reindex: bool) -> Result<(), String> {
+    freebank_on()?;
     mgr.still_here()?;
     restart::load_moved(Path::new(&mgr.settings.lock().await.datadir));
     // The node this app left running when it last closed is the one to use, if it still runs.

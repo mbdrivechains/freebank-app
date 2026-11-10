@@ -1,6 +1,7 @@
 //! The Tauri commands for the wallet's passphrase, recovery words, backup and restore (v0.2.0).
 //! Registered in lib.rs's invoke_handler, in the block marked `// v0.2.0 wallet`.
 
+use std::sync::LazyLock;
 use super::job::{self, Job};
 use super::ops;
 use super::*;
@@ -56,6 +57,72 @@ pub async fn wallet_setup_start(
         None => None,
     };
     setup_start(&client, &mgr, &guard, &phone, passphrase, restore, fresh, None).await
+}
+
+/// v0.7.5, a network where FreeBank isn't open (eCash's mainnet for now): the wallet without a FreeBank node. New words
+/// (`words` and `from` both None), typed ones, or another network's (`from`, opened with `from_passphrase`, which then
+/// becomes this wallet's passphrase too, as `wallet_setup_from_network` does). The words are sealed exactly as the setup
+/// job seals them, under the key id of their FreeBank HD seed, so FreeBank's wallet takes the same words when it opens
+/// here. New words wait for `wallet_setup_words` and "I've written them down" as usual. The eCash wallets on the node
+/// follow from the eCash tab, which opens the words with the passphrase.
+#[tauri::command]
+pub async fn ecash_only_wallet(
+    mgr: State<'_, Mgr>,
+    passphrase: String,
+    words: Option<String>,
+    from: Option<String>,
+    from_passphrase: Option<String>,
+) -> Result<(), String> {
+    ecash_only_wallet_in(&mgr.app_dir, crate::network::current(), passphrase, words, from, from_passphrase).await
+}
+
+pub(crate) async fn ecash_only_wallet_in(
+    app_dir: &std::path::Path,
+    net: &'static crate::network::Network,
+    passphrase: String,
+    words: Option<String>,
+    from: Option<String>,
+    from_passphrase: Option<String>,
+) -> Result<(), String> {
+    // Every secret wrapped first, so each return below wipes it (the review of 11-09).
+    let passphrase = Zeroizing::new(passphrase);
+    let words = words.map(Zeroizing::new).filter(|w| !w.trim().is_empty());
+    let from_passphrase = Zeroizing::new(from_passphrase.unwrap_or_default());
+    if net.freebank_on {
+        return Err("FreeBank is open on this network: set the wallet up the usual way.".into());
+    }
+    // One at a time: the check, the slow seal and the words held for the screen belong together.
+    static ONE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+    let _one = ONE.lock().await;
+    if let Some(old) = seed::read_file(&seed::seed_path(app_dir))? {
+        // A seed file that opens is this network's wallet: never replaced here. One that can't be read (damaged) would
+        // leave no way forward, so the new words go in its place and it is kept aside by save_words.
+        if seed::file_key_id(&old).is_ok() {
+            return Err("This network already has a wallet.".into());
+        }
+    }
+    // Another network's words win over anything typed earlier on the screen, as in the usual setup.
+    let (entropy, pass, confirmed, new) = match (from, words) {
+        (Some(f), _) => {
+            drop(passphrase);
+            if from_passphrase.is_empty() {
+                return Err("Please enter that wallet's passphrase.".into());
+            }
+            let (e, _) = words_elsewhere(app_dir, net, &f, &from_passphrase)?;
+            (e, from_passphrase, true, false)
+        }
+        (None, Some(w)) => (seed::parse_words(&w)?, passphrase, true, false),
+        (None, None) => (seed::new_entropy(), passphrase, false, true),
+    };
+    if pass.is_empty() {
+        return Err("Please enter a passphrase.".into());
+    }
+    let id = seed::key_id(&*seed::freebank_hd_seed(&entropy)?)?;
+    job::save_words(app_dir, &entropy, &id, &pass, confirmed).await?;
+    if new {
+        job::hold_words(seed::words(&entropy));
+    }
+    Ok(())
 }
 
 /// The other networks on this computer whose wallet has recovery words this app keeps (v0.5.0): (id, name), for "Use the
@@ -181,11 +248,14 @@ pub fn wallet_setup_words() -> Option<Words> {
 #[tauri::command]
 pub async fn wallet_words_confirmed(client: State<'_, ClientState>, mgr: State<'_, Mgr>) -> Result<(), String> {
     mgr.still_here()?;
-    let id = {
+    let id = if crate::network::current().freebank_on {
         // The main wallet, whichever the screens chose (v0.2.6, several wallets).
         let shared = client.lock().await;
         let mut c = shared.for_main();
         c.call_ui("getwalletinfo", vec![]).await?["hdmasterkeyid"].as_str().map(String::from)
+    } else {
+        // v0.7.5, no FreeBank node: the words sealed for this network are the wallet's.
+        seed::sealed_key_id_hex(&mgr.app_dir)
     };
     let mut r = Record::load(&mgr.app_dir);
     if id.is_none() || r.seed_id != id {

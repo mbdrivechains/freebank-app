@@ -157,21 +157,42 @@ export const NOTICE_F: { title: string; text: string[]; list?: string[]; after?:
   },
 ];
 
-const KEY = "freebank.notice";
+/** L5e (legal, 11-09, USER_WARNINGS §2.5): switching to eCash's mainnet while FreeBank isn't open there (v0.7.5). */
+export const L5E_ECASH_ONLY =
+  "You're switching to eCash's mainnet, where coins are real ECX. Only the eCash wallet works here: FreeBank isn't " +
+  "open on eCash's mainnet yet. The eCash node you name sees your wallet's addresses and balances. FreeBank's " +
+  "developers run no house, changer or custody.";
 
-/** Whether this device has agreed to the current first-run notice. Storage that can't be read counts as not yet. */
-export function noticeAgreed(): boolean {
+/** What a network where FreeBank isn't open shows first (legal): L5e, then L1, then N's first and last paragraphs (the
+ *  houses paragraph describes a chain that isn't open there). */
+export function noticeEcashOnly(): string[] {
+  const n = noticeN(false);
+  return [L5E_ECASH_ONLY, L1_KEYS, n[0], n[2]];
+}
+
+/** Bumped when the eCash-only notice changes. */
+export const NOTICE_ECASH_VERSION = "2026-11-09";
+
+export type NoticeKind = "standard" | "ecash";
+
+const KEY = "freebank.notice";
+const keyOf = (k: NoticeKind) => (k === "ecash" ? `${KEY}.ecash` : KEY);
+const versionOf = (k: NoticeKind) => (k === "ecash" ? NOTICE_ECASH_VERSION : NOTICE_VERSION);
+
+/** Whether this device has agreed to the current first-run notice (or the eCash-only one). Storage that can't be read
+ *  counts as not yet. */
+export function noticeAgreed(kind: NoticeKind = "standard"): boolean {
   try {
-    return localStorage.getItem(KEY) === NOTICE_VERSION;
+    return localStorage.getItem(keyOf(kind)) === versionOf(kind);
   } catch {
     return false;
   }
 }
 
 /** Records "I understand" on this device only; nothing is sent anywhere. */
-export function agreeNotice(): void {
+export function agreeNotice(kind: NoticeKind = "standard"): void {
   try {
-    localStorage.setItem(KEY, NOTICE_VERSION);
+    localStorage.setItem(keyOf(kind), versionOf(kind));
   } catch {
     /* shown again next start */
   }

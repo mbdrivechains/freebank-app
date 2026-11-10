@@ -616,3 +616,48 @@ async fn nothing_to_move() {
     assert_eq!(move_plan(&mut c).await.unwrap(), ops::MovePlan { coins: 0, total_sats: 0, later: 0, has_notes: false });
     assert!(move_coins(&mut c).await.unwrap_err().starts_with("Nothing to move"));
 }
+
+/// v0.7.5, eCash's mainnet while FreeBank isn't open: the wallet is sealed with no FreeBank node, under the key id of
+/// the words' FreeBank HD seed (so FreeBank's wallet takes the same words when it opens), once, and only there.
+#[tokio::test]
+async fn an_ecash_only_wallet_is_sealed_without_a_node() {
+    use super::commands::ecash_only_wallet_in;
+    let d = temp("ecash-only");
+    std::fs::create_dir_all(&d).unwrap();
+    // Not on a network where FreeBank is open.
+    let e = ecash_only_wallet_in(&d, &crate::network::EASYNET, "pass one".into(), None, None, None).await.unwrap_err();
+    assert!(e.contains("FreeBank is open"), "{e}");
+    // New words: sealed, and held once for the words screen.
+    ecash_only_wallet_in(&d, &crate::network::MAINNET, "pass one".into(), None, None, None).await.unwrap();
+    let file = crate::seed::read_file(&crate::seed::seed_path(&d)).unwrap().unwrap();
+    let (entropy, id) = crate::seed::open(&file, "pass one").unwrap();
+    assert_eq!(id, crate::seed::key_id(&*crate::seed::freebank_hd_seed(&entropy).unwrap()).unwrap());
+    let shown = super::job::take_words().expect("the new words, once");
+    assert_eq!(shown.to_vec(), crate::seed::words(&entropy).to_vec());
+    assert!(super::job::take_words().is_none());
+    // Only once: a second wallet here is refused, and the first stays.
+    let e = ecash_only_wallet_in(&d, &crate::network::MAINNET, "pass two".into(), None, None, None).await.unwrap_err();
+    assert!(e.contains("already has a wallet"), "{e}");
+    assert!(crate::seed::open(&crate::seed::read_file(&crate::seed::seed_path(&d)).unwrap().unwrap(), "pass one").is_ok());
+    // Typed words: those words, recorded as confirmed.
+    let d2 = temp("ecash-only-typed");
+    std::fs::create_dir_all(&d2).unwrap();
+    let words = crate::seed::words(&entropy).join(" ");
+    ecash_only_wallet_in(&d2, &crate::network::MAINNET, "pass three".into(), Some(words), None, None).await.unwrap();
+    let (e2, _) = crate::seed::open(&crate::seed::read_file(&crate::seed::seed_path(&d2)).unwrap().unwrap(), "pass three").unwrap();
+    assert_eq!(*e2, *entropy);
+    assert!(super::job::take_words().is_none(), "typed words aren't shown back");
+    // A seed file that can't be read (damaged) isn't a dead end: new words go in, and the file is kept aside.
+    let d3 = temp("ecash-only-damaged");
+    std::fs::create_dir_all(d3.join("wallet")).unwrap();
+    std::fs::write(crate::seed::seed_path(&d3), b"not a seed file").unwrap();
+    ecash_only_wallet_in(&d3, &crate::network::MAINNET, "pass four".into(), None, None, None).await.unwrap();
+    assert!(crate::seed::open(&crate::seed::read_file(&crate::seed::seed_path(&d3)).unwrap().unwrap(), "pass four").is_ok());
+    let kept = std::fs::read_dir(d3.join("wallet")).unwrap().filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("seed.enc.old-")).count();
+    assert_eq!(kept, 1, "the damaged file is kept aside, not deleted");
+    let _ = super::job::take_words();
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+    let _ = std::fs::remove_dir_all(&d3);
+}

@@ -77,6 +77,8 @@
 
   $: testnet = ex?.chain === "test";
   $: regtest = ex?.chain === "regtest";
+  // A node on another computer: Sparrow can't read its cookie or data folder, so it needs a login the node accepts.
+  $: remote = !!ex?.node && !ex.node_dir && !/^(127\.|localhost[:]|\[::1\])/.test(ex.node);
   $: rows = ex
     ? [
         { label: "Master fingerprint", value: ex.fingerprint },
@@ -117,7 +119,9 @@
       </li>
       <li>
         File › Settings › Server: <em>Bitcoin Core</em>{#if ex.node}, URL and port <span class="mono">{ex.node}</span>{/if}.
-        {#if testnet || regtest}
+        {#if remote}
+          Authentication <em>User / Pass</em>, with a login that node accepts.
+        {:else if testnet || regtest}
           Sparrow looks for the login in a folder of its own, so choose <em>User / Pass</em>, with the two parts of the
           <span class="mono">.cookie</span> file in {#if ex.node_dir}<span class="mono">{ex.node_dir}</span>{:else}the eCash node's data folder{/if}
           (user:password; it changes when the node restarts).

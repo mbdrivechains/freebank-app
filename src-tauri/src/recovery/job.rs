@@ -126,6 +126,11 @@ pub fn start(mgr: Arc<NodeManager>, guard: RelockState, job: Job) -> Result<(), 
     Ok(())
 }
 
+/// Hold a new wallet's words for `wallet_setup_words` to show once (v0.7.5: the eCash-only wallet, made without a job).
+pub(crate) fn hold_words(words: Zeroizing<Vec<String>>) {
+    *NEW_WORDS.lock().unwrap() = Some((Instant::now(), words));
+}
+
 fn finish(report: &Report, r: Result<Option<Zeroizing<Vec<String>>>, String>) {
     let words_ready = matches!(r, Ok(Some(_)));
     if let Ok(Some(words)) = &r {

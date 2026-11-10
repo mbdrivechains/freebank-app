@@ -111,6 +111,9 @@ pub struct Network {
     pub l1: &'static str,
     /// Offered by the network switch (mainnet: from fork day).
     pub ready: bool,
+    /// FreeBank's own chain runs on this network. False: only the eCash wallet works (v0.7.5, eCash's mainnet while FreeBank
+    /// isn't open there): the app never installs or starts freebankd there, and its FreeBank screens say it isn't open.
+    pub freebank_on: bool,
     /// The network has closed, since when (in words): it is no longer offered, and an app still on it says so (v0.6.8:
     /// beta, closed 2026-10-26).
     pub closed: Option<&'static str>,
@@ -195,6 +198,7 @@ pub static BETA: Network = Network {
     name: "Beta",
     l1: "eCash beta",
     ready: true,
+    freebank_on: true,
     closed: Some("26 October 2026"),
     line: Line::V02,
     asset: "freebank",
@@ -332,6 +336,7 @@ pub static EASYNET: Network = Network {
     name: "easynet",
     l1: "easynet",
     ready: true,
+    freebank_on: true,
     closed: None,
     line: Line::V02ThenV1,
     asset: "freebank-easynet",
@@ -371,7 +376,9 @@ pub static MAINNET: Network = Network {
     id: "mainnet",
     name: "Mainnet",
     l1: "eCash",
-    ready: false,
+    // v0.7.5: offered, with only the eCash wallet working while FreeBank isn't open on eCash's mainnet.
+    ready: true,
+    freebank_on: false,
     closed: None,
     line: Line::V1,
     asset: "freebank",
@@ -379,8 +386,10 @@ pub static MAINNET: Network = Network {
     datadir: mainnet_datadir,
     rpc_port: 8454,
     p2p_port: 8455,
-    pin_height: 0,
-    pin_hash: "",
+    // eCash mainnet's block the FreeBank seed pins (freebankd 11-09, FB-14): the node has no built-in pin and refuses to
+    // start without one, and the app checks an eCash node it's given against it.
+    pin_height: 973_728,
+    pin_hash: "0000000000000001441a6a4ae49d679d4a30581db3e3eaeeb2fba5da6dc146ed",
     restarted: None,
     fb_magic: None,
     min_tag: None,
@@ -574,10 +583,14 @@ pub struct Info {
     pub faucet: bool,
     /// The app can install this network's eCash node and enforcer itself.
     pub stack: bool,
+    /// FreeBank's own chain runs here; false: the eCash wallet only (v0.7.5).
+    pub freebank_on: bool,
     /// This network has closed, since when (in words): the screens say so and offer easynet.
     pub closed: Option<&'static str>,
     /// Every network, for the switch: (id, name, offered). A closed one only while the app is on it, not offered.
     pub all: Vec<(&'static str, &'static str, bool)>,
+    /// The networks where FreeBank isn't open, only the eCash wallet (v0.7.5): the switch says so.
+    pub ecash_only: Vec<&'static str>,
 }
 
 pub fn info() -> Info {
@@ -592,8 +605,10 @@ fn info_for(n: &'static Network) -> Info {
         explorer: n.explorer,
         faucet: n.faucet.is_some(),
         stack: n.stack.is_some(),
+        freebank_on: n.freebank_on,
         closed: n.closed,
         all: ALL.iter().filter(|x| x.closed.is_none() || x.id == n.id).map(|x| (x.id, x.name, x.ready && x.closed.is_none())).collect(),
+        ecash_only: ALL.iter().filter(|x| !x.freebank_on).map(|x| x.id).collect(),
     }
 }
 
@@ -689,9 +704,11 @@ mod tests {
         assert_eq!(chosen(&d).id, "beta", "an app on beta opens there and says it has closed");
         choose(&d, &EASYNET).unwrap();
         assert_eq!(chosen(&d).id, "easynet");
-        assert!(choose(&d, &MAINNET).is_err(), "mainnet isn't offered before the fork");
-        std::fs::write(d.join("network.json"), r#"{"network":"mainnet"}"#).unwrap();
-        assert_eq!(chosen(&d).id, "easynet", "a network not ready counts as the default");
+        // v0.7.5: mainnet is offered, with only the eCash wallet working until FreeBank opens there.
+        choose(&d, &MAINNET).unwrap();
+        assert_eq!(chosen(&d).id, "mainnet");
+        assert!(!chosen(&d).freebank_on, "FreeBank isn't open on eCash's mainnet yet");
+        choose(&d, &EASYNET).unwrap();
         std::fs::write(d.join("network.json"), r#"{"network":"nowhere"}"#).unwrap();
         assert_eq!(chosen(&d).id, "easynet");
         // Someone who has run the app on beta stays there, with nothing chosen, as before v0.6.2.
@@ -707,7 +724,7 @@ mod tests {
     fn beta_has_closed() {
         let on_beta = info_for(&BETA);
         assert_eq!(on_beta.closed, Some("26 October 2026"));
-        assert_eq!(on_beta.all, vec![("beta", "Beta", false), ("easynet", "easynet", true), ("mainnet", "Mainnet", false)]);
+        assert_eq!(on_beta.all, vec![("beta", "Beta", false), ("easynet", "easynet", true), ("mainnet", "Mainnet", true)]);
         let on_easynet = info_for(&EASYNET);
         assert_eq!(on_easynet.closed, None);
         assert!(on_easynet.all.iter().all(|(id, ..)| *id != "beta"), "the switch no longer offers beta");

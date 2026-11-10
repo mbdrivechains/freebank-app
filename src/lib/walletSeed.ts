@@ -190,6 +190,10 @@ export const walletSeed = {
     tauriInvoke("wallet_setup_start", { passphrase, words, fresh }) as Promise<void>,
   /** v0.5.0: the other networks on this computer whose wallet has recovery words here: [id, name]. */
   wordsElsewhere: () => tauriInvoke("wallet_words_elsewhere") as Promise<[string, string][]>,
+  /** v0.7.5, a network where FreeBank isn't open: the wallet sealed with no FreeBank node (new, typed or another
+   *  network's words). */
+  ecashOnly: (passphrase: string, words: string | null, from: string | null, fromPassphrase: string | null) =>
+    tauriInvoke("ecash_only_wallet", { passphrase, words, from, fromPassphrase }) as Promise<void>,
   /** v0.5.0: this wallet set up with another network's words, opened with that wallet's passphrase. */
   setupFromNetwork: (passphrase: string, from: string, fromPassphrase: string) =>
     tauriInvoke("wallet_setup_from_network", { passphrase, from, fromPassphrase }) as Promise<void>,

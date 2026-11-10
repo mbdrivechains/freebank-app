@@ -9,6 +9,8 @@
   //   restore-file   Settings: a checked backup file into the wallet's place
   // The long parts run in the app (src-tauri/src/recovery/job.rs), which may restart the node; this
   // follows their progress. Passphrases and words go to the app and are dropped here once used.
+  import { get } from "svelte/store";
+  import { network } from "../lib/network";
   import { L1_KEYS } from "../lib/notice";
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import Notice from "./Notice.svelte";
@@ -275,12 +277,27 @@
   async function begin() {
     error = "";
     busy = true;
+    // v0.7.5: where FreeBank isn't open there's no FreeBank wallet to set up: the words are sealed at once.
+    const sealedOnly = !get(network).freebank_on;
     try {
-      if (from) await walletSeed.setupFromNetwork(pass, from[0], fromPass);
+      // Another network's words win over anything typed earlier on this screen, as in the usual setup (review, 11-09).
+      if (sealedOnly) await walletSeed.ecashOnly(pass, from ? null : restoring ? typed : null, from ? from[0] : null, from ? fromPass : null);
+      else if (from) await walletSeed.setupFromNetwork(pass, from[0], fromPass);
       else await walletSeed.setupStart(pass, restoring ? typed : null, fresh);
     } catch (e) {
       error = nice(e);
       busy = false;
+      return;
+    }
+    if (sealedOnly) {
+      const kind = restoring || from ? "restore-words" : "new";
+      pass = "";
+      fromPass = "";
+      typed = "";
+      check = null;
+      busy = false;
+      await finished({ running: false, done: true, kind, stages: [], stage: "done", note: null, error: null,
+        waiting_for_node: false, moved_aside: null, words_ready: kind === "new", scan_at: null, scan_to: null });
       return;
     }
     // They went to the app; nothing keeps them here.
@@ -476,7 +493,8 @@
 
   async function toDone() {
     step = "done";
-    if (prot?.protected && !prot.new_wallet) loadPlan();
+    // Moving coins onto the words is FreeBank's wallet's: none where FreeBank isn't open.
+    if (prot?.protected && !prot.new_wallet && get(network).freebank_on) loadPlan();
   }
 
   async function loadPlan() {
@@ -807,7 +825,8 @@
         </ul>
       {/if}
 
-      {#if prot?.protected && request.kind !== "confirm-words"}
+      <!-- A backup is of FreeBank's wallet file: none where FreeBank isn't open (v0.7.5); the words are the whole wallet. -->
+      {#if prot?.protected && request.kind !== "confirm-words" && $network.freebank_on}
         <div class="wf-box">
           <strong>Back up your wallet</strong>
           <span>

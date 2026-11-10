@@ -62,6 +62,11 @@ export interface NoteHolding {
   demandable: boolean;
   house_tier?: number;
   house_minted_units?: number;
+  // The formal-demand view (node B3): units under a pre-authorised demand, those already protested, and the height of
+  // the oldest pre-authorised demand (its payment window counts from it).
+  preauth_units?: number;
+  protested_units?: number;
+  oldest_demand_height?: number;
 }
 
 export interface House {
@@ -433,6 +438,20 @@ export const api = {
   /** Lodge a demand against a suspended house (option clause) */
   async demandNote(houseId: number, units: number, fee = 0.001): Promise<string> {
     const r = (await fbCall('demandnote', [houseId, units, fee])) as { txid: string };
+    return r.txid;
+  },
+
+  /** Protest this wallet's oldest demand on house `houseId` whose payment window lapsed unpaid: the house's cure
+   *  starts (7 days to pay or suspend payment, else it fails; one cure per 180 days). */
+  async protestNote(houseId: number, fee = 0.001): Promise<string> {
+    const r = (await fbCall('protestnote', [houseId, fee])) as { txid: string };
+    return r.txid;
+  },
+
+  /** A failed house: burn `units` of its notes (whole coins) for their share of what the chain seized, mainly its
+   *  escrow, valued at its highest bid of the 90 days before it failed and scaled down if the escrow is short. */
+  async claimNote(houseId: number, units: number, fee = 0.001): Promise<string> {
+    const r = (await fbCall('claimnote', [houseId, units, fee])) as { txid: string };
     return r.txid;
   },
 

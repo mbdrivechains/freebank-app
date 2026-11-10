@@ -12,6 +12,7 @@
   } from "./lib/brand";
   import BalanceCard from "./components/BalanceCard.svelte";
   import Setup from "./components/Setup.svelte";
+  import EcashOnly from "./components/EcashOnly.svelte";
   import NodeStatus from "./components/NodeStatus.svelte";
   import NodeSettings from "./components/NodeSettings.svelte";
   import PathText from "./components/PathText.svelte";
@@ -64,6 +65,8 @@
 
   // Detect PWA/browser mode
   const isPWA = api.isPWA();
+  // v0.7.5: a network where FreeBank isn't open shows only the eCash wallet (EcashOnly), with no FreeBank node.
+  $: ecashOnly = !$network.freebank_on && !isPWA;
   let warningDismissed = false;
 
   // State
@@ -344,7 +347,7 @@
 <main>
   {#if !isPWA}<PhoneAlerts />{/if}
   {#if !isPWA}<QuitNotice />{/if}
-  {#if !isPWA}<WalletGate {connected} {localNode} />{/if}
+  {#if !isPWA}<WalletGate connected={connected || ecashOnly} localNode={localNode || ecashOnly} />{/if}
   {#if $unlockRequest}
     <UnlockPrompt
       what={$unlockRequest.what}
@@ -364,7 +367,7 @@
 
   <header>
     <h1 title={APP_NAME}><span class="brand-mark" aria-hidden="true">☉</span><span class="app-name">{APP_NAME}</span></h1>
-    {#if connected || onSetup}
+    {#if (connected || onSetup) && !ecashOnly}
       <div class="head-right">
         {#if connected && localNode && $walletList.length > 1}
           <select class="wallet-pick" value={activeWallet} on:change={chooseWallet} aria-label="Wallet" data-testid="wallet-pick">
@@ -397,7 +400,7 @@
     {/if}
   </header>
 
-  {#if error && !connected}
+  {#if error && !connected && !ecashOnly}
     <Notice kind="error" message={error} on:dismiss={() => (error = "")} />
   {/if}
 
@@ -476,6 +479,9 @@
       </p>
       <button class="wide" on:click={() => (stackGone = null)}>Done</button>
     </div>
+  {:else if ecashOnly}
+    <!-- v0.7.5: FreeBank isn't open on this network (eCash's mainnet for now): the eCash wallet alone, no FreeBank node. -->
+    <EcashOnly />
   {:else if !connected && !isPWA && !manualConnect}
     <Setup
       bind:settingsOpen={setupSettings}

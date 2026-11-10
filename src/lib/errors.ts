@@ -48,6 +48,37 @@ export function nice(e: unknown): string {
   if (/op for this house is pending/i.test(m)) {
     return "Another action on this house is waiting for a block. Try again after the next block (about ten minutes). Nothing was sent.";
   }
+  // The node's own refusal of a credit op the mempool won't take (FreeBank's release after v1.2.1 returns
+  // "Refused: <reason>" and frees the coins at once): usually another op on the same house, note or bill is waiting.
+  {
+    const r = /Refused:\s*(house-op-in-mempool|house-slot-op-in-mempool|bill-op-in-mempool|note-op-in-mempool|swap-op-pending)/i.exec(m);
+    if (r) {
+      const what = /bill/.test(r[1]) ? "this bill" : /note/.test(r[1]) ? "these notes" : /swap/.test(r[1]) ? "this swap" : "this house";
+      return `Another action on ${what} is waiting for a block. Try again after the next block (about ten minutes). Nothing was sent.`;
+    }
+  }
+  // v0.7.5: protests and claims, the node's refusals in plain words.
+  if (/No lapsed unprotested pre-auth demand to protest/i.test(m)) {
+    return "There's no unpaid demand on this house to protest yet: a demand can be protested only once its window (about a week) has passed without payment. Nothing was sent.";
+  }
+  if (/option clause already governs this grievance/i.test(m)) {
+    return "This house has suspended payment: your demand waits in its queue and earns interest until paid, so there's nothing to protest.";
+  }
+  if (/use the claim path/i.test(m)) {
+    return "This house has failed: use Claim on its notes instead.";
+  }
+  if (/House is not insolvent/i.test(m)) {
+    return "This house hasn't failed, so there's nothing to claim: redeem or demand its notes instead.";
+  }
+  if (/claim window has ended/i.test(m)) {
+    return "Claims on this house closed 2 years after it failed.";
+  }
+  if (/still collecting its loan book/i.test(m)) {
+    return "This failed house is still collecting its loans; claims open once that's done. Nothing was sent.";
+  }
+  if (/escrow pot is empty|Escrow pot no longer covers/i.test(m)) {
+    return "There's nothing left in this house's escrow to pay claims from.";
+  }
   // Gold B (node v1.2.0): each house posts its own rate; a payout or an issue needs one in effect.
   if (/has no rate in effect/i.test(m)) {
     return "This house has no rate posted right now, so it can't pay out in sECX or issue notes until it posts one. Nothing was done.";

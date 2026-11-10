@@ -15,10 +15,14 @@ export interface NetworkInfo {
   faucet: boolean;
   /** The app can install this network's eCash node and enforcer itself. */
   stack: boolean;
+  /** FreeBank's own chain runs here; false: only the eCash wallet works (v0.7.5: FreeBank isn't open on eCash's mainnet yet). */
+  freebank_on: boolean;
   /** The network has closed, since when ("26 October 2026"; v0.6.8: beta): the screens say so and offer easynet. */
   closed: string | null;
   /** Every network: [id, name, offered]. A closed one is listed only while the app is on it. */
   all: [string, string, boolean][];
+  /** The networks where FreeBank isn't open, only the eCash wallet (v0.7.5). */
+  ecash_only?: string[];
 }
 
 /** Beta, until the app says otherwise (and in the browser build, which has no Rust side). */
@@ -29,6 +33,7 @@ export const BETA: NetworkInfo = {
   explorer: "https://explorer.ecxfreebank.com",
   faucet: false,
   stack: false,
+  freebank_on: true,
   closed: null,
   all: [["beta", "Beta", true]],
 };

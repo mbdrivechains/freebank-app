@@ -219,6 +219,18 @@ pub(crate) fn protection_from(info: &Value, app_dir: &Path, node_is_ours: bool) 
     }
 }
 
+/// v0.7.5, a network where FreeBank isn't open: no FreeBank wallet, so the sealed words are the wallet. With a seed file
+/// it reads as a wallet with a passphrase whose seed is those words (locked; the passphrase opens the words to sign);
+/// without one, as a new wallet with neither, so the first-run flow opens.
+pub(crate) fn protection_sealed_only(app_dir: &Path) -> Protection {
+    let id = seed::sealed_key_id_hex(app_dir);
+    let info = match &id {
+        Some(hd) => serde_json::json!({ "hdmasterkeyid": hd, "unlocked_until": 0, "txcount": 1 }),
+        None => serde_json::json!({ "txcount": 0 }),
+    };
+    protection_from(&info, app_dir, false)
+}
+
 /// What a paired phone hears when it asks for an address while addresses are held.
 pub const WALLET_NOT_SET_UP: &str = "Your desktop wallet isn't set up yet. Finish setting it up on your desktop.";
 
@@ -232,6 +244,9 @@ pub fn addresses_held(info: &Value, app_dir: &Path) -> bool {
 }
 
 pub(crate) async fn protection(c: &mut FreeBankClient, mgr: &NodeManager) -> Result<Protection, String> {
+    if !crate::network::current().freebank_on {
+        return Ok(protection_sealed_only(&mgr.app_dir));
+    }
     let info = c.call_ui("getwalletinfo", vec![]).await?;
     Ok(protection_from(&info, &mgr.app_dir, process::child_alive(mgr).await))
 }

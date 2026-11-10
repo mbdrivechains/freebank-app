@@ -3198,6 +3198,9 @@ pub const CREDIT_PAYMENTS: &[&str] = &[
     "transfernote",
     "redeemnote",
     "demandnote",
+    // v0.7.5: a protest or a claim pays only its fee (the notes are re-issued unchanged, or burned for sECX).
+    "protestnote",
+    "claimnote",
     "registerhouse",
     "attesthouse",
     "swapnote",
@@ -3303,8 +3306,8 @@ pub fn credit_payment_with(method: &str, p: &[Value], f: &CreditFacts) -> Option
     // fee, address), registerhouse's (tier, threshold, classid, denommg, pledges, fee, type; node v0.2.19) and
     // retirebill's (id, fee, notes; node v0.2.27).
     let fee = match method {
-        "transfernote" | "mintnote" | "demandnote" => p.get(2),
-        "retirebill" => p.get(1),
+        "transfernote" | "mintnote" | "demandnote" | "claimnote" => p.get(2),
+        "retirebill" | "protestnote" => p.get(1),
         "registerhouse" | "issuebill" => p.get(5),
         _ => p.last(),
     };
@@ -3339,6 +3342,10 @@ pub fn credit_payment_with(method: &str, p: &[Value], f: &CreditFacts) -> Option
             Some(to) => (units(1), format!("Mint {} sECX of house #{}'s notes to {to}", e(units(1)), id(0))),
         },
         "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} sECX of house #{}'s notes", e(units(1)), id(0))),
+        // v0.7.5: a protest re-issues the demanded notes unchanged; a claim burns notes for their share of the escrow.
+        // Only the fee leaves the wallet.
+        "protestnote" => (Some(0), format!("Protest the unpaid demand on house #{}'s notes", id(0))),
+        "claimnote" => (Some(0), format!("Claim {} sECX of house #{}'s notes from its escrow", e(units(1)), id(0))),
         // A demand with a payout address (pre-authorised): the discharge, the notes' worth, goes to that address.
         "demandnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
             None => (Some(NOTE_CARRIER_SATS), format!("Demand {} sECX of house #{}'s notes", e(units(1)), id(0))),
@@ -3390,7 +3397,8 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
     };
     let fee = match method {
         "transfernote" | "mintnote" => p.get(2).and_then(|v| store::json_to_sats(v).ok()),
-        "demandnote" => fee_at(2),
+        "demandnote" | "claimnote" => fee_at(2),
+        "protestnote" => fee_at(1),
         "swaptoken" | "sendissued" | "posthouserate" => fee_at(3),
         "addtokenliquidity" | "removetokenliquidity" | "sethouseratekey" => fee_at(2),
         "retirebill" => p.get(1).and_then(|v| store::json_to_sats(v).ok()),
@@ -3412,6 +3420,8 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
             Some(to) => (at_price(units(1)), format!("Mint {} g of house #{}'s notes to {to}", g(units(1)), id(0))),
         },
         "redeemnote" => (Some(NOTE_CARRIER_SATS), format!("Redeem {} g of house #{}'s notes", g(units(1)), id(0))),
+        "protestnote" => (Some(0), format!("Protest the unpaid demand on house #{}'s notes", id(0))),
+        "claimnote" => (Some(0), format!("Claim {} g of house #{}'s notes from its escrow", g(units(1)), id(0))),
         "demandnote" => match p.get(3).and_then(Value::as_str).filter(|a| !a.is_empty()) {
             None => (Some(NOTE_CARRIER_SATS), format!("Demand {} g of house #{}'s notes", g(units(1)), id(0))),
             Some(to) => (

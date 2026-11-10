@@ -129,6 +129,28 @@ pub fn newest_release(list: &serde_json::Value, net: &crate::network::Network, t
         .ok_or_else(|| format!("GitHub lists no FreeBank release for {} yet.", net.name))
 }
 
+/// GitHub's download servers sometimes answer a release file with a server error (502, 503, 504) or drop the
+/// connection, and the next try works (a Mac's first run of v0.7.4 saw SHA256SUMS give 504s on and off). A
+/// request is tried up to this many times, waiting a little longer each time.
+const TRIES: u32 = 4;
+
+/// `get` once, again after a server error or a dropped connection (not after a 4xx: that answer stands).
+async fn get_retrying(http: &reqwest::Client, url: &str, timeout: Duration) -> Result<reqwest::Response, reqwest::Error> {
+    let mut last = None;
+    for attempt in 0..TRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+        }
+        match http.get(url).timeout(timeout).send().await {
+            Ok(r) if r.status().is_server_error() && attempt + 1 < TRIES => last = r.error_for_status().err(),
+            Ok(r) => return Ok(r),
+            Err(e) if (e.is_connect() || e.is_timeout() || e.is_request()) && attempt + 1 < TRIES => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("at least one try"))
+}
+
 /// Stream `url` to `dest`, reporting bytes as they arrive.
 pub(crate) async fn download(
     http: &reqwest::Client,
@@ -136,10 +158,7 @@ pub(crate) async fn download(
     dest: &Path,
     mut progress: impl FnMut(u64, Option<u64>),
 ) -> Result<(), String> {
-    let mut resp = http
-        .get(url)
-        .timeout(Duration::from_secs(900))
-        .send()
+    let mut resp = get_retrying(http, url, Duration::from_secs(900))
         .await
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("Download failed: {} ({})", url, e))?;
@@ -165,12 +184,7 @@ pub(crate) const SMALL_FILE_MAX: u64 = 64 * 1024;
 /// such file.
 pub(crate) async fn download_bytes(http: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>, String> {
     let failed = |e: reqwest::Error| format!("Download failed: {} ({})", url, e);
-    let resp = http
-        .get(url)
-        .timeout(Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(failed)?;
+    let resp = get_retrying(http, url, Duration::from_secs(60)).await.map_err(failed)?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -727,6 +741,41 @@ mod tests {
             }
         });
         (url, asked)
+    }
+
+    /// GitHub's servers answering 504 on and off (11-09): the small-file fetch tries again and gets the file; a 404 still
+    /// means the release has no such file, at once.
+    #[tokio::test]
+    async fn a_release_file_is_fetched_again_after_server_errors() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let mut n = 0;
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { return };
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut first = String::new();
+                let _ = reader.read_line(&mut first);
+                let mut header = String::new();
+                while reader.read_line(&mut header).map(|k| k > 2).unwrap_or(false) {
+                    header.clear();
+                }
+                n += 1;
+                let (status, body): (&str, &[u8]) = if first.contains("/missing") {
+                    ("404 Not Found", b"")
+                } else if n <= 2 {
+                    ("504 Gateway Time-out", b"")
+                } else {
+                    ("200 OK", b"sums")
+                };
+                let head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = conn.write_all(head.as_bytes()).and_then(|_| conn.write_all(body));
+            }
+        });
+        let http = reqwest::Client::new();
+        assert_eq!(download_bytes(&http, &format!("{url}/SHA256SUMS")).await.unwrap(), Some(b"sums".to_vec()));
+        assert_eq!(download_bytes(&http, &format!("{url}/missing")).await.unwrap(), None);
     }
 
     /// fetch_checked against a release with the given SHA256SUMS.sig (None: the release has none)

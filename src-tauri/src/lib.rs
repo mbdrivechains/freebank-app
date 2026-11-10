@@ -291,6 +291,7 @@ pub fn run() {
             recovery::commands::wallet_setup_start,
             recovery::commands::wallet_words_elsewhere,
             recovery::commands::wallet_setup_from_network,
+            recovery::commands::ecash_only_wallet,
             recovery::commands::wallet_setup_progress,
             recovery::commands::wallet_setup_words,
             recovery::commands::wallet_words_confirmed,

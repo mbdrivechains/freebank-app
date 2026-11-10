@@ -3,8 +3,10 @@
   // a setting no screen showed). Empty fields mean the defaults: the address Setup found, and the login looked for as
   // BitWindow does (the node's cookie or bitcoin.conf, then BitWindow's). A node on another computer needs its user and
   // password: the password is kept in a file only this user can read.
-  import { onMount } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
   import { ecashLoginGet, ecashLoginSet, type EcashLogin } from "../lib/ecash";
+  import { network } from "../lib/network";
+  const dispatch = createEventDispatcher<{ saved: void }>();
 
   let login: EcashLogin | null = null;
   let rpc = "";
@@ -37,6 +39,7 @@
       login = await ecashLoginGet();
       ok = !st.problem;
       result = st.problem ?? (st.state === "ready" ? "Connected; your eCash wallets are there." : "Connected.");
+      if (ok) dispatch("saved");
     } catch (e) {
       ok = false;
       result = String(e).replace(/^Error: /, "");
@@ -48,7 +51,14 @@
 <div class="card" data-testid="ecash-login">
   <h3>eCash node for the eCash tab</h3>
   <p class="muted small">
-    Leave these empty for the eCash node Setup found{login ? ` (${login.rpc})` : ""}, logged into as BitWindow does.
+    <!-- The address in brackets is the default only while no address is saved. Where FreeBank isn't open there's no
+         Setup, so the text follows the node form's own hint. -->
+    {#if $network.freebank_on}
+      Leave these empty for the eCash node Setup found{login && !login.l1_rpc ? ` (${login.rpc})` : ""}, logged into as
+      BitWindow does.
+    {:else}
+      Leave these empty for an eCash node on this computer{login && !login.l1_rpc ? ` (${login.rpc})` : ""}.
+    {/if}
   </p>
   <p class="muted small" data-testid="ecash-login-remote">
     For a node on another computer: its address, and a user and password it accepts: the <code>rpcuser=</code> and

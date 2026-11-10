@@ -3,26 +3,30 @@
   // coins have no value. Shown over everything until "I understand", once per device and notice version; the answer
   // stays on this device (lib/notice.ts) and nothing is sent. The full notice stays in Settings › Help › About and legal.
   import { network } from "../lib/network";
-  import { L3_TESTNET, agreeNotice, noticeAgreed, noticeN } from "../lib/notice";
+  import { L3_TESTNET, agreeNotice, noticeAgreed, noticeEcashOnly, noticeN, type NoticeKind } from "../lib/notice";
 
-  let open = !noticeAgreed();
+  // v0.7.5: where FreeBank isn't open (eCash's mainnet for now), legal's eCash-only notice instead, agreed to on its own.
+  let agreed = false;
+  $: kind = ($network.freebank_on ? "standard" : "ecash") as NoticeKind;
+  $: open = !agreed && !noticeAgreed(kind);
   // easynet's FreeBank counts notes in grams from v1.1.0; mainnet's still counts ECX.
-  $: paras = noticeN($network.id === "easynet");
+  $: paras = kind === "ecash" ? noticeEcashOnly() : noticeN($network.id === "easynet");
   $: test = $network.id !== "mainnet";
+  $: title = kind === "ecash" ? "Before you use eCash's mainnet" : "Before you use FreeBank";
 
   function agree() {
-    agreeNotice();
-    open = false;
+    agreeNotice(kind);
+    agreed = true;
   }
 </script>
 
 {#if open}
   <div class="notice-back">
     <div class="notice-gate card" role="dialog" aria-modal="true" aria-labelledby="notice-title" data-testid="notice-gate">
-      <h3 id="notice-title">Before you use FreeBank</h3>
+      <h3 id="notice-title">{title}</h3>
       {#each paras as p}<p>{p}</p>{/each}
       {#if test}<p class="test-net"><strong>{L3_TESTNET($network.name)}</strong></p>{/if}
-      <p class="muted small">The full notice is in Settings › Help › About and legal. Your answer stays on this computer.</p>
+      <p class="muted small">{kind === "ecash" ? "" : "The full notice is in Settings › Help › About and legal. "}Your answer stays on this computer.</p>
       <div class="row-actions">
         <button on:click={agree} data-testid="notice-agree">I understand</button>
       </div>

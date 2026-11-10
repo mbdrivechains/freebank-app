@@ -3024,6 +3024,13 @@ fn on_a_gram_node_notes_count_at_their_house_rate_and_tokens_at_their_pool() {
     );
     // A token sent on: its worth can't be read, so a phone is asked.
     assert_eq!(pay("sendissued", json!([T, 5_000, TO]), &f).1, Approve::Action { text: format!("Send 5000 units of USDX to {TO}"), sats: None });
+    // v0.7.5: a protest and a claim cost only their fee.
+    assert_eq!(pay("protestnote", json!([1, 0.001]), &f).1, Approve::Action { text: "Protest the unpaid demand on house #1's notes".into(), sats: Some(fee) });
+    assert_eq!(cost("protestnote", json!([1]), &f), fee, "the node's default fee");
+    assert_eq!(
+        pay("claimnote", json!([1, 25_000, 0.001]), &f).1,
+        Approve::Action { text: "Claim 25.000 g of house #1's notes from its escrow".into(), sats: Some(fee) }
+    );
     // Gold B, Run a house: the rate key and a rate cost only their fee (the node's default when left out).
     assert_eq!(pay("sethouseratekey", json!([1]), &f).1, Approve::Action { text: "Set house #1's rate key".into(), sats: Some(fee) });
     assert_eq!(cost("sethouseratekey", json!([1, "", 0.0002]), &f), 20_000);

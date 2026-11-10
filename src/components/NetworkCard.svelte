@@ -90,11 +90,22 @@
 <div class="card" data-testid="network-card">
   <h3>Network</h3>
   <p class="small">
-    FreeBank runs on <strong>{$network.name}</strong>{$network.l1 !== $network.name ? `, alongside ${$network.l1}` : ""}.
+    {#if $network.freebank_on}
+      FreeBank runs on <strong>{$network.name}</strong>{$network.l1 !== $network.name ? `, alongside ${$network.l1}` : ""}.
+    {:else}
+      The app is on <strong>{$network.name}</strong>, where only the eCash wallet works: FreeBank isn't open on eCash's
+      mainnet yet.
+    {/if}
   </p>
   {#if asking}
     <p class="small">
-      FreeBank restarts on {askName}. {$network.name} stays as it is: its wallet, settings and node are kept, and you can
+      {#if ($network.ecash_only ?? []).includes(asking ?? "")}
+        FreeBank restarts on {askName}, where only the eCash wallet works: FreeBank isn't open on eCash's mainnet yet.
+      {:else}
+        FreeBank restarts on {askName}.
+      {/if}
+      <!-- Where FreeBank isn't open the app runs no node of its own, so there's none to keep. -->
+      {$network.name} stays as it is: its wallet{$network.freebank_on ? ", settings and node" : " and settings"} are kept, and you can
       switch back here. {askName} has its own.
     </p>
     <div class="row-actions">

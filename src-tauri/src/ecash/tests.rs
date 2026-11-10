@@ -370,7 +370,38 @@ async fn everything_means_the_balance_less_the_fee() {
     assert_eq!(p[3], json!({"fee_rate": 2.0, "replaceable": true, "subtractFeeFromOutputs": [0]}));
     // With the key paths in, so the payment can be checked here.
     assert_eq!(p[4], json!(true));
+    // Transaction version 2 and PSBT version 0: a Core 32 node otherwise answers with version 2, which can't be read.
+    assert_eq!((&p[5], &p[6]), (&json!(2), &json!(0)));
     assert_eq!(wallet::quote(&conn, "w", "nonsense", Some(1)).await.unwrap_err(), "That isn't an eCash address.");
+}
+
+#[tokio::test]
+async fn an_older_node_is_asked_again_without_the_psbt_version() {
+    // A node before Core 32 doesn't take the last two arguments: it answers with its help text, code -1.
+    let (c, calls) = stub::serve_paths(|_, m, p| match m {
+        "validateaddress" => Ok(json!({"isvalid": true})),
+        "estimatesmartfee" => Ok(json!({"feerate": 0.00001, "blocks": 6})),
+        "walletcreatefundedpsbt" if p.as_array().map_or(0, |a| a.len()) > 5 => Err((-1, "walletcreatefundedpsbt ( [{\"txid\":\"hex\",...},...] ) ...".into())),
+        "walletcreatefundedpsbt" => Ok(json!({"psbt": "cHNidP8=", "fee": 0.0000141, "changepos": 1})),
+        _ => Err((-32601, "Method not found".into())),
+    });
+    let conn = conn_for(&c);
+    let q = wallet::quote(&conn, "w", "bcrt1qexample", Some(50_000)).await.unwrap();
+    assert_eq!((q.sats, q.fee, q.psbt.as_str()), (50_000, 1410, "cHNidP8="));
+    let tries: Vec<Vec<Value>> =
+        params_of(&calls, "/wallet/w walletcreatefundedpsbt").iter().map(|p| p.as_array().unwrap().clone()).collect();
+    assert_eq!(tries.iter().map(|p| p.len()).collect::<Vec<_>>(), vec![7, 5]);
+    assert_eq!(tries[0][..5], tries[1][..]);
+    // Any other refusal isn't retried.
+    let (c, calls) = stub::serve_paths(|_, m, _| match m {
+        "validateaddress" => Ok(json!({"isvalid": true})),
+        "estimatesmartfee" => Ok(json!({"feerate": 0.00001, "blocks": 6})),
+        "walletcreatefundedpsbt" => Err((-4, "Insufficient funds".into())),
+        _ => Err((-32601, "Method not found".into())),
+    });
+    let e = wallet::quote(&conn_for(&c), "w", "bcrt1qexample", Some(50_000)).await.unwrap_err();
+    assert_eq!(e, "There isn't enough ECX for that and its fee.");
+    assert_eq!(params_of(&calls, "/wallet/w walletcreatefundedpsbt").len(), 1);
 }
 
 #[test]

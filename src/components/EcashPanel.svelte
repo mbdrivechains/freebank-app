@@ -94,7 +94,8 @@
     try {
       st = await ecashStatus();
       history = st.state === "ready" ? await ecashHistory() : [];
-      if (st.state === "ready") {
+      // Bids buy FreeBank blocks: none where FreeBank isn't open (v0.7.5, eCash's mainnet for now).
+      if (st.state === "ready" && $network.freebank_on) {
         bmm = await bmmStatus();
         if (!bmmEdited) {
           bidText = ecxInput(bmm.bid);
@@ -337,7 +338,9 @@
           <p class="muted small">
             {st.state === "missing"
               ? "If you changed eCash nodes, set them up again here: they come back from your recovery words, with what they hold."
-              : "FreeBank makes two wallets from your recovery words: your eCash wallet, whose payments need your wallet passphrase, and a small bidding wallet for bidding on FreeBank blocks, which pays bids with nobody there. Your eCash node only watches them; FreeBank signs every payment itself."}
+              : $network.freebank_on
+                ? "FreeBank makes two wallets from your recovery words: your eCash wallet, whose payments need your wallet passphrase, and a small bidding wallet for bidding on FreeBank blocks, which pays bids with nobody there. Your eCash node only watches them; FreeBank signs every payment itself."
+                : "FreeBank makes your eCash wallet from your recovery words. Your eCash node only watches it; FreeBank signs every payment itself, with your wallet passphrase."}
           </p>
           {#if st.earlier}
             <p class="muted small">
@@ -360,10 +363,13 @@
   {/if}
 
   {#if st?.state === "ready" && st.main && st.bids}
-    <nav class="segments" aria-label="eCash">
-      <button class:active={seg === "wallet"} on:click={() => (seg = "wallet")}>Wallet</button>
-      <button class:active={seg === "bidding"} on:click={() => (seg = "bidding")}>Bidding</button>
-    </nav>
+    <!-- Where FreeBank isn't open there's only the wallet: no segments (a lone "Wallet" tab read as a button). -->
+    {#if $network.freebank_on}
+      <nav class="segments" aria-label="eCash">
+        <button class:active={seg === "wallet"} on:click={() => (seg = "wallet")}>Wallet</button>
+        <button class:active={seg === "bidding"} on:click={() => (seg = "bidding")}>Bidding</button>
+      </nav>
+    {/if}
     {#if seg === "wallet"}
     <div class="card" data-testid="ecash-main">
       <h3>eCash wallet</h3>
@@ -386,13 +392,15 @@
       <div class="home-actions">
         <button on:click={receive}>Receive</button>
         <button class:active={mode === "send"} on:click={() => open("send")}>Send</button>
-        <button class:active={mode === "bids"} on:click={() => open("bids")} title="Move ECX into the bidding wallet">To bidding</button>
+        {#if $network.freebank_on}<button class:active={mode === "bids"} on:click={() => open("bids")} title="Move ECX into the bidding wallet">To bidding</button>{/if}
       </div>
 
+      {#if $network.freebank_on}
       <p class="muted small">
         ECX and sECX are worth the same: a deposit turns ECX into sECX one for one, from this wallet (Home › Deposit),
         and a withdrawal turns it back (Home › Withdraw).
       </p>
+      {/if}
       {#if address}
         <div class="ec-receive">
           <QrCode text={address} size={180} />

@@ -37,6 +37,9 @@ pub const RPC_ALLOWED: &[&str] = &[
     "transfernote",
     "redeemnote",
     "demandnote",
+    // v0.7.5: a holder's protest of a demand the house let lapse unpaid, and a claim on a failed house's escrow.
+    "protestnote",
+    "claimnote",
     "listhouses",
     "registerhouse",
     "attesthouse",

@@ -714,6 +714,7 @@ pub async fn bmm_status(mgr: State<'_, Arc<NodeManager>>) -> Result<BmmView, Str
 /// Bidding on or off, the bid and the daily cap (eCash amounts as typed). Turning it on needs the eCash wallets.
 #[tauri::command]
 pub async fn bmm_set(mgr: State<'_, Arc<NodeManager>>, on: bool, bid: String, daily_cap: String) -> Result<BmmView, String> {
+    crate::node::process::freebank_on()?;
     let bid = crate::phone::store::decimal_to_sats(bid.trim()).map_err(|_| "Enter the bid in ECX, with at most 8 decimals.")?;
     let cap =
         crate::phone::store::decimal_to_sats(daily_cap.trim()).map_err(|_| "Enter the daily cap in ECX, with at most 8 decimals.")?;
@@ -826,6 +827,8 @@ pub async fn deposit_prepare(
     amount: Option<String>,
     max: Option<bool>,
 ) -> Result<DepositQuote, String> {
+    // Legal (11-09): nothing is deposited into FreeBank where it isn't open (eCash's mainnet for now).
+    crate::node::process::freebank_on()?;
     let max = max.unwrap_or(false);
     let sats = if max { 0 } else { parse_amount(&amount)?.ok_or("Enter the amount to deposit.")? };
     let (c, r) = ready(&mgr).await?;
@@ -879,6 +882,8 @@ pub async fn deposit_confirm(
     id: String,
     passphrase: String,
 ) -> Result<String, String> {
+    // Legal (11-09): nothing is deposited into FreeBank where it isn't open (eCash's mainnet for now).
+    crate::node::process::freebank_on()?;
     let pass = Zeroizing::new(passphrase);
     if !DEPOSITS.lock().unwrap().get(&id).is_some_and(|p| p.at.elapsed() < QUOTE_LIFE) {
         return Err(EXPIRED.into());
