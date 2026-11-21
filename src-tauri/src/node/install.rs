@@ -5,7 +5,7 @@
 //! same path. (grpcurl isn't fetched any more: freebankd talks to the enforcer without it since v0.2.17.)
 
 use super::{
-    detect, platform, release_key, seed_tag, NodeManager, DATADIR_MARK, RELEASES_URL, RELEASE_DOWNLOAD,
+    detect, platform, release_key, seed_tag, NodeManager, DATADIR_MARK, release_download, releases_url,
 };
 use rand::Rng;
 use serde::Serialize;
@@ -95,7 +95,7 @@ pub fn validate_tag(t: &str) -> Result<(), String> {
 /// too) with an easynet build.
 pub async fn find_release(http: &reqwest::Client) -> Result<String, String> {
     let list: serde_json::Value = http
-        .get(RELEASES_URL)
+        .get(releases_url())
         .header("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(30))
         .send()
@@ -348,7 +348,7 @@ async fn fetch_release(
     }
     let asset = crate::network::asset_name(crate::network::current(), tag, triplet)
         .ok_or_else(|| format!("{} isn't a FreeBank release for {}.", tag, crate::network::current().name))?;
-    let base = format!("{}/{}", RELEASE_DOWNLOAD, tag);
+    let base = format!("{}/{}", release_download(), tag);
     let archive = tmp.join(&asset);
     let got = fetch_checked(&mgr.http, &base, tag, &asset, &archive, p).await?;
 

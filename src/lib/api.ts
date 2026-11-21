@@ -628,7 +628,8 @@ export const api = {
 
   /** Draw + accept a bill. bodyHex = hex of the (encrypted) body; maturityHeight absolute. */
   /** Gold B (node v1.2.0): `refHouse`, required on a gram chain, is the house whose 30-day highest ask the drawee repays
-   *  at in sECX while the bill is privately held; older nodes take no 7th argument. */
+   *  at in sECX (whoever holds the bill from v1.2.3; before, only while privately held); older nodes take no 7th
+   *  argument. */
   async issueBill(bodyHex: string, amount: number, escrow: number, maturityHeight: number, graceBlocks = 1008, fee = 0.001, refHouse?: number): Promise<string> {
     const params: unknown[] = [bodyHex, amount, escrow, maturityHeight, graceBlocks, fee];
     if (refHouse !== undefined) params.push(refHouse);

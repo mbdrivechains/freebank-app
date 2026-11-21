@@ -3057,8 +3057,18 @@ fn on_a_gram_node_notes_count_at_their_house_rate_and_tokens_at_their_pool() {
     );
     let bill = CreditFacts { bill: Some(50_000), ..f.clone() };
     assert_eq!(cost("endorsebill", json!([4, "02ab", 0.001]), &bill), 5_500_000 + fee);
-    assert_eq!(cost("retirebill", json!([4, 0.001]), &bill), 5_500_000 + fee);
-    assert_eq!(cost("retirebill", json!([4, 0.001, 20_000]), &bill), 5_500_000 + fee, "in notes or sECX, the face leaves");
+    // Repaying adds retirebill's margin (SA-W6: 4th argument, default 50 bps), rounded up.
+    assert_eq!(cost("retirebill", json!([4, 0.001]), &bill), 5_527_500 + fee);
+    assert_eq!(cost("retirebill", json!([4, 0.001, 20_000]), &bill), 5_527_500 + fee, "in notes or sECX, the face leaves");
+    assert_eq!(cost("retirebill", json!([4, 0.001, 0, 0]), &bill), 5_500_000 + fee, "margin 0 names the ask exactly");
+    assert_eq!(cost("retirebill", json!([4, 0.001, 0, 9_999]), &bill), 6_875_000 + fee, "the node's ceiling, 2,500");
+    assert_eq!(
+        pay("retirebill", json!([4, 0.001]), &bill).1,
+        Approve::Action {
+            text: "Repay bill #4: 50.000 g, paid in sECX at its reference house's rate plus 0.5%".into(),
+            sats: Some(5_527_500 + fee)
+        }
+    );
     // getbill's face: face_mg on a gram node, amount (8-decimal sECX) on an older one.
     assert_eq!(crate::phone::bill_face(&json!({"face_mg": 50_000, "escrow": 0.001})), Some(50_000));
     assert_eq!(crate::phone::bill_face(&json!({"face_mg": 0.5})), None, "not whole mg: unknown, so a phone is asked");

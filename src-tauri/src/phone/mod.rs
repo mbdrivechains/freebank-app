@@ -3484,7 +3484,14 @@ fn gram_payment(method: &str, p: &[Value], f: &CreditFacts) -> (u64, Approve) {
             (bond, format!("Issue a bill for {} g, bonded with {} sECX", g(face), e(bond)))
         }
         "endorsebill" => (at_price(f.bill), format!("Hand bill #{} ({} g) to another holder", id(0), g(f.bill))),
-        "retirebill" => (at_price(f.bill), format!("Repay bill #{}: {} g, paid in sECX at its house's rate", id(0), g(f.bill))),
+        // The sECX part is paid at the reference house's ask plus retirebill's margin (its 4th argument, 0-2,500 bps,
+        // default 50: SA-W6, node v1.2.2), rounded up; whoever holds the bill from node v1.2.3.
+        "retirebill" => {
+            let margin = units(3).unwrap_or(50).min(2_500);
+            let cost = f.bill.zip(f.price).and_then(|(m, pr)| worth(m, pr.saturating_mul(10_000 + margin), 10_000_000));
+            let plus = if margin > 0 { format!(" plus {}%", margin as f64 / 100.0) } else { String::new() };
+            (cost, format!("Repay bill #{}: {} g, paid in sECX at its reference house's rate{plus}", id(0), g(f.bill)))
+        }
         _ => (None, method.to_string()),
     };
     let cost = out.zip(fee).map_or(u64::MAX, |(o, f)| o.saturating_add(f));

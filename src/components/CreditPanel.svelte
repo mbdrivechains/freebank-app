@@ -856,11 +856,13 @@
   $: rateHouses = houses.filter((h) => cards[h.id]?.ask30);
   /** A bill's face in the node's unit (sats, or mg on a gram node): `face_mg` on a gram node, `amount` before. */
   const faceUnits = (b: Bill) => billUnits(b);
-  /** What a bill's face in mg is worth in sats when repaid in sECX (Gold B: at its reference house's highest ask of the
-   *  last 30 days; null: no such house or no rate). */
+  /** What a bill's face in mg costs in sats when repaid in sECX: at its reference house's highest ask of the last 30
+   *  days, whoever holds the bill (node v1.2.3), plus the 0.5% margin retirebill adds by default
+   *  (SA-W6, node v1.2.2), rounded up. Null: no such house or no rate. */
+  const REPAY_MARGIN_BPS = 50;
   const faceWorth = (b: Bill) => {
     const r = b.ref_house_id ? cards[b.ref_house_id]?.ask30 : null;
-    return r ? Math.ceil((faceUnits(b) * r) / 1000) : null;
+    return r ? Math.ceil((faceUnits(b) * r * (10_000 + REPAY_MARGIN_BPS)) / 10_000_000) : null;
   };
   const BILL_STATUS: Record<string, string> = {
     a: "Active", r: "Retired", d: "Defaulted", x: "Disputed",
@@ -1787,7 +1789,7 @@
           </button>
         </div>
         {#if A.unit === "mg"}
-          <p class="muted">A bill is a promise to pay, on a set date, an amount set in grams of gold: repaid in its house's notes at par, or in {BASE_TICKER} at the highest rate that house asked in the last 30 days, with a bond in {BASE_TICKER} held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
+          <p class="muted">A bill is a promise to pay, on a set date, an amount set in grams of gold: repaid in {BASE_TICKER} at the highest rate its reference house asked in the last 30 days, whoever holds the bill, or in a house's notes at par once that house holds it, with a bond in {BASE_TICKER} held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
         {:else}
           <p class="muted">A bill is a promise to pay a set amount of {BASE_TICKER} on a set date, with a bond held until then. Here are the bills you hold, wrote, or agreed to pay.</p>
         {/if}
@@ -1814,7 +1816,7 @@
               </div>
               <div class="house-stats">
                 {#if A.unit === "mg" && b.status === "a"}
-                  <div><span class="stat-label">Paid in {BASE_TICKER}</span> {faceWorth(b) !== null ? `about ${fmtEcx(faceWorth(b) ?? 0)} ${BASE_TICKER}, at its house's highest ask of the last 30 days` : "at its house's highest ask of the last 30 days, or in that house's notes at par"}</div>
+                  <div><span class="stat-label">Paid in {BASE_TICKER}</span> {faceWorth(b) !== null ? `about ${fmtEcx(faceWorth(b) ?? 0)} ${BASE_TICKER}: its reference house's highest ask of the last 30 days, plus 0.5%` : `at its reference house's highest ask of the last 30 days, plus 0.5%${b.owner_house_id ? ", or in the lending house's notes at par" : ""}`}</div>
                 {/if}
                 <div><span class="stat-label">Bond</span> {b.escrow} {BASE_TICKER}</div>
                 {#if b.status === "a"}<div><span class="stat-label">Matures</span> {b.maturity_height > height ? `in about ${days(b.maturity_height - height)}` : "now"} (block {b.maturity_height}), then {days(b.grace_blocks)} to pay</div>{/if}
@@ -1845,7 +1847,7 @@
                   </label>
                   <p class="hint">
                     The rest, {A.fmt(Math.max(0, faceUnits(b) - (A.parse(retireNotes) ?? 0)))},
-                    is paid in {BASE_TICKER}{A.unit === "mg" ? " at its house's highest ask of the last 30 days" : ""}; your bond comes back.
+                    is paid in {BASE_TICKER}{A.unit === "mg" ? " at its reference house's highest ask of the last 30 days, plus 0.5%" : ""}; your bond comes back.
                   </p>
                   {#if retireError}<p class="soft-error small">{retireError}</p>{/if}
                   <div class="note-form-actions">
@@ -1900,13 +1902,13 @@
             <input type="text" bind:value={billBody} placeholder="e.g. 90-day trade bill" />
           </label>
           <label>
-            Face amount ({A.label}){A.unit === "mg" ? ", repaid in a house's notes at par or in sECX at its highest ask of the last 30 days" : ""}
+            Face amount ({A.label}){A.unit === "mg" ? ", repaid in sECX at the reference house's highest ask of the last 30 days, or in a house's notes at par once that house holds the bill" : ""}
             <input type="number" bind:value={billAmount} placeholder={A.unit === "mg" ? "e.g. 50.000" : "e.g. 1.0"} step={A.unit === "mg" ? "0.001" : "0.00000001"} />
           </label>
           {#if A.unit === "mg"}
             <label>
-              Reference house: while the bill is privately held, it is repaid in {BASE_TICKER} at this house's highest ask
-              of the last 30 days
+              Reference house: whoever holds the bill, what is repaid in {BASE_TICKER} is priced at this house's highest
+              ask of the last 30 days
               <select bind:value={billRefHouse}>
                 <option value="">Choose a house with a rate</option>
                 {#each rateHouses as h (h.id)}

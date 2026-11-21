@@ -26,6 +26,32 @@ use std::time::{Duration, Instant};
 pub const RELEASES_URL: &str = "https://api.github.com/repos/mbdrivechains/freebank/releases?per_page=50";
 pub const RELEASE_DOWNLOAD: &str = "https://github.com/mbdrivechains/freebank/releases/download";
 
+/// Debug builds only: `FREEBANK_RELEASE_MIRROR=<url>` reads the release list from `<url>/releases.json` and each
+/// release's files from `<url>/<tag>/`, so a walk can install a release that is still a draft on GitHub (v0.7.7 with
+/// v1.2.3). The files are checked against the release key as always. Release builds always read GitHub.
+fn release_mirror() -> Option<String> {
+    #[cfg(debug_assertions)]
+    {
+        let m = std::env::var("FREEBANK_RELEASE_MIRROR").ok()?;
+        let m = m.trim().trim_end_matches('/');
+        (!m.is_empty()).then(|| m.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
+/// Where the release list is read: GitHub's, or a debug build's mirror.
+pub fn releases_url() -> String {
+    release_mirror().map_or_else(|| RELEASES_URL.to_string(), |m| format!("{m}/releases.json"))
+}
+
+/// Where a release's files are: GitHub's download address, or a debug build's mirror.
+pub fn release_download() -> String {
+    release_mirror().unwrap_or_else(|| RELEASE_DOWNLOAD.to_string())
+}
+
 /// The L1 block freebankd is pinned to on this network (eCash beta's fork block; easynet's genesis). freebankd refuses
 /// to start on any other chain.
 pub fn pin_height() -> u64 {
