@@ -358,7 +358,7 @@ async fn wait_synced(st: &StackSettings, s: &Stack, secs: u64, while_moving: boo
     loop {
         let info = node_call(st, s, "getblockchaininfo").await.ok();
         let peer_info = node_call(st, s, "getpeerinfo").await.ok();
-        let peers = peer_info.as_ref().and_then(|v| v.as_array()).map_or(0, |a| a.len() as u64);
+        let peers = peer_info.as_ref().map_or(0, |v| crate::alerts::handshaken(v).len() as u64);
         // The height its peers had when they connected: until it has that, "blocks == headers" may only mean it hasn't
         // heard of the newer blocks yet.
         let peer_best = peer_info
@@ -526,6 +526,7 @@ async fn start_inner(mgr: &NodeManager, why: Why) -> Result<(), String> {
     let node_up = node_pid(&st, s).is_some_and(|p| runs_bin(p, &node_bin));
     let enf_up = enforcer_pid(&st).is_some_and(|p| runs_bin(p, &enf_bin));
     if !node_up {
+        tidy_old_chains(&mgr.app_dir, &[PathBuf::from(&st.dir), mgr.app_dir.join("stack-data").join(s.chain)]);
         if let Some(why) = low_disk(&st, s) {
             return Err(why);
         }
@@ -1236,7 +1237,7 @@ async fn wait_header(st: &StackSettings, s: &Stack, x: &Snapshot, downloaded: &s
         }
         let headers = node_call(st, s, "getblockchaininfo").await.ok().and_then(|i| i["headers"].as_u64());
         set(|p| p.headers = headers);
-        let peers = node_call(st, s, "getconnectioncount").await.ok().and_then(|v| v.as_u64()).unwrap_or(0);
+        let peers = node_call(st, s, "getpeerinfo").await.ok().map_or(0, |v| crate::alerts::handshaken(&v).len() as u64);
         // No peers counts only once the download is done: a network that lets HTTP through but not the node's own
         // connections shouldn't cut the download short (re-review 2).
         if peers == 0 && downloaded.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1382,6 +1383,41 @@ fn check_blocks_folder(mgr: &NodeManager, settings: &Settings, b: &Path) -> Resu
         return Err(format!("That folder holds, or is inside, a FreeBank node's data ({}). Choose another.", d.display()));
     }
     Ok(())
+}
+
+/// Earlier eCash chains' folders in the app's own stack-data/ (each easynet reset starts a new `stack-data/<chain>`): on a
+/// test network, those past the newest KEEP_OLD_CHAINS besides the ones in use are deleted before the node starts, so
+/// resets don't fill the disk (v0.7.6). Only a folder that carries this app's mark and is its own (`in_own_data`); the
+/// newest by when its mark was written. A blocks folder kept elsewhere isn't looked for.
+fn tidy_old_chains(app_dir: &Path, in_use: &[PathBuf]) -> Vec<PathBuf> {
+    if network::current().l1_kind != network::L1Kind::Test {
+        return Vec::new();
+    }
+    tidy_old_chains_in(app_dir, in_use, &crate::node::home())
+}
+
+fn tidy_old_chains_in(app_dir: &Path, in_use: &[PathBuf], home: &Path) -> Vec<PathBuf> {
+    let mut old: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(app_dir.join("stack-data"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| !in_use.contains(d) && d.join(MARK).is_file() && in_own_data(app_dir, d))
+        .filter_map(|d| Some((std::fs::metadata(d.join(MARK)).ok()?.modified().ok()?, d)))
+        .collect();
+    old.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut gone = Vec::new();
+    for (_, d) in old.into_iter().skip(crate::node::restart::KEEP_OLD_CHAINS) {
+        if crate::node::obliterate::check_deletable(&d, home).is_err() {
+            continue;
+        }
+        let mb = tree_bytes(&d) / 1_000_000;
+        if std::fs::remove_dir_all(&d).is_ok() {
+            crate::activity::note(&format!("stack: deleted an old eCash chain's data, {} ({mb} MB)", d.display()));
+            gone.push(d);
+        }
+    }
+    gone
 }
 
 /// Put the mark in a folder this app made for its stack.
@@ -2021,7 +2057,8 @@ pub async fn status(mgr: &NodeManager, with_offers: bool) -> Status {
                 out.headers = i["headers"].as_u64();
             }
             if out.node_up {
-                out.peers = node_call(&st, s, "getconnectioncount").await.ok().and_then(|v| v.as_u64());
+                // Only peers that finished the handshake (v0.7.6, alerts::handshaken).
+                out.peers = node_call(&st, s, "getpeerinfo").await.ok().map(|v| crate::alerts::handshaken(&v).len() as u64);
                 // Two chainstates: the snapshot's, and the one checking the history behind it.
                 if let Ok(c) = node_call(&st, s, "getchainstates").await {
                     let all = c["chainstates"].as_array().cloned().unwrap_or_default();
@@ -2259,6 +2296,36 @@ mod tests {
         assert_eq!(gb(829_600_000_000), "830 GB");
         assert_eq!(gb(160_700_000), "161 MB", "under a GB, in MB (as the screens' gigabytes())");
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn only_the_two_newest_old_ecash_chains_stay() {
+        let app = crate::node::testnode::temp("stack-tidy");
+        let own = app.join("stack-data");
+        let chain = |name: &str, age: u64| {
+            let d = own.join(name);
+            std::fs::create_dir_all(d.join("node/easynet/blocks")).unwrap();
+            mark(&d).unwrap();
+            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            std::fs::File::options().write(true).open(d.join(MARK)).unwrap().set_modified(t).unwrap();
+            d
+        };
+        let e1 = chain("easynet-1", 500);
+        let e2 = chain("easynet-2", 400);
+        let e3 = chain("easynet-3", 300);
+        let e4 = chain("easynet-4", 200);
+        let e5 = chain("easynet-5", 100);
+        // Not the app's: no mark.
+        let foreign = own.join("easynet-0");
+        std::fs::create_dir_all(foreign.join("node")).unwrap();
+        let home = app.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let gone = tidy_old_chains_in(&app, &[e5.clone()], &home);
+        // In use: easynet-5. Kept: the two newest others (4, 3). Deleted: 2 and 1.
+        assert_eq!(gone, vec![e2.clone(), e1.clone()]);
+        assert!(e5.is_dir() && e4.is_dir() && e3.is_dir() && foreign.join("node").is_dir());
+        assert!(!e2.exists() && !e1.exists());
+        assert!(tidy_old_chains_in(&app, &[e5], &home).is_empty());
     }
 
     #[test]

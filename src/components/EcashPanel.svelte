@@ -262,16 +262,22 @@
     bmmBusy = false;
   }
 
-  // A move between the two wallets is one payment, not a send here and a receive there.
-  type Line = EcashTx & { moved?: "in" | "back" };
+  // A move between the two wallets is one payment, not a send here and a receive there; so is a payment to one of
+  // this wallet's own addresses (v0.7.6): the node lists it as a send and a receive of the same amount to the same
+  // address.
+  type Line = EcashTx & { moved?: "in" | "back" | "self" };
   function merged(list: EcashTx[]): Line[] {
     const out: Line[] = [];
     const other = (w: string) => (w === "main" ? "bids" : "main");
     for (const t of list) {
       const pair = (x: EcashTx) => x.txid === t.txid && x.wallet === other(t.wallet);
+      const own = (x: EcashTx, y: EcashTx) =>
+        x.txid === y.txid && x.wallet === y.wallet && x.address === y.address && x.sats === -y.sats;
       if (t.category === "receive" && list.some((x) => pair(x) && x.category === "send")) continue;
+      if (t.category === "receive" && list.some((x) => x.category === "send" && own(x, t))) continue;
       const moved = t.category === "send" && list.some((x) => pair(x) && x.category === "receive");
-      out.push(moved ? { ...t, moved: t.wallet === "main" ? "in" : "back" } : t);
+      const self = t.category === "send" && list.some((x) => x.category === "receive" && own(x, t));
+      out.push(moved ? { ...t, moved: t.wallet === "main" ? "in" : "back" } : self ? { ...t, moved: "self" } : t);
     }
     return out;
   }
@@ -282,6 +288,7 @@
     const fee = t.fee ? `, fee ${fmtEcx(t.fee)}` : "";
     if (t.moved === "in") return `Moved ${coins(-t.sats)} into the bidding wallet${fee}`;
     if (t.moved === "back") return `Moved ${coins(-t.sats)} back to the main wallet${fee}`;
+    if (t.moved === "self") return `Sent ${coins(-t.sats)} to yourself${fee}`;
     // A bid: nothing sent anywhere, the whole bid its fee.
     if (t.wallet === "bids" && t.category === "send" && t.sats === 0) return `Bid for a FreeBank block, ${coins(t.fee)}`;
     if (t.category === "deposit") return `Deposited ${coins(-t.sats)} into FreeBank${fee}`;
@@ -474,7 +481,7 @@
         <ul class="ec-history">
           {#each merged(history).slice(0, 50) as t (rowKey(t))}
             <li>
-              <span class="ec-tag">{t.moved ? "Move" : t.category.startsWith("deposit") ? "Deposit" : t.wallet === "bids" ? "Bidding" : "eCash"}</span>
+              <span class="ec-tag">{t.moved && t.moved !== "self" ? "Move" : t.category.startsWith("deposit") ? "Deposit" : t.wallet === "bids" ? "Bidding" : "eCash"}</span>
               <span>{txLine(t)}</span>
               <span class="muted small">
                 {t.confirmations > 0 ? `${t.confirmations} confirmation${t.confirmations === 1 ? "" : "s"}` : t.confirmations < 0 ? "won't confirm" : "unconfirmed"}

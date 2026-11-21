@@ -1,4 +1,5 @@
 mod activity;
+mod alerts;
 mod ask;
 mod admin;
 mod app_update;
@@ -143,6 +144,7 @@ pub fn run() {
         .manage(wallet::RelockState::default())
         // Automatic house attests (v0.4.6): off until turned on; the passphrase only in memory.
         .manage(house_watch::AutoAttestState::default())
+        .manage(alerts::WatchState::default())
         .setup(|app| {
             // FREEBANK_APP_DIR lets a developer run the app against a scratch folder.
             let top: std::path::PathBuf = match std::env::var_os("FREEBANK_APP_DIR") {
@@ -428,6 +430,8 @@ pub fn run() {
             app_update::app_auto_update_get,
             app_update::app_auto_update_set,
             app_update::app_update_restart,
+            // v0.7.6: update alerts (the nodes' warnings, a stalled node)
+            alerts::node_alerts,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

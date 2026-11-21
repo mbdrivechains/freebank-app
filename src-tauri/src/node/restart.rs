@@ -104,6 +104,7 @@ pub fn remember(datadir: &Path) {
 /// Before a start, with nothing using the folder: an old chain's data moves aside. The folder it went to, if it did.
 pub fn settle(mgr: &NodeManager, datadir: &Path) -> Result<Option<String>, String> {
     if old_chain(datadir).is_none() {
+        tidy(datadir);
         return Ok(None);
     }
     let n = crate::network::current();
@@ -112,6 +113,7 @@ pub fn settle(mgr: &NodeManager, datadir: &Path) -> Result<Option<String>, Strin
     std::fs::write(datadir.join(MOVED_RECORD), t.to_string()).map_err(|e| e.to_string())?;
     MOVED_AT.store(t, Ordering::Relaxed);
     let away = move_aside(datadir)?;
+    tidy(datadir);
     let why = if freebank_only {
         format!("FreeBank on {} started a new chain, so your node syncs it from its first block.", n.name)
     } else {
@@ -127,6 +129,66 @@ pub fn settle(mgr: &NodeManager, datadir: &Path) -> Result<Option<String>, Strin
     crate::activity::note(&format!("node: {which} started again; the old chain's data moved to {}", away.display()));
     *mgr.restarted.lock().unwrap() = Some(said);
     Ok(Some(away.to_string_lossy().into_owned()))
+}
+
+/// How many earlier chains' data stay set aside beside a data folder; older ones are deleted at the next start, so
+/// a network that starts again often doesn't fill the disk (v0.7.6). Only a folder holding nothing but chain data counts
+/// (what `move_aside` moves): one holding a wallet, a config or anything else, such as setup's move of a whole earlier
+/// folder or a restore's wallet, is never touched.
+pub const KEEP_OLD_CHAINS: usize = 2;
+
+/// The old chains' folders of `datadir`, newest first: `<folder>.old-<time>[-n]` beside it and `old-chain-<time>`
+/// inside it, each a real folder (not a link) holding only chain data.
+fn old_chain_folders(datadir: &Path) -> Vec<PathBuf> {
+    let Ok(real) = datadir.canonicalize() else { return Vec::new() };
+    let only_chain_data = |p: &Path| {
+        std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
+            && std::fs::read_dir(p).is_ok_and(|d| {
+                d.flatten().all(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    CHAIN_DATA.iter().chain(OLD_CHAIN_TOO).any(|k| *k == n)
+                })
+            })
+    };
+    // "<time>" or "<time>-<n>" (two moves in one second), as a sortable pair.
+    let stamp = |rest: &str| -> Option<(u64, u64)> {
+        if !crate::node::aside_stamp(rest) {
+            return None;
+        }
+        let (t, n) = rest.split_once('-').unwrap_or((rest, "1"));
+        Some((t.parse().ok()?, n.parse().ok()?))
+    };
+    let mut found: Vec<((u64, u64), PathBuf)> = Vec::new();
+    let mut scan = |dir: &Path, prefix: &str| {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if let Some(k) = n.strip_prefix(prefix).and_then(stamp) {
+                if only_chain_data(&e.path()) {
+                    found.push((k, e.path()));
+                }
+            }
+        }
+    };
+    if let (Some(parent), Some(name)) = (real.parent(), real.file_name()) {
+        scan(parent, &format!("{}.old-", name.to_string_lossy()));
+    }
+    scan(&real, "old-chain-");
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Delete the old chains' folders past the newest KEEP_OLD_CHAINS; what it deleted. A folder it can't delete stays
+/// for the next start.
+pub fn tidy(datadir: &Path) -> Vec<PathBuf> {
+    let mut gone = Vec::new();
+    for p in old_chain_folders(datadir).into_iter().skip(KEEP_OLD_CHAINS) {
+        let mb = crate::stack::tree_bytes(&p) / 1_000_000;
+        if std::fs::remove_dir_all(&p).is_ok() {
+            crate::activity::note(&format!("node: deleted an old chain's data, {} ({mb} MB)", p.display()));
+            gone.push(p);
+        }
+    }
+    gone
 }
 
 fn now() -> u64 {
@@ -268,6 +330,52 @@ mod tests {
         assert_eq!(settle(&mgr, &d).unwrap(), None);
         assert!(mgr.restarted.lock().unwrap().is_none());
         assert_eq!(std::fs::read_to_string(d.join(MOVED_RECORD)).unwrap(), moved.to_string());
+    }
+
+    #[test]
+    fn only_the_two_newest_old_chains_stay_and_nothing_with_a_wallet_goes() {
+        let top = crate::node::testnode::temp("tidy");
+        let d = top.join("easynet");
+        std::fs::create_dir_all(d.join("blocks")).unwrap();
+        std::fs::write(d.join("wallet.dat"), b"w").unwrap();
+        let old = |name: &str, files: &[&str]| {
+            let p = if name.starts_with("old-chain-") { d.join(name) } else { top.join(name) };
+            for f in files {
+                if f.contains('.') {
+                    std::fs::create_dir_all(&p).unwrap();
+                    std::fs::write(p.join(f), f.as_bytes()).unwrap();
+                } else {
+                    std::fs::create_dir_all(p.join(f)).unwrap();
+                }
+            }
+            std::fs::create_dir_all(&p).unwrap();
+            p
+        };
+        let a100 = old("easynet.old-100", &["blocks", "chainstate"]);
+        let a200 = old("easynet.old-200", &["chainstate", "mainblockhash.dat", "peers.dat"]);
+        let in250 = old("old-chain-250", &["blocks"]);
+        let a300 = old("easynet.old-300", &["blocks"]);
+        let a300b = old("easynet.old-300-2", &["blocks", "indexes"]);
+        let empty = old("easynet.old-90", &[]);
+        // Never: a folder with a wallet or a config (setup's move of a whole folder), a name that isn't a move's, a
+        // link, and another network's.
+        let wallet = old("easynet.old-50", &["blocks", "wallets"]);
+        let conf = old("easynet.old-60", &["blocks", "freebank.conf"]);
+        let odd = old("easynet.old-abc", &["blocks"]);
+        let other = old("mainnet.old-10", &["blocks"]);
+        let target = old("elsewhere", &["blocks"]);
+        std::os::unix::fs::symlink(&target, top.join("easynet.old-20")).unwrap();
+
+        assert_eq!(old_chain_folders(&d), vec![a300b.clone(), a300.clone(), in250.clone(), a200.clone(), a100.clone(), empty.clone()]);
+        let gone = tidy(&d);
+        assert_eq!(gone, vec![in250.clone(), a200.clone(), a100.clone(), empty.clone()]);
+        assert!(a300b.is_dir() && a300.is_dir(), "the two newest stay");
+        assert!(!in250.exists() && !a200.exists() && !a100.exists() && !empty.exists());
+        for p in [&wallet, &conf, &odd, &other, &target] {
+            assert!(p.join("blocks").is_dir(), "{} untouched", p.display());
+        }
+        assert!(top.join("easynet.old-20").exists() && d.join("wallet.dat").is_file() && d.join("blocks").is_dir());
+        assert!(tidy(&d).is_empty(), "nothing more the next time");
     }
 
     #[test]

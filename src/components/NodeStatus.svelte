@@ -16,6 +16,7 @@
     megabytes,
     node,
     openUrl,
+    quietFor,
     randomTag,
     tagProblem,
     update,
@@ -60,7 +61,11 @@
 
   $: up = st?.state === "up";
   $: tip = st?.explorer_tip ?? null;
-  $: inSync = !!st && up && tip != null && st.blocks >= tip - 1;
+  // Not with no peer, nor while no new block has come for two hours (v0.7.6): on 11-11 a Mac read "In sync" at 284 for
+  // hours with easynet down, against an explorer stuck at 284 too; and a node at block 0 with no peers read "In sync"
+  // against an explorer at block 1 on a chain the node can't follow.
+  $: quietHours = st && up ? st.quiet_hours : null;
+  $: inSync = !!st && up && tip != null && st.blocks >= tip - 1 && st.peers.length > 0 && quietHours == null;
   $: pct = st && tip ? Math.min(100, (st.blocks / tip) * 100) : 0;
   $: outbound = st ? st.peers.filter((p) => !p.inbound).length : 0;
   $: inbound = st ? st.peers.length - outbound : 0;
@@ -85,9 +90,11 @@
           ? "Starting"
           : st.state === "locked"
             ? "Not ours"
-            : inSync
-              ? "In sync"
-              : "Syncing";
+            : quietHours != null
+              ? "No new block"
+              : inSync
+                ? "In sync"
+                : "Syncing";
 
   function fmt(n: number | null | undefined): string {
     return n == null ? "…" : n.toLocaleString();
@@ -260,6 +267,14 @@
       <dl class="facts">
         <div><dt>{$network.l1} block</dt><dd>{fmt(st.l1_blocks)}</dd></div>
       </dl>
+      {#if quietHours != null}
+        <p class="soft-error" data-testid="node-quiet-tab">
+          No new block for {quietFor(quietHours)}: your node's newest is from {st.tip_time ? when(st.tip_time) : "hours ago"}.
+          {st.peers.length === 0
+            ? "It has no peers to hear of newer ones from."
+            : "Its peers have nothing newer either: the network may have paused."}
+        </p>
+      {/if}
     {:else if st.state === "busy" || st.state === "warming"}
       <div class="node-quiet-state">
         <span class="spinner"></span>
@@ -426,7 +441,8 @@
         {#if lonelyFor >= LONELY_MS}
           <p class="soft-error" data-testid="no-peers-long">
             No peers for {Math.floor(lonelyFor / 60_000)} minutes. New nodes find their first peer through FreeBank's seed
-            (seed.ecxfreebank.com), which may be down; your node keeps trying. If this goes on, report it.
+            (seed.ecxfreebank.com). Either it's down, or the network has moved on to a release this node isn't running,
+            so the nodes it reaches don't answer. Your node keeps trying. If this goes on, report it.
           </p>
         {:else}
           <p class="muted">No peers yet. Your node is looking for them.</p>

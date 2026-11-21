@@ -129,7 +129,13 @@ export interface NodeStatus {
   blocks: number;
   headers: number;
   explorer_tip: number | null;
+  /** Its newest block's time (unix seconds). */
+  tip_time: number | null;
+  /** Whole hours without a new block, once that is two hours with nothing left to download (v0.7.6): its network has
+   *  paused, or it can't reach it. Not "In sync" then. */
+  quiet_hours: number | null;
   l1_blocks: number | null;
+  /** Peers that finished the handshake (v0.7.6): a connection that never answered isn't one. */
   peers: Peer[];
   tag: string | null;
   explorer: string;
@@ -352,6 +358,11 @@ export async function onQuitRequested(cb: (ask: QuitAsk) => void): Promise<() =>
 /** "29 Sep 2026, 14:02" for a unix time. */
 export function when(unix: number): string {
   return new Date(unix * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+/** How long a node has had no new block (v0.7.6): "3 hours", "2 days". */
+export function quietFor(hours: number): string {
+  return hours < 48 ? `${hours} hours` : `${Math.floor(hours / 24)} days`;
 }
 
 /** "12.3 of 45.6 MB", or "Connecting…" before the server has answered. */

@@ -530,12 +530,13 @@ pub async fn progress(mgr: &NodeManager) -> NodeProgress {
     let (running, exited) = reap_or_reindex(mgr, &datadir).await;
     let rpc = detect::probe(&mgr.http, &s).await;
     settle_reindex(mgr, &datadir, running && rpc.state == detect::RpcState::Up);
+    // Only peers that finished the handshake (v0.7.6, alerts::handshaken).
     let peers = if rpc.state == detect::RpcState::Up {
         detect::local_client(&mgr.http, &s)
-            .call("getconnectioncount", vec![])
+            .call("getpeerinfo", vec![])
             .await
             .ok()
-            .and_then(|v| v.as_u64())
+            .map(|v| crate::alerts::handshaken(&v).len() as u64)
     } else {
         None
     };
@@ -590,7 +591,13 @@ pub struct NodeStatus {
     pub blocks: u64,
     pub headers: u64,
     pub explorer_tip: Option<u64>,
+    /// Its newest block's time (unix seconds).
+    pub tip_time: Option<u64>,
+    /// Whole hours without a new block, once that is two hours with nothing left to download (v0.7.6,
+    /// alerts::quiet_hours): its network has paused, or it can't reach it. It isn't "In sync" then.
+    pub quiet_hours: Option<u64>,
     pub l1_blocks: Option<u64>,
+    /// Peers that finished the handshake (v0.7.6): a connection that never answered isn't one.
     pub peers: Vec<Peer>,
     pub tag: Option<String>,
     pub explorer: String,
@@ -710,6 +717,8 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         blocks: 0,
         headers: 0,
         explorer_tip: None,
+        tip_time: None,
+        quiet_hours: None,
         l1_blocks: None,
         peers: Vec::new(),
         tag: conf_tag(&datadir),
@@ -780,25 +789,27 @@ pub async fn status(mgr: &NodeManager) -> Result<NodeStatus, String> {
         detect::l1_blocks(&mgr.http, &s.rest),
     );
     let chain = chain?;
-    st.peers = peers?
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|p| Peer {
-                    addr: p["addr"].as_str().unwrap_or("").to_string(),
-                    subver: p["subver"].as_str().unwrap_or("").to_string(),
-                    inbound: p["inbound"].as_bool().unwrap_or(false),
-                    synced_blocks: p["synced_blocks"].as_i64(),
-                })
-                .collect()
+    st.peers = crate::alerts::handshaken(&peers?)
+        .into_iter()
+        .map(|p| Peer {
+            addr: p["addr"].as_str().unwrap_or("").to_string(),
+            subver: p["subver"].as_str().unwrap_or("").to_string(),
+            inbound: p["inbound"].as_bool().unwrap_or(false),
+            synced_blocks: p["synced_blocks"].as_i64(),
         })
-        .unwrap_or_default();
+        .collect();
     st.version = net
         .ok()
         .and_then(|n| n["subversion"].as_str().map(String::from))
         .unwrap_or_default();
     st.blocks = chain["blocks"].as_u64().unwrap_or(0);
     st.headers = chain["headers"].as_u64().unwrap_or(0);
+    let header = match chain["bestblockhash"].as_str() {
+        Some(h) => c.call("getblockheader", vec![serde_json::Value::String(h.to_string())]).await.ok(),
+        None => None,
+    };
+    st.tip_time = crate::alerts::tip_time_of(&chain, header.as_ref());
+    st.quiet_hours = crate::alerts::quiet_hours(st.blocks, st.headers, st.tip_time, crate::alerts::unix_now());
     st.l1_blocks = l1;
     st.versions = node_versions(mgr, managed, s.installed_tag.as_deref(), &st.version, &datadir);
     Ok(st)

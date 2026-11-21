@@ -112,7 +112,9 @@ async fn after_release(mgr: &NodeManager, c: &crate::rpc::FreeBankClient, datadi
     let Ok(tips) = c.call("getchaintips", vec![]).await else { return };
     let mut refused = Vec::new();
     for (hash, height) in earlier_refusals(&read_log(datadir), tag) {
-        if !on_chain(c, &hash).await {
+        // A block the node doesn't know at all is an earlier chain's: that chain's data moved aside, its log stayed.
+        let Ok(h) = c.call("getblockheader", vec![json!(hash)]).await else { continue };
+        if !h["confirmations"].as_i64().is_some_and(|n| n > 0) {
             refused.push((hash, height));
         }
     }

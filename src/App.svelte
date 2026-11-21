@@ -35,6 +35,8 @@
   import { checkForUpdate, node, update, versions, type Obliterated, type Removed } from "./lib/node";
   import { appUpdate, loadAptOffer, startAppUpdateChecks } from "./lib/appUpdate";
   import AppUpdate from "./components/AppUpdate.svelte";
+  import NodeAlerts from "./components/NodeAlerts.svelte";
+  import { startNodeAlertChecks } from "./lib/alerts";
   import AptOffer from "./components/AptOffer.svelte";
   import { ECX_PROBLEM, ecxInput, fmtEcx, parseEcx } from "./lib/amount";
   import { nice } from "./lib/errors";
@@ -312,6 +314,8 @@
     // The app's own updates: a notice when a signed release is out (lib/appUpdate.ts).
     startAppUpdateChecks();
     loadAptOffer();
+    // Update alerts: the nodes' warnings, or a node that stopped adding blocks (lib/alerts.ts).
+    startNodeAlertChecks();
     let stop: (() => void) | null = null;
     import("@tauri-apps/api/event")
       .then(({ listen }) => listen("report-open", () => openReport("problem")))
@@ -405,6 +409,7 @@
   {/if}
 
   {#if !isPWA && !gone}<AppUpdate notice />{#if connected}<AptOffer ask />{/if}{/if}
+  {#if !isPWA && !gone}<NodeAlerts on:open={(e) => { currentView = "settings"; settingsPart = e.detail; }} />{/if}
 
   {#if gone}
     <div class="card removed">
