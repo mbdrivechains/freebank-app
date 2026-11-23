@@ -560,18 +560,185 @@ pub fn order(n: &Network, tag: &str) -> Option<(u32, u32, u32)> {
 /// Is `tag` older than the oldest release this network's chain runs on (`min_tag`)? A tag outside its line counts as
 /// older.
 pub fn below_min(n: &Network, tag: &str) -> bool {
-    n.min_tag.is_some_and(|m| order(n, tag) < order(n, m))
+    below_min_in(n, chain(n).as_ref(), tag)
+}
+
+fn below_min_in(n: &Network, c: Option<&Chain>, tag: &str) -> bool {
+    min_tag_in(n, c).is_some_and(|m| order(n, tag) < order(n, &m))
 }
 
 /// The refusal to start a release older than `min_tag`: what to do about it.
 pub fn too_old(n: &Network, tag: &str) -> String {
+    too_old_in(n, chain(n).as_ref(), tag)
+}
+
+fn too_old_in(n: &Network, c: Option<&Chain>, tag: &str) -> String {
     format!(
         "FreeBank on {} started a new chain on {}, and your node is {}. Update the node: the new one starts by itself, and \
          the old chain's data moves aside.",
         n.name,
-        n.min_tag.unwrap_or("a newer release"),
+        min_tag_in(n, c).as_deref().unwrap_or("a newer release"),
         tag
     )
+}
+
+/// The oldest node release this network's chain runs on: the chain read from its newest release, else the built-in.
+fn min_tag_in(n: &Network, c: Option<&Chain>) -> Option<String> {
+    c.map(|c| c.min_tag.clone()).or(n.min_tag.map(String::from))
+}
+
+/// FreeBank's network bytes on this network's chain: the chain read from its newest release, else the built-in.
+pub fn fb_magic(n: &Network) -> Option<[u8; 4]> {
+    chain(n).map(|c| c.magic).or(n.fb_magic)
+}
+
+/// Easynet's FreeBank chain as its newest release names it (v0.7.8). Easynet runs FreeBank's latest code and starts a
+/// fresh chain when it needs to; each easynet release from 22 November on carries `CHAIN_FILE`, listed in its signed
+/// SHA256SUMS. The app reads it from the newest release once the signature checks out, so a fresh chain needs a node
+/// release and no app release: the built-in `fb_magic` and `min_tag` are only the floor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chain {
+    /// All four of FreeBank's network bytes, as each record in its block files starts.
+    pub magic: [u8; 4],
+    /// The genesis block's hash, as `getblockhash 0` shows it.
+    pub genesis: String,
+    /// The oldest node release that runs this chain.
+    pub min_tag: String,
+}
+
+/// The release file naming easynet's chain: four `key=value` lines (network, magic, genesis, min_tag, in that order,
+/// LF), listed in the signed SHA256SUMS. A live contract like the archives' names: never renamed.
+pub const CHAIN_FILE: &str = "EASYNET_CHAIN";
+
+/// The chain read from a release, when it is newer than the built-in one.
+static CHAIN: std::sync::RwLock<Option<Chain>> = std::sync::RwLock::new(None);
+
+/// Set at launch when no kept chain checks out (none kept, or one that doesn't check out), until a release is read:
+/// meanwhile FreeBank's chain data is never moved aside for its network bytes (node/restart.rs), since the built-in
+/// ones may be older than the node's.
+static CHAIN_DOUBT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// No kept chain checks out (`CHAIN_DOUBT`).
+pub fn doubt_chain(n: &Network) {
+    if reads_chain_file(n) {
+        CHAIN_DOUBT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A release was read: its chain taken or kept out, or it names none (`CHAIN_DOUBT`).
+pub fn clear_chain_doubt() {
+    CHAIN_DOUBT.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A chain file never names a chain newer than the release carrying it (freebankd's rel.sh makes sure of it too).
+pub fn carried_by(n: &Network, c: &Chain, tag: &str) -> Result<(), String> {
+    if order(n, &c.min_tag) > order(n, tag) {
+        return Err(format!(
+            "FreeBank {}'s {} names a chain from {}, a later release than itself, so it wasn't taken.",
+            tag, CHAIN_FILE, c.min_tag
+        ));
+    }
+    Ok(())
+}
+
+/// Is the chain in doubt (`CHAIN_DOUBT`)?
+pub fn chain_in_doubt(n: &Network) -> bool {
+    reads_chain_file(n) && CHAIN_DOUBT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Does this network take its chain from its releases? Easynet only, the network that restarts on fresh chains; never
+/// mainnet, whose chain is the built-in one.
+pub fn reads_chain_file(n: &Network) -> bool {
+    n.id == EASYNET.id
+}
+
+/// The chain read from a release for this network, if any (none: the built-in one).
+pub fn chain(n: &Network) -> Option<Chain> {
+    if !reads_chain_file(n) {
+        return None;
+    }
+    CHAIN.read().ok()?.clone()
+}
+
+/// FreeBank's other chains, which a chain file never names however it is signed: (name, network bytes, genesis), from
+/// freebankd's chainparams. A data folder holding one of them is never moved aside for easynet (node/restart.rs).
+pub const OTHER_CHAINS: &[(&str, [u8; 4], &str)] = &[
+    ("beta", [0xfb, 0x4b, 0x18, 0x45], "359d17fc7cc60653fb72bbec271efab88af16ba9f15a55b060fe632c7de5e978"),
+    ("mainnet", [0xfb, 0x4b, 0xec, 0x58], "6e5a41bcc2793325e79d952de3766989f70181294e32f19b10d4968b74d919fc"),
+    ("regtest", [0xfb, 0x4b, 0x18, 0x47], "7e666f858e27e4d079ac93ac2cbee743a6cd96ec021bcafe0eb63768734a67b3"),
+];
+
+/// Which of FreeBank's other chains these network bytes are, if any.
+pub fn other_chain(magic: [u8; 4]) -> Option<&'static str> {
+    OTHER_CHAINS.iter().find(|c| c.1 == magic).map(|c| c.0)
+}
+
+/// `CHAIN_FILE`'s text, strictly: its four lines in order, this network's name, the bytes and the genesis in hex (none
+/// of FreeBank's other chains), and an oldest release of this network's line. Err says what's wrong.
+pub fn parse_chain(n: &Network, text: &str) -> Result<Chain, String> {
+    let bad = |why: &str| format!("The release's {} isn't one the app can read ({}), so it wasn't taken.", CHAIN_FILE, why);
+    let body = text.strip_suffix('\n').unwrap_or(text);
+    let lines: Vec<&str> = body.split('\n').collect();
+    let &[network, magic, genesis, min_tag] = lines.as_slice() else {
+        return Err(bad("not four lines"));
+    };
+    let value = |line: &str, key: &str| {
+        line.strip_prefix(key).and_then(|v| v.strip_prefix('=')).map(str::to_string).ok_or_else(|| bad(&format!("no {key}")))
+    };
+    let hex_of = |v: String, len: usize, key: &str| {
+        (v.len() == len && v.bytes().all(|b| b.is_ascii_hexdigit())).then(|| v.to_lowercase()).ok_or_else(|| bad(key))
+    };
+    let network = value(network, "network")?;
+    if network != n.id {
+        return Err(bad(&format!("it names {network}, not {}", n.id)));
+    }
+    let magic: [u8; 4] = hex::decode(hex_of(value(magic, "magic")?, 8, "magic")?)
+        .ok()
+        .and_then(|m| m.try_into().ok())
+        .ok_or_else(|| bad("magic"))?;
+    let genesis = hex_of(value(genesis, "genesis")?, 64, "genesis")?;
+    if let Some(other) = OTHER_CHAINS.iter().find(|c| c.1 == magic || c.2 == genesis) {
+        return Err(bad(&format!("it names FreeBank's {} chain", other.0)));
+    }
+    let min_tag = value(min_tag, "min_tag")?;
+    order(n, &min_tag).ok_or_else(|| bad(&format!("{min_tag} isn't one of {}'s releases", n.name)))?;
+    Ok(Chain { magic, genesis, min_tag })
+}
+
+/// Should `new` replace the chain in use (`now`; None: the built-in one)? A chain only moves forward: its oldest release
+/// must be newer than the one in use. The same oldest release with the same bytes changes nothing; with other bytes
+/// it's refused, as is an older one (a stale or replayed release) silently.
+fn moves_forward(n: &Network, now: Option<&Chain>, new: &Chain) -> Result<bool, String> {
+    let had = min_tag_in(n, now);
+    let (was, is) = (had.as_deref().and_then(|t| order(n, t)), order(n, &new.min_tag));
+    if is > was {
+        return Ok(true);
+    }
+    let magic = now.map(|c| c.magic).or(n.fb_magic);
+    if is == was && magic.is_some_and(|m| m != new.magic) {
+        return Err(format!(
+            "The release names {}'s chain on {} with other network bytes ({} rather than {}), so it wasn't taken.",
+            n.name,
+            new.min_tag,
+            hex::encode(new.magic),
+            hex::encode(magic.unwrap_or_default())
+        ));
+    }
+    Ok(false)
+}
+
+/// Take `new` as this network's chain if it moves forward (`moves_forward`). Ok(true) when it was taken.
+pub fn take_chain(n: &Network, new: Chain) -> Result<bool, String> {
+    if !reads_chain_file(n) {
+        return Ok(false);
+    }
+    let mut c = CHAIN.write().map_err(|_| "The chain record is unavailable.".to_string())?;
+    let forward = moves_forward(n, c.as_ref(), &new)?;
+    if forward {
+        *c = Some(new);
+    }
+    clear_chain_doubt();
+    Ok(forward)
 }
 
 /// What the screens need to know of the network (`network_info`).
@@ -780,6 +947,82 @@ mod tests {
         let said = too_old(&EASYNET, "v1.2.2");
         assert!(said.starts_with("FreeBank on easynet started a new chain on v1.2.3, and your node is v1.2.2."), "{said}");
         assert_eq!(EASYNET.fb_magic, Some([0xfb, 0x4b, 0xea, 0x09]));
+    }
+
+    /// freebankd's EASYNET_CHAIN for v1.2.3, exactly (rel.sh 0a43bfa).
+    const V123_CHAIN: &str = "network=easynet\nmagic=fb4bea09\n\
+        genesis=a831f32fb91fbbe3307dbefe1d78db89b91e6ca8335cb0d6859d2683d06ad29c\nmin_tag=v1.2.3\n";
+
+    fn ch(magic: u8, min_tag: &str) -> Chain {
+        Chain { magic: [0xfb, 0x4b, 0xea, magic], genesis: "ab".repeat(32), min_tag: min_tag.into() }
+    }
+
+    #[test]
+    fn easynets_chain_file_reads_strictly() {
+        let c = parse_chain(&EASYNET, V123_CHAIN).unwrap();
+        assert_eq!(c, Chain {
+            magic: [0xfb, 0x4b, 0xea, 0x09],
+            genesis: "a831f32fb91fbbe3307dbefe1d78db89b91e6ca8335cb0d6859d2683d06ad29c".into(),
+            min_tag: "v1.2.3".into()
+        });
+        assert_eq!(parse_chain(&EASYNET, V123_CHAIN.trim_end()).unwrap(), c, "the last LF may be missing");
+        assert_eq!(parse_chain(&EASYNET, &V123_CHAIN.replace("fb4bea09", "FB4BEA09")).unwrap(), c, "hex in capitals");
+        let refused = |text: &str, why: &str| {
+            let e = parse_chain(&EASYNET, text).unwrap_err();
+            assert!(e.contains(why), "{text:?}: {e}");
+        };
+        refused(&V123_CHAIN.replace('\n', "\r\n"), "not easynet");
+        refused(&format!("{V123_CHAIN}extra=1\n"), "four lines");
+        refused(&format!("{V123_CHAIN}\n"), "four lines");
+        refused(&V123_CHAIN.replace("network=easynet\nmagic=fb4bea09", "magic=fb4bea09\nnetwork=easynet"), "no network");
+        refused(&V123_CHAIN.replace("network=easynet", "network=mainnet"), "names mainnet");
+        refused(&V123_CHAIN.replace("magic=fb4bea09", "magic=fb4bea0"), "magic");
+        refused(&V123_CHAIN.replace("magic=fb4bea09", "magic=fb4bea0z"), "magic");
+        refused(&V123_CHAIN.replace("genesis=a8", "genesis=a"), "genesis");
+        refused(&V123_CHAIN.replace("v1.2.3", "v0.3.5"), "releases");
+        refused(&V123_CHAIN.replace("v1.2.3", "1.2.3"), "release");
+        // Signed or not, never another FreeBank chain's bytes or genesis.
+        refused(&V123_CHAIN.replace("fb4bea09", "fb4bec58"), "FreeBank's mainnet chain");
+        refused(&V123_CHAIN.replace("fb4bea09", "fb4b1845"), "FreeBank's beta chain");
+        refused(
+            &V123_CHAIN.replace(
+                "a831f32fb91fbbe3307dbefe1d78db89b91e6ca8335cb0d6859d2683d06ad29c",
+                "6e5a41bcc2793325e79d952de3766989f70181294e32f19b10d4968b74d919fc",
+            ),
+            "FreeBank's mainnet chain",
+        );
+        assert_eq!(other_chain([0xfb, 0x4b, 0xec, 0x58]), Some("mainnet"));
+        assert_eq!(other_chain([0xfb, 0x4b, 0xea, 0x09]), None);
+    }
+
+    #[test]
+    fn a_chain_file_names_no_later_release_than_its_own() {
+        assert!(carried_by(&EASYNET, &ch(0x0a, "v1.2.4"), "v1.2.4").is_ok());
+        assert!(carried_by(&EASYNET, &ch(0x0a, "v1.2.4"), "v1.2.5").is_ok());
+        assert!(carried_by(&EASYNET, &ch(0x0a, "v1.2.4"), "v1.2.3").unwrap_err().contains("a later release than itself"));
+        assert!(carried_by(&EASYNET, &ch(0x0a, "v1.2.4"), "not-a-tag").is_err());
+    }
+
+    #[test]
+    fn a_chain_only_moves_forward() {
+        // From the built-in (v1.2.3, fb4bea09).
+        assert_eq!(moves_forward(&EASYNET, None, &ch(0x09, "v1.2.3")), Ok(false), "the same chain");
+        assert_eq!(moves_forward(&EASYNET, None, &ch(0x0a, "v1.2.4")), Ok(true), "a fresh chain");
+        assert_eq!(moves_forward(&EASYNET, None, &ch(0x07, "v1.2.2")), Ok(false), "an older one, quietly kept out");
+        assert!(moves_forward(&EASYNET, None, &ch(0x0a, "v1.2.3")).unwrap_err().contains("other network bytes"));
+        // From one read before (v1.2.4, fb4bea0a): a stale or replayed release never takes it back.
+        let now = ch(0x0a, "v1.2.4");
+        assert_eq!(moves_forward(&EASYNET, Some(&now), &ch(0x09, "v1.2.3")), Ok(false));
+        assert_eq!(moves_forward(&EASYNET, Some(&now), &ch(0x0a, "v1.2.4")), Ok(false));
+        assert_eq!(moves_forward(&EASYNET, Some(&now), &ch(0x0b, "v1.3.0")), Ok(true));
+        // What follows from it: v1.2.3 is too old, and says which release the chain needs.
+        assert!(below_min_in(&EASYNET, Some(&now), "v1.2.3") && !below_min_in(&EASYNET, Some(&now), "v1.2.4"));
+        let said = too_old_in(&EASYNET, Some(&now), "v1.2.3");
+        assert!(said.starts_with("FreeBank on easynet started a new chain on v1.2.4, and your node is v1.2.3."), "{said}");
+        // Only easynet reads chain files: elsewhere nothing is taken, and the built-in stays.
+        assert!(reads_chain_file(&EASYNET) && !reads_chain_file(&MAINNET) && !reads_chain_file(&BETA));
+        assert_eq!(take_chain(&MAINNET, ch(0x0a, "v1.2.4")), Ok(false));
+        assert_eq!((chain(&MAINNET), fb_magic(&MAINNET), min_tag_in(&MAINNET, chain(&MAINNET).as_ref())), (None, None, None));
     }
 
     #[test]

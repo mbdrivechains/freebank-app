@@ -231,6 +231,117 @@ pub(crate) fn listed_hash(sums: &str, name: &str) -> Option<String> {
     })
 }
 
+/// What the newest release says of this network's chain (`network::CHAIN_FILE`, easynet's from 22 November).
+pub enum ReleaseChain {
+    /// No signed checksums yet (they are signed after publishing): read again at the next check.
+    Unsigned,
+    /// Signed, with no chain file: a release from before the file, or the same chain.
+    NoFile,
+    /// The chain, with the three files it was checked against, to keep (`keep_chain`).
+    Chain(crate::network::Chain, ChainFiles),
+}
+
+/// SHA256SUMS, its signature and the chain file, byte for byte as checked.
+pub struct ChainFiles {
+    sums: Vec<u8>,
+    sig: Vec<u8>,
+    file: Vec<u8>,
+}
+
+/// A chain file against SHA256SUMS and its signature: the signature, the file's line there, its hash, then its text
+/// (`network::parse_chain`). Nothing unchecked is ever read as a chain, a kept copy included.
+pub fn check_chain(net: &crate::network::Network, sums: &[u8], sig: &[u8], file: &[u8]) -> Result<crate::network::Chain, String> {
+    check_chain_with(&release_key::key(), net, sums, sig, file)
+}
+
+fn check_chain_with(
+    key: &str,
+    net: &crate::network::Network,
+    sums: &[u8],
+    sig: &[u8],
+    file: &[u8],
+) -> Result<crate::network::Chain, String> {
+    let name = crate::network::CHAIN_FILE;
+    release_key::verify_with(key, sums, sig)
+        .map_err(|why| format!("The release's signature didn't check out, so its {} wasn't taken ({}).", name, why))?;
+    let sums = std::str::from_utf8(sums).map_err(|_| "The release's checksums file isn't plain text.".to_string())?;
+    let want = listed_hash(sums, name)
+        .ok_or_else(|| format!("{} isn't in the release's signed checksums, so it wasn't taken.", name))?;
+    if hex::encode(Sha256::digest(file)) != want {
+        return Err(format!("The release's {} didn't match its signed checksums, so it wasn't taken.", name));
+    }
+    let text = std::str::from_utf8(file).map_err(|_| format!("The release's {} isn't plain text.", name))?;
+    crate::network::parse_chain(net, text)
+}
+
+/// Read `tag`'s chain file, checked (`check_chain`). The checksums' signature is checked before the file is fetched.
+pub async fn release_chain(
+    http: &reqwest::Client,
+    net: &crate::network::Network,
+    tag: &str,
+) -> Result<ReleaseChain, String> {
+    let base = format!("{}/{}", release_download(), tag);
+    let Some(sums) = download_bytes(http, &format!("{}/SHA256SUMS", base)).await? else {
+        return Ok(ReleaseChain::Unsigned);
+    };
+    let Some(sig) = download_bytes(http, &format!("{}/SHA256SUMS.sig", base)).await? else {
+        return Ok(ReleaseChain::Unsigned);
+    };
+    release_key::verify_sums(&sums, &sig).map_err(|why| {
+        format!("FreeBank {}'s signature didn't check out, so its chain wasn't read ({}).", tag, why)
+    })?;
+    if listed_hash(&String::from_utf8_lossy(&sums), crate::network::CHAIN_FILE).is_none() {
+        return Ok(ReleaseChain::NoFile);
+    }
+    let file = download_bytes(http, &format!("{}/{}", base, crate::network::CHAIN_FILE))
+        .await?
+        .ok_or_else(|| format!("FreeBank {}'s checksums list {}, but the release doesn't have it.", tag, crate::network::CHAIN_FILE))?;
+    let chain = check_chain(net, &sums, &sig, &file)?;
+    crate::network::carried_by(net, &chain, tag)?;
+    Ok(ReleaseChain::Chain(chain, ChainFiles { sums, sig, file }))
+}
+
+/// Where the chain taken from a release is kept, with what it was checked against: `release-chain/` in the network's
+/// folder.
+const KEPT_CHAIN: &str = "release-chain";
+const KEPT_FILES: [&str; 3] = ["SHA256SUMS", "SHA256SUMS.sig", crate::network::CHAIN_FILE];
+
+/// Keep a chain just taken, replacing the one kept before.
+pub fn keep_chain(app_dir: &Path, f: &ChainFiles) -> Result<(), String> {
+    let dir = app_dir.join(KEPT_CHAIN);
+    let new = app_dir.join(format!("{}.new", KEPT_CHAIN));
+    let _ = std::fs::remove_dir_all(&new);
+    std::fs::create_dir_all(&new).map_err(|e| e.to_string())?;
+    for (name, bytes) in KEPT_FILES.iter().zip([&f.sums, &f.sig, &f.file]) {
+        std::fs::write(new.join(name), bytes).map_err(|e| e.to_string())?;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::rename(&new, &dir).map_err(|e| e.to_string())
+}
+
+/// The chain kept from a release, checked again exactly as when it was taken. None: none kept. Err: a kept copy that
+/// no longer checks out, which is never used.
+pub fn kept_chain(app_dir: &Path, net: &crate::network::Network) -> Option<Result<crate::network::Chain, String>> {
+    kept_chain_with(&release_key::key(), app_dir, net)
+}
+
+fn kept_chain_with(
+    key: &str,
+    app_dir: &Path,
+    net: &crate::network::Network,
+) -> Option<Result<crate::network::Chain, String>> {
+    let dir = app_dir.join(KEPT_CHAIN);
+    let read = |n: &str| std::fs::read(dir.join(n)).ok();
+    let (sums, sig, file) = (read(KEPT_FILES[0]), read(KEPT_FILES[1]), read(KEPT_FILES[2]));
+    if sums.is_none() && sig.is_none() && file.is_none() {
+        return None;
+    }
+    Some(match (sums, sig, file) {
+        (Some(sums), Some(sig), Some(file)) => check_chain_with(key, net, &sums, &sig, &file),
+        _ => Err("The kept copy of the network's chain is incomplete, so it isn't used.".into()),
+    })
+}
+
 pub(crate) fn untar_gz(archive: &Path, dest: &Path) -> Result<(), String> {
     let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
     let mut a = tar::Archive::new(flate2::read::GzDecoder::new(f));
@@ -406,6 +517,9 @@ async fn update(mgr: &Arc<NodeManager>) -> Result<(), String> {
     set(&p, |s| s.stage = "release".into());
     let tag = mgr.latest_release(true).await?;
     set(&p, |s| s.tag = Some(tag.clone()));
+    // Easynet: the chain this release runs on, read before anything is installed, so the old chain's data moves aside
+    // for it at the start. A chain file that doesn't check out stops the update here.
+    mgr.read_chain(&tag).await?;
     let net = crate::network::current();
     if crate::network::order(net, &tag) <= crate::network::order(net, &old) {
         set(&p, |s| s.note = Some(format!("{} is already the newest.", old)));
@@ -979,5 +1093,65 @@ mod tests {
         let mut s = super::super::Settings::default();
         record_folder(&mut s, dir, "ours" != "ours", None); // someone else's beta node folder
         assert!(s.created().is_empty() && s.moved_aside.is_empty());
+    }
+
+    // A chain file signed with a throwaway key (its private half deleted), as freebankd's rel.sh writes it for v1.2.3.
+    const CHAIN_KEY: &str = include_str!("../../testdata/easynet-chain/chain.pub");
+    const CHAIN_SUMS: &[u8] = include_bytes!("../../testdata/easynet-chain/SHA256SUMS");
+    const CHAIN_SIG: &[u8] = include_bytes!("../../testdata/easynet-chain/SHA256SUMS.sig");
+    const CHAIN: &[u8] = include_bytes!("../../testdata/easynet-chain/EASYNET_CHAIN");
+
+    #[test]
+    fn a_chain_file_is_read_only_when_signed_and_listed() {
+        use crate::network::{EASYNET, MAINNET};
+        let c = check_chain_with(CHAIN_KEY, &EASYNET, CHAIN_SUMS, CHAIN_SIG, CHAIN).unwrap();
+        assert_eq!((c.magic, c.min_tag.as_str()), ([0xfb, 0x4b, 0xea, 0x09], "v1.2.3"));
+        assert_eq!(c.genesis, "a831f32fb91fbbe3307dbefe1d78db89b91e6ca8335cb0d6859d2683d06ad29c");
+        // The release key didn't sign it: refused, whatever the file says.
+        let e = check_chain(&EASYNET, CHAIN_SUMS, CHAIN_SIG, CHAIN).unwrap_err();
+        assert!(e.contains("signature didn't check out") && e.contains("different key"), "{e}");
+        // One byte changed in the file: its hash no longer matches its signed line.
+        let mut changed = CHAIN.to_vec();
+        *changed.iter_mut().rev().nth(2).unwrap() = b'4';
+        let e = check_chain_with(CHAIN_KEY, &EASYNET, CHAIN_SUMS, CHAIN_SIG, &changed).unwrap_err();
+        assert!(e.contains("didn't match its signed checksums"), "{e}");
+        // Checksums changed after signing.
+        let mut sums = CHAIN_SUMS.to_vec();
+        sums[0] ^= 1;
+        assert!(check_chain_with(CHAIN_KEY, &EASYNET, &sums, CHAIN_SIG, CHAIN).unwrap_err().contains("signature"));
+        // Signed checksums that don't list the file (every release before 22 November): the real v0.2.16's.
+        let e = check_chain(
+            &EASYNET,
+            include_bytes!("../../testdata/v0.2.16/SHA256SUMS"),
+            include_bytes!("../../testdata/v0.2.16/SHA256SUMS.sig"),
+            CHAIN,
+        )
+        .unwrap_err();
+        assert!(e.contains("isn't in the release's signed checksums"), "{e}");
+        // Signed and listed, but for another network: mainnet never takes a chain file.
+        assert!(check_chain_with(CHAIN_KEY, &MAINNET, CHAIN_SUMS, CHAIN_SIG, CHAIN).unwrap_err().contains("names easynet"));
+    }
+
+    #[test]
+    fn a_kept_chain_is_checked_again() {
+        use crate::network::EASYNET;
+        let dir = std::env::temp_dir().join(format!("fb-kept-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(kept_chain_with(CHAIN_KEY, &dir, &EASYNET).is_none(), "nothing kept yet");
+        let files = ChainFiles { sums: CHAIN_SUMS.to_vec(), sig: CHAIN_SIG.to_vec(), file: CHAIN.to_vec() };
+        keep_chain(&dir, &files).unwrap();
+        keep_chain(&dir, &files).unwrap(); // replacing the one kept before
+        assert_eq!(kept_chain_with(CHAIN_KEY, &dir, &EASYNET).unwrap().unwrap().min_tag, "v1.2.3");
+        // Not the release key's: a kept copy is never used unchecked.
+        assert!(kept_chain(&dir, &EASYNET).unwrap().is_err());
+        // Edited on disk after it was kept.
+        std::fs::write(dir.join(KEPT_CHAIN).join(crate::network::CHAIN_FILE), b"network=easynet\n").unwrap();
+        assert!(kept_chain_with(CHAIN_KEY, &dir, &EASYNET).unwrap().unwrap_err().contains("didn't match"));
+        // A part missing.
+        std::fs::remove_file(dir.join(KEPT_CHAIN).join("SHA256SUMS.sig")).unwrap();
+        assert!(kept_chain_with(CHAIN_KEY, &dir, &EASYNET).unwrap().unwrap_err().contains("incomplete"));
+        assert!(!dir.join(format!("{}.new", KEPT_CHAIN)).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

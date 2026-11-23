@@ -18,7 +18,20 @@ pub const NAMESPACE: &str = "file";
 /// Is `sig` (the armored SHA256SUMS.sig) a good signature by the release key over exactly `sums`?
 /// On failure, a few plain words on why.
 pub fn verify_sums(sums: &[u8], sig: &[u8]) -> Result<(), &'static str> {
-    verify_with(RELEASE_KEY, sums, sig)
+    verify_with(&key(), sums, sig)
+}
+
+/// The key releases are checked against: RELEASE_KEY, always, in a release build. A debug build may be given another
+/// in FREEBANK_RELEASE_TEST_KEY (an ssh public key line), to walk a release signed with a throwaway key through the
+/// debug-only mirror (FREEBANK_RELEASE_MIRROR) before a real one exists.
+pub fn key() -> String {
+    #[cfg(debug_assertions)]
+    {
+        if let Some(k) = std::env::var("FREEBANK_RELEASE_TEST_KEY").ok().filter(|k| !k.trim().is_empty()) {
+            return k.trim().to_string();
+        }
+    }
+    RELEASE_KEY.to_string()
 }
 
 pub(crate) fn verify_with(key: &str, sums: &[u8], sig: &[u8]) -> Result<(), &'static str> {

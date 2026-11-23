@@ -167,6 +167,8 @@ export interface UpdateInfo {
   latest: string | null;
   available: boolean;
   error: string | null;
+  /** Easynet: why the newest release's chain wasn't taken (the chain in use stays). */
+  chain_error: string | null;
 }
 
 export interface Removed {

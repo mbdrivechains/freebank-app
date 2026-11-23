@@ -49,12 +49,31 @@ pub struct Recheck {
 /// Every 30 seconds while the app runs.
 pub fn spawn(mgr: Arc<NodeManager>) {
     tauri::async_runtime::spawn(async move {
+        let mut release_read: Option<std::time::Instant> = None;
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
             super::restart::restart_old(&mgr).await;
             look(&mgr).await;
+            watch_release(&mgr, &mut release_read).await;
         }
     });
+}
+
+/// How often the app reads easynet's newest release in the background.
+const RELEASE_WATCH: Duration = Duration::from_secs(10 * 60);
+
+/// Easynet, every `RELEASE_WATCH` (v0.7.8): the newest release, read again with its chain file. A fresh chain's release
+/// is published minutes after easynet's node moves to it, so the update is offered (the footer, the Node tab) within
+/// minutes, not only at the next launch or "Check for updates". The screens read the result every five minutes.
+async fn watch_release(mgr: &NodeManager, at: &mut Option<std::time::Instant>) {
+    if !crate::network::reads_chain_file(crate::network::current()) || at.is_some_and(|t| t.elapsed() < RELEASE_WATCH) {
+        return;
+    }
+    if mgr.settings.lock().await.installed_tag.is_none() {
+        return;
+    }
+    *at = Some(std::time::Instant::now());
+    let _ = mgr.latest_release(true).await;
 }
 
 async fn look(mgr: &NodeManager) {

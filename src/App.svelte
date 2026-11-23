@@ -297,6 +297,17 @@
     return () => clearInterval(t);
   });
 
+  // The node update offer (the footer, the Node tab), every five minutes (v0.7.8): on easynet the app reads the newest
+  // release every ten minutes in the background, so a fresh chain's release is offered soon after it is out. Elsewhere
+  // this reads the half-hour cache.
+  onMount(() => {
+    if (isPWA) return;
+    const t = setInterval(() => {
+      if (connected && !document.hidden) checkForUpdate();
+    }, 5 * 60_000);
+    return () => clearInterval(t);
+  });
+
   // The network by name, never the node's raw chain word (v0.2.6): a node before v0.2.19 calls beta "main"; v0.2.19
   // calls it "beta", and its "main" is FreeBank's mainnet (it says "dormant" until switched on).
   function networkName(i: BlockchainInfo): string {

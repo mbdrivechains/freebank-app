@@ -239,6 +239,10 @@ pub struct NodeManager {
     explorer_tip: std::sync::Mutex<Option<(Instant, u64)>>,
     /// The newest C++ release on GitHub, cached so the Node tab doesn't ask on every poll.
     latest: std::sync::Mutex<Option<(Instant, Result<String, String>)>>,
+    /// Easynet: the release whose chain file was read (or found to have none), so it isn't read again.
+    chain_read: std::sync::Mutex<Option<String>>,
+    /// Why the newest release's chain, or the kept copy, wasn't taken: the Node tab says so.
+    pub chain_error: std::sync::Mutex<Option<String>>,
     /// freebankd -version per release tag: ("v0.2.15", "843ccae").
     versions: std::sync::Mutex<HashMap<String, (String, Option<String>)>>,
     /// Set once "Obliterate" has removed the app's own folder: nothing is written to disk after.
@@ -298,7 +302,7 @@ impl NodeManager {
             .connect_timeout(Duration::from_secs(8))
             .build()
             .expect("http client");
-        Self {
+        let mgr = Self {
             app_dir,
             http,
             settings: tokio::sync::Mutex::new(settings),
@@ -310,6 +314,8 @@ impl NodeManager {
             activity: std::sync::Mutex::new(None),
             explorer_tip: std::sync::Mutex::new(None),
             latest: std::sync::Mutex::new(None),
+            chain_read: std::sync::Mutex::new(None),
+            chain_error: std::sync::Mutex::new(None),
             versions: std::sync::Mutex::new(HashMap::new()),
             obliterated: AtomicBool::new(false),
             at_exit: std::sync::Mutex::new(Default::default()),
@@ -325,7 +331,9 @@ impl NodeManager {
             l1_wait: std::sync::Mutex::new(None),
             l1_wait_end: tokio::sync::Notify::new(),
             restarted: std::sync::Mutex::new(None),
-        }
+        };
+        mgr.load_chain();
+        mgr
     }
 
     /// Refuse anything that would write to disk once "Obliterate" has run.
@@ -359,7 +367,75 @@ impl NodeManager {
         }
         let r = install::find_release(&self.http).await;
         *self.latest.lock().unwrap() = Some((Instant::now(), r.clone()));
+        if let Ok(tag) = &r {
+            // A chain file that doesn't check out keeps the chain in use; the Node tab says why (`chain_error`).
+            let _ = self.read_chain(tag).await;
+        }
         r
+    }
+
+    /// Easynet: take the chain `tag` names (`network::CHAIN_FILE`), checked against its signed checksums, if it moves
+    /// forward; keep it with what it was checked against. Once per release, except while unsigned or failing.
+    pub async fn read_chain(&self, tag: &str) -> Result<(), String> {
+        let net = crate::network::current();
+        if !crate::network::reads_chain_file(net) || self.chain_read.lock().unwrap().as_deref() == Some(tag) {
+            return Ok(());
+        }
+        let taken = match install::release_chain(&self.http, net, tag).await {
+            Ok(install::ReleaseChain::Unsigned) => return Ok(()),
+            Ok(install::ReleaseChain::NoFile) => {
+                crate::network::clear_chain_doubt();
+                Ok(None)
+            }
+            Ok(install::ReleaseChain::Chain(c, files)) => {
+                let said = format!("FreeBank {} names {}'s chain {} (from {})", tag, net.name, hex::encode(c.magic), c.min_tag);
+                crate::network::take_chain(net, c).map(|took| took.then_some((said, files)))
+            }
+            Err(e) => Err(e),
+        };
+        match taken {
+            Ok(t) => {
+                if let Some((said, files)) = t {
+                    if let Err(e) = install::keep_chain(&self.app_dir, &files) {
+                        crate::activity::note(&format!("{}: taken, but not kept ({})", said, e));
+                    } else {
+                        crate::activity::note(&format!("{}: taken", said));
+                    }
+                }
+                *self.chain_read.lock().unwrap() = Some(tag.to_string());
+                *self.chain_error.lock().unwrap() = None;
+                Ok(())
+            }
+            Err(e) => {
+                crate::activity::note(&e);
+                *self.chain_error.lock().unwrap() = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    /// At launch, on easynet: the chain kept from a release, checked again; one that doesn't check out isn't used.
+    fn load_chain(&self) {
+        let net = crate::network::current();
+        if !crate::network::reads_chain_file(net) {
+            return;
+        }
+        let r = match install::kept_chain(&self.app_dir, net) {
+            // None kept (a first launch, a cleared app folder): the built-in chain may be older than the node's data, so
+            // nothing moves aside for network bytes until a release is read.
+            None => return crate::network::doubt_chain(net),
+            Some(r) => r.and_then(|c| crate::network::take_chain(net, c)),
+        };
+        if let Err(e) = r {
+            crate::network::doubt_chain(net);
+            let e = format!(
+                "The app's saved copy of {}'s chain didn't check out, so it isn't used, and your node's data stays where it \
+                 is until the app reads the chain from a release again. ({})",
+                net.name, e
+            );
+            crate::activity::note(&e);
+            *self.chain_error.lock().unwrap() = Some(e);
+        }
     }
 
     /// The version and commit of an installed release, from `freebankd -version` (cached). A release

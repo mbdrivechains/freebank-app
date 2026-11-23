@@ -20,6 +20,11 @@ pub const PIN_RECORD: &str = ".freebank-pin";
 /// block, is the old chain's. Written before the move, so a move cut short and finished at the next start keeps one.
 pub const MOVED_RECORD: &str = ".freebank-moved";
 
+/// The FreeBank network bytes the chain data last moved aside for (hex), kept in the data folder (v0.7.8). The data moves
+/// aside once per chain: blocks with other bytes after a move for these were written by the node since, so the
+/// release disagrees with the chain its release names, and nothing more moves (it would every 30 seconds).
+pub const MOVED_FOR_RECORD: &str = ".freebank-moved-for";
+
 /// This run's data folder's MOVED_RECORD (0: never moved), for the lists.
 static MOVED_AT: AtomicU64 = AtomicU64::new(0);
 
@@ -37,7 +42,13 @@ const OLD_CHAIN_TOO: &[&str] = &["peers.dat", "banlist.dat", "fee_estimates.dat"
 /// again since. None for a folder that isn't FreeBank's, or whose chain is the network's.
 pub fn old_chain(datadir: &Path) -> Option<String> {
     let n = crate::network::current();
-    old_chain_on(datadir, n.pin_hash, n.restarted, n.fb_magic)
+    old_chain_on(datadir, n.pin_hash, n.restarted, checked_magic(n))
+}
+
+/// The network bytes FreeBank's chain data is checked against: none while the chain is in doubt (`chain_in_doubt`),
+/// so nothing moves aside for them then.
+fn checked_magic(n: &crate::network::Network) -> Option<[u8; 4]> {
+    (!crate::network::chain_in_doubt(n)).then(|| crate::network::fb_magic(n)).flatten()
 }
 
 fn old_chain_on(datadir: &Path, pin: &str, restarted: Option<u64>, magic: Option<[u8; 4]>) -> Option<String> {
@@ -45,8 +56,9 @@ fn old_chain_on(datadir: &Path, pin: &str, restarted: Option<u64>, magic: Option
         return None;
     }
     // FreeBank's own chain started again on the same eCash chain (easynet on v1.1.0): its blocks carry other bytes.
+    // Not when the data already moved aside for this chain: then the node wrote them (`mismatch`).
     if let Some(m) = old_magic(datadir, magic) {
-        return Some(format!("FreeBank's chain {}", hex::encode(m)));
+        return (!moved_for(datadir, magic)).then(|| format!("FreeBank's chain {}", hex::encode(m)));
     }
     if pin.is_empty() {
         return None;
@@ -94,6 +106,40 @@ fn old_magic(datadir: &Path, magic: Option<[u8; 4]>) -> Option<[u8; 4]> {
     (head != [0; 4] && head != want).then_some(head)
 }
 
+/// Did the chain data already move aside for these network bytes (`MOVED_FOR_RECORD`)?
+fn moved_for(datadir: &Path, magic: Option<[u8; 4]>) -> bool {
+    let Some(m) = magic else { return false };
+    std::fs::read_to_string(datadir.join(MOVED_FOR_RECORD)).is_ok_and(|t| t.trim() == hex::encode(m))
+}
+
+/// Blocks with other bytes than the network's, written after the data moved aside for the network's: the installed
+/// release runs another chain than its release names. What to say, if so.
+pub fn mismatch(datadir: &Path) -> Option<String> {
+    let n = crate::network::current();
+    let want = checked_magic(n);
+    let got = old_magic(datadir, want)?;
+    moved_for(datadir, want).then(|| {
+        format!(
+            "Your FreeBank node writes chain {}, but its release names {} for {}. Nothing more was moved aside; \
+             please send a report from Settings › About.",
+            hex::encode(got),
+            hex::encode(want.unwrap_or_default()),
+            n.name
+        )
+    })
+}
+
+/// `mismatch`, once in the activity log and on the Node tab (`chain_error`).
+fn say_mismatch(mgr: &NodeManager, datadir: &Path) {
+    if let Some(m) = mismatch(datadir) {
+        let mut e = mgr.chain_error.lock().unwrap();
+        if e.as_deref() != Some(m.as_str()) {
+            crate::activity::note(&format!("node: {m}"));
+            *e = Some(m);
+        }
+    }
+}
+
 /// Before each start, after `settle`: the pin this start uses.
 pub fn remember(datadir: &Path) {
     if !pin_hash().is_empty() && datadir.join(DATADIR_MARK).is_file() {
@@ -104,15 +150,30 @@ pub fn remember(datadir: &Path) {
 /// Before a start, with nothing using the folder: an old chain's data moves aside. The folder it went to, if it did.
 pub fn settle(mgr: &NodeManager, datadir: &Path) -> Result<Option<String>, String> {
     if old_chain(datadir).is_none() {
+        say_mismatch(mgr, datadir);
         tidy(datadir);
         return Ok(None);
     }
     let n = crate::network::current();
-    let freebank_only = old_magic(datadir, n.fb_magic).is_some();
+    let magic = old_magic(datadir, checked_magic(n));
+    // Another network's FreeBank chain (mainnet's, beta's) is never moved aside for this one: the folder is the wrong one.
+    if let Some(other) = magic.and_then(crate::network::other_chain) {
+        return Err(format!(
+            "The data folder {} holds FreeBank's {} chain, so FreeBank on {} won't use it. Choose another data folder \
+             under Advanced.",
+            datadir.display(),
+            other,
+            n.name
+        ));
+    }
+    let freebank_only = magic.is_some();
     let t = now();
     std::fs::write(datadir.join(MOVED_RECORD), t.to_string()).map_err(|e| e.to_string())?;
     MOVED_AT.store(t, Ordering::Relaxed);
     let away = move_aside(datadir)?;
+    if let (true, Some(want)) = (freebank_only, checked_magic(n)) {
+        let _ = std::fs::write(datadir.join(MOVED_FOR_RECORD), hex::encode(want));
+    }
     tidy(datadir);
     let why = if freebank_only {
         format!("FreeBank on {} started a new chain, so your node syncs it from its first block.", n.name)
@@ -259,10 +320,16 @@ pub async fn restart_old(mgr: &NodeManager) {
             return;
         }
     }
-    if old_chain(Path::new(&s.datadir)).is_none() {
+    // A release older than the chain now needs (easynet's moved on, read from its newest release): starting it again
+    // would be refused, so it's left as it is until Update node, which moves the old chain aside.
+    if s.installed_tag.as_deref().is_some_and(|t| crate::network::below_min(crate::network::current(), t)) {
         return;
     }
-    crate::activity::note("node: it runs on the eCash chain from before it started again; starting it again");
+    let Some(why) = old_chain(Path::new(&s.datadir)) else {
+        say_mismatch(mgr, Path::new(&s.datadir));
+        return;
+    };
+    crate::activity::note(&format!("node: it runs on an old chain ({why}); starting it again"));
     if let Err(e) = process::stop(mgr).await {
         crate::activity::note(&format!("node: stopping it to start again failed: {e}"));
         return;
@@ -461,6 +528,13 @@ mod tests {
         assert_eq!(old_chain_on(&d, pin, None, new).as_deref(), Some("FreeBank's chain fb4bea03"), "easynet's v1.0.x chain");
         assert_eq!(old_chain_on(&d, pin, None, None), None, "a network that doesn't say its bytes");
         assert_eq!(old_chain_on(&d, "", None, new).as_deref(), Some("FreeBank's chain fb4bea03"), "whatever the pin");
+        // Once per chain (v0.7.8): after a move for fb4bea05, other bytes were written by the node since.
+        std::fs::write(d.join(MOVED_FOR_RECORD), "fb4bea05").unwrap();
+        assert_eq!(old_chain_on(&d, pin, None, new), None, "moved for this chain already");
+        assert!(moved_for(&d, new) && !moved_for(&d, Some([0xfb, 0x4b, 0xea, 0x06])) && !moved_for(&d, None));
+        std::fs::write(d.join(MOVED_FOR_RECORD), "fb4bea04").unwrap();
+        assert_eq!(old_chain_on(&d, pin, None, new).as_deref(), Some("FreeBank's chain fb4bea03"), "moved for an earlier one");
+        std::fs::remove_file(d.join(MOVED_FOR_RECORD)).unwrap();
         blocks_with(&d, [0xfb, 0x4b, 0xea, 0x05]);
         assert_eq!(old_chain_on(&d, pin, None, new), None, "the new chain's own blocks");
         std::fs::write(d.join("blocks/blk00000.dat"), vec![0u8; 4096]).unwrap();

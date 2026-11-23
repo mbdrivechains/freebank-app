@@ -429,6 +429,9 @@
         <button class="link-btn" on:click={recheck} disabled={checking}>{checking ? "Checking…" : "Check for updates"}</button>
       </div>
     {/if}
+    {#if $update?.chain_error}
+      <p class="soft-error">{$update.chain_error}</p>
+    {/if}
   </div>
 
   {#if up}

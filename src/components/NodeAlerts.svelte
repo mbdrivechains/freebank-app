@@ -58,7 +58,8 @@
       </p>
     {:else}
       <p class="muted">
-        No update is offered yet. When one is needed, it comes as a new FreeBank app, which updates the nodes it installs:
+        No update is offered yet. When one is needed, the app offers it here, or it comes as a new FreeBank app, which
+        updates the nodes it installs:
         <button class="link" on:click={() => openUrl(RELEASES)}>FreeBank's releases</button>. A node you run yourself
         updates from its own releases.
       </p>

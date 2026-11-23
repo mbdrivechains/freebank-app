@@ -214,6 +214,8 @@ pub struct UpdateInfo {
     /// A newer C++ release than the installed one exists.
     pub available: bool,
     pub error: Option<String>,
+    /// Easynet: why the newest release's chain wasn't taken (the chain in use stays).
+    pub chain_error: Option<String>,
 }
 
 /// Is there a newer release than the one this app installed? Cached for 30 minutes unless `force`.
@@ -226,6 +228,7 @@ pub async fn update_check(mgr: State<'_, Mgr>, force: bool) -> Result<UpdateInfo
             latest: None,
             available: false,
             error: None,
+            chain_error: None,
         });
     }
     let latest = mgr.latest_release(force).await;
@@ -241,6 +244,7 @@ pub async fn update_check(mgr: State<'_, Mgr>, force: bool) -> Result<UpdateInfo
         available,
         error: latest.as_ref().err().cloned(),
         latest: latest.ok(),
+        chain_error: mgr.chain_error.lock().unwrap().clone(),
     })
 }
 
