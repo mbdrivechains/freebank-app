@@ -191,4 +191,26 @@ check("the notice: one text in the app, the README and the release notes", () =>
   assert.equal(nt.L3_TESTNET("easynet"), "easynet is a public test network. Its coins, notes and tokens have no value, and it may be restarted. Never pay for them or accept them as payment.");
 });
 
+// A failed house's payouts wait for its loan book (node v1.2.8, TG-2): the card's blocks and Claim's four answers, in
+// the node's exact words (wallet.cpp, HousePayoutReady), never "insolvent".
+const er = await load("src/lib/errors.ts");
+check("a failed house's collection: the card and Claim's answers in plain words", () => {
+  const f = g.houseCard({ effective_status: "insolvent", insolventheight: 1908, collection_done: false, collection_backstop: 40000 }, cap);
+  assert.equal(f.collectionDone, false);
+  assert.equal(f.collectionBackstop, 40000);
+  const old = g.houseCard({ effective_status: "insolvent", insolventheight: 1908 }, cap);
+  assert.equal(old.collectionDone, null, "an older node says nothing, so the card says nothing");
+  assert.equal(g.houseCard({ effective_status: "open", collection_done: false, collection_backstop: 5 }, cap).collectionDone, null);
+  const rpc = (m) => new Error(`RPC error -1: ${m}`);
+  const ready = er.nice(rpc("Bill 7 is ready to clear from the failed house's loan book; clearbills=false, so nothing was sent. Clear it with claimbillescrow 7, then run the payout again after that confirms!"));
+  assert.ok(ready.startsWith("Before this claim can pay, bill #7 must be collected") && ready.endsWith("Nothing was sent."), ready);
+  const cleared = er.nice(rpc("Bill 7 was still in the failed house's loan book: this wallet moved its bond into the house's escrow first (claimbillescrow, abcd). Run the payout again after that confirms, so it counts the bond!"));
+  assert.ok(cleared.includes("collected bill #7") && cleared.includes("used the claim's fee"), cleared);
+  const waiting = er.nice(rpc("A bill leaving this house's loan book (abcd) is waiting for a block: run the payout again after it confirms, so it counts that money!"));
+  assert.ok(waiting.startsWith("A bill is leaving this failed house's loan book") && waiting.endsWith("Nothing was sent."), waiting);
+  const collecting = er.nice(rpc("The failed house is still collecting its loan book: payouts open once every bill has left it (or at the backstop, gethouse: collection_done). Anyone may clear a bill with claimbillescrow once it is ready: bills 3 (from block 12345), 4 (from block 13000) and 2 more!"));
+  assert.ok(collecting.includes("Bills still out: #3 (due from block 12,345), #4 (due from block 13,000) and 2 more."), collecting);
+  for (const t of [ready, cleared, waiting, collecting]) assert.ok(!/insolvent|clearbills|claimbillescrow/i.test(t), t);
+});
+
 console.log(`grams: ${n} checks passed`);

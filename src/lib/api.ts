@@ -450,8 +450,11 @@ export const api = {
 
   /** A failed house: burn `units` of its notes (whole coins) for their share of what the chain seized, mainly its
    *  escrow, valued at its highest bid of the 90 days before it failed and scaled down if the escrow is short. */
-  async claimNote(houseId: number, units: number, fee = 0.001): Promise<string> {
-    const r = (await fbCall('claimnote', [houseId, units, fee])) as { txid: string };
+  async claimNote(houseId: number, units: number, fee = 0.001, clearBills?: boolean): Promise<string> {
+    // Node v1.2.8 (TG-2): with clearbills false, a claim that a ready bill must precede sends nothing and names the
+    // bill, so clearing it is a step of its own. Older nodes take no fourth argument.
+    const params: unknown[] = clearBills === undefined ? [houseId, units, fee] : [houseId, units, fee, clearBills];
+    const r = (await fbCall('claimnote', params)) as { txid: string };
     return r.txid;
   },
 

@@ -79,7 +79,7 @@ export const WAYS: Way[] = [
         text: "Under House tools: issue a bill, enter the price as the face amount, the bond you agreed, the days to the due date as blocks (144 a day), and the blocks to pay it in (1,008 is about a week).",
         go: { view: "credit", seg: "bills", label: "Bills › House tools" },
       },
-      { who: "Your customer", text: "On the new bill, choose Endorse and paste your bill key. The bill then shows in your Bills, with you as holder." },
+      { who: "Your customer", text: "On the new bill, choose Endorse and paste your bill key. The bill shows in your Bills, with you as holder, once that is in a block (about ten minutes). Hand over the goods once it's there: until then it can still be taken back." },
       { who: "Your customer", text: "At the due date, choose Retire on the bill: it pays you the face amount, and their bond comes back." },
       { who: "You", text: "If it isn't paid by the end of the grace period, choose Claim the bond on the bill." },
     ],

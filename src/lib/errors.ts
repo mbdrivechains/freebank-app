@@ -57,6 +57,29 @@ export function nice(e: unknown): string {
       return `Another action on ${what} is waiting for a block. Try again after the next block (about ten minutes). Nothing was sent.`;
     }
   }
+  // v0.7.9: a failed house pays out once its loan book is empty (node v1.2.8, TG-2). These four wordings are an
+  // interface the node keeps (wallet.cpp, HousePayoutReady).
+  {
+    const bill = /Bill (\d+) /.exec(m)?.[1];
+    const which = bill ? `bill #${bill}` : "a bill";
+    if (/is ready to clear from the failed house's loan book; clearbills=false, so nothing was sent/.test(m)) {
+      return `Before this claim can pay, ${which} must be collected into the failed house's escrow, so its bond counts for holders. Collect it first (a transaction with its own small fee), then claim after the next block. Nothing was sent.`;
+    }
+    if (/was still in the failed house's loan book/.test(m)) {
+      return `Before paying out, this claim collected ${which} into the failed house's escrow, so its bond counts for holders. That used the claim's fee. Claim again after the next block (about ten minutes).`;
+    }
+    if (/is waiting for a block: run the payout again/.test(m)) {
+      return "A bill is leaving this failed house's loan book in a transaction that's waiting for a block. Claim again after the next block (about ten minutes), so the payout counts that money. Nothing was sent.";
+    }
+    if (/The failed house is still collecting its loan book/.test(m)) {
+      const out = [...m.matchAll(/(\d+) \((ready now|from block (\d+))\)/g)].map((b) =>
+        b[3] ? `#${b[1]} (due from block ${Number(b[3]).toLocaleString("en-US")})` : `#${b[1]}`,
+      );
+      const more = /and (\d+) more/.exec(m)?.[1];
+      const list = out.length ? ` Bills still out: ${out.join(", ")}${more ? ` and ${more} more` : ""}.` : "";
+      return `Payouts at this failed house haven't opened yet: it's still collecting the bills it holds. They open once every bill is repaid or retired, or about 3 months after its collection window ends at the latest.${list} Nothing was sent.`;
+    }
+  }
   // v0.7.5: protests and claims, the node's refusals in plain words.
   if (/No lapsed unprotested pre-auth demand to protest/i.test(m)) {
     return "There's no unpaid demand on this house to protest yet: a demand can be protested only once its window (about a week) has passed without payment. Nothing was sent.";

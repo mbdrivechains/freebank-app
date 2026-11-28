@@ -149,6 +149,11 @@ export interface HouseState {
   cure_insolvent_height?: number;
   next_cure_height?: number;
   insolventheight?: number;
+  /** Node v1.2.8 (TG-2), a failed house: payouts open once its loan book is empty (collection_done), at the latest at
+   *  collection_backstop; collection_window_ends is when its collection window closes. */
+  collection_done?: boolean;
+  collection_window_ends?: number;
+  collection_backstop?: number;
   [k: string]: unknown;
 }
 
@@ -177,6 +182,10 @@ export interface HouseCard {
   cureUntil: number | null;
   protestedAt: number | null;
   failedAt: number | null;
+  /** A failed house on node v1.2.8 or later: false while it still collects its bills (no payout yet), with the block
+   *  payouts open at the latest; null where the node doesn't say. */
+  collectionDone: boolean | null;
+  collectionBackstop: number | null;
 }
 
 export function houseCard(h: HouseState, c: HouseCapital): HouseCard {
@@ -199,6 +208,8 @@ export function houseCard(h: HouseState, c: HouseCapital): HouseCard {
     cureUntil: h.effective_status === "stressed" ? pos(h.cure_insolvent_height) : null,
     protestedAt: pos(h.protest_height),
     failedAt: h.effective_status === "insolvent" ? pos(h.insolventheight) : null,
+    collectionDone: h.effective_status === "insolvent" && typeof h.collection_done === "boolean" ? h.collection_done : null,
+    collectionBackstop: h.effective_status === "insolvent" ? pos(h.collection_backstop) : null,
   };
 }
 

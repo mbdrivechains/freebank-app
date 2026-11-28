@@ -68,10 +68,18 @@ impl RpcError {
     }
 
     pub fn did_nothing(&self) -> bool {
-        matches!(
-            self,
-            RpcError::Rpc { .. } | RpcError::NotConfigured | RpcError::Refused(_) | RpcError::Http(401) | RpcError::Http(403)
-        )
+        !self.sent_first()
+            && matches!(
+                self,
+                RpcError::Rpc { .. } | RpcError::NotConfigured | RpcError::Refused(_) | RpcError::Http(401) | RpcError::Http(403)
+            )
+    }
+
+    /// Node v1.2.8 (TG-2): a failed house's payout called with clearbills on (the node's default) first clears a ready
+    /// bill into the house's escrow, paying the call's fee, and then answers with an error. That error came after a
+    /// send. The wording is an interface the node keeps (wallet.cpp, HousePayoutReady).
+    pub fn sent_first(&self) -> bool {
+        matches!(self, RpcError::Rpc { message, .. } if message.contains("was still in the failed house's loan book"))
     }
 }
 

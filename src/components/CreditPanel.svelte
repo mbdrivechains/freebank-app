@@ -110,10 +110,10 @@
     seg = s;
     error = "";
     detectNoteUnit();
-    if (s === "notes") { loadNotes(); loadHouses(); }
+    if (s === "notes") { loadNotes(); loadHouses(); checkNodeVersion(); }
     else if (s === "houses") loadHouses();
     else if (s === "pools") { loadHouses().then(() => { if ($noteUnit === "sat" || $notePoolsOpen) loadPools(); }); }
-    else { loadBills(); loadNotes(); loadHouses(); checkRepayInNotes(); }
+    else { loadBills(); loadNotes(); loadHouses(); checkNodeVersion(); }
   }
   onMount(() => {
     mounted = true;
@@ -158,19 +158,45 @@
     protestBusy = null;
   }
 
+  // Node v1.2.8 (TG-2): a failed house pays out once its loan book is empty. The app claims with clearbills off, so a
+  // ready bill is never collected behind the claim's back: the node names it, and Collect is a step of its own (its
+  // own fee, and its own "Approve sends on my phone" check). `collectFirst` is that bill, by house.
+  let collectFirst: Record<number, number> = {};
   async function doClaim(houseId: number, units: number) {
     protestBusy = houseId;
     error = "";
     try {
-      const txid = await withUnlock(() => api.claimNote(houseId, units), { what: `claim on ${nameOf(houses, houseId)}` });
+      const txid = await withUnlock(() => api.claimNote(houseId, units, 0.001, nodeAtLeast(1, 2, 8) ? false : undefined), {
+        what: `claim on ${nameOf(houses, houseId)}`,
+      });
       showReceipt({ txid, what: `Your ${A.fmt(units)} of ${nameOf(houses, houseId)} notes were burned for their share of what the chain seized from the house` });
+      const { [houseId]: _, ...rest } = collectFirst;
+      collectFirst = rest;
       await loadNotes();
     } catch (e) {
+      const ready = /Bill (\d+) is ready to clear from the failed house's loan book/.exec(String(e));
+      if (ready) collectFirst = { ...collectFirst, [houseId]: Number(ready[1]) };
       error = nice(e);
       if (/sum exactly/.test(error))
         error =
           "A claim takes whole note coins adding up to exactly that amount, held at one of your addresses. Gather them " +
           "first (Send, with the address left empty), then claim after the next block.";
+    }
+    protestBusy = null;
+  }
+
+  async function doCollectFirst(houseId: number) {
+    const id = collectFirst[houseId];
+    if (!id) return;
+    protestBusy = houseId;
+    error = "";
+    try {
+      const txid = await withUnlock(() => api.claimBillEscrow(id), { what: `collect Bill #${id} into the failed house's escrow` });
+      showReceipt({ txid, what: `Collected Bill #${id} into ${nameOf(houses, houseId)}'s escrow. Claim your notes after the next block` });
+      const { [houseId]: _, ...rest } = collectFirst;
+      collectFirst = rest;
+    } catch (e) {
+      error = nice(e);
     }
     protestBusy = null;
   }
@@ -318,7 +344,9 @@
         error =
           "A redeem or a demand takes whole note coins adding up to exactly that amount, and your notes of this house " +
           "don't. Use the full amount you hold, or first move that amount to yourself (Send, with the address left " +
-          "empty) to make a coin of that size, then try again after the next block.";
+          "empty) to make a coin of that size, then try again after the next block." +
+          // Node v1.2.6: a redeem spends only notes already in a block (S1X-24), though the list shows ones still waiting.
+          (type === "redeem" ? " Notes that reached you in the last few minutes can be redeemed once their block is in." : "");
     }
     actionBusy = false;
   }
@@ -946,7 +974,8 @@
       const id = billAction.id;
       const to = endorsePubkey.trim();
       const txid = await withUnlock(() => api.endorseBill(id, to), { what: `endorse Bill #${id}` });
-      showReceipt({ txid, what: `Endorsed Bill #${id}` });
+      // Node rule G (after v1.2.6): until it's in a block, the drawee's retire or the holder's claim can displace it.
+      showReceipt({ txid, what: `Handed Bill #${id} on. It's theirs once this is in a block (about ten minutes)` });
       billAction = null;
       endorsePubkey = "";
       await loadBills();
@@ -967,17 +996,22 @@
     return Math.max(0, Math.min(free, faceUnits(b)));
   }
 
-  // Node v0.2.27 or later takes `notes` on retirebill (its subversion, "/FreeBank:0.2.29/"); an older one refuses the
-  // argument, so the form isn't offered there.
+  // The node's version, from its subversion ("/FreeBank:0.2.29/"), read when the screen opens: arguments an older node
+  // refuses aren't sent to it. Node v0.2.27 or later takes `notes` on retirebill, so the form is offered only there.
+  let nodeVersion: [number, number, number] = [0, 0, 0];
   let repaysInNotes = false;
-  async function checkRepayInNotes() {
+  function nodeAtLeast(a: number, b: number, c: number): boolean {
+    const [x, y, z] = nodeVersion;
+    return x !== a ? x > a : y !== b ? y > b : z >= c;
+  }
+  async function checkNodeVersion() {
     try {
       const m = /FreeBank:(\d+)\.(\d+)\.(\d+)/.exec((await api.getNetworkInfo()).subversion);
-      const v = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
-      repaysInNotes = v[0] > 0 || v[1] > 2 || (v[1] === 2 && v[2] >= 27);
+      nodeVersion = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : [0, 0, 0];
     } catch {
-      repaysInNotes = false;
+      nodeVersion = [0, 0, 0];
     }
+    repaysInNotes = nodeAtLeast(0, 2, 27);
   }
 
   // What the node burns for "up to `target` units": whole coins, the largest that still fit (node v0.2.27,
@@ -1154,9 +1188,19 @@
                     mainly its {BASE_TICKER} escrow{A.unit === "mg" ? ", each gram at its highest bid of the 90 days before it failed" : ""}.
                     That may not cover them in full. Claims close 2 years after the house failed{cards[n.house_id]?.failedAt ? ` (about block ${((cards[n.house_id]?.failedAt ?? 0) + CLAIM_WINDOW).toLocaleString("en-US")})` : ""};
                     after that these notes can't be claimed.</p>
-                  <button on:click={() => doClaim(n.house_id, n.units)} disabled={protestBusy === n.house_id}>
-                    {protestBusy === n.house_id ? "…" : `Claim ${A.fmt(n.units)}`}
-                  </button>
+                  {#if cards[n.house_id]?.collectionDone === false}
+                    <p class="hint">Payouts open once the house has collected the bills it holds, each repaid or retired{cards[n.house_id]?.collectionBackstop ? `, or at about block ${(cards[n.house_id]?.collectionBackstop ?? 0).toLocaleString("en-US")} at the latest` : ""}.
+                      Until then Claim says what is still out; a bill that is due can be collected now, which brings payouts closer.</p>
+                  {/if}
+                  {#if collectFirst[n.house_id]}
+                    <button on:click={() => doCollectFirst(n.house_id)} disabled={protestBusy === n.house_id}>
+                      {protestBusy === n.house_id ? "…" : `Collect bill #${collectFirst[n.house_id]}`}
+                    </button>
+                  {:else}
+                    <button on:click={() => doClaim(n.house_id, n.units)} disabled={protestBusy === n.house_id}>
+                      {protestBusy === n.house_id ? "…" : `Claim ${A.fmt(n.units)}`}
+                    </button>
+                  {/if}
                 </div>
               {/if}
               <div class="note-actions">
@@ -1881,6 +1925,8 @@
       <div class="card">
         <h3>Receive a bill</h3>
         <p class="muted">Share a new bill key so someone can hand a bill to you.</p>
+        <p class="hint">A bill handed to you shows in your bills once its block is in, usually within ten minutes. Pay for
+          it, or hand over goods, only once it shows here: until then it can still be taken back.</p>
         {#if newBillPubkey}
           <div class="address-display">
             <code>{newBillPubkey}</code>

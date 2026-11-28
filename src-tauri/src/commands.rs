@@ -310,6 +310,8 @@ pub(crate) async fn screen_call(
     match c.call_fresh_typed(method, params).await {
         Ok(v) => Ok(v),
         Err(e) if e.did_nothing() => Err((e.for_ui(), true)),
+        // A payout that cleared a bill first (node v1.2.8): its answer says what went out, and the count stays.
+        Err(e) if e.sent_first() => Err((e.for_ui(), false)),
         Err(_) if crate::phone::CREDIT_PAYMENTS.contains(&method) => Err((CREDIT_MAY_HAVE_GONE.into(), false)),
         Err(e) => Err((e.for_ui(), false)),
     }
@@ -356,5 +358,23 @@ mod tests {
         assert!(!e.1 && e.0 != CREDIT_MAY_HAVE_GONE, "{e:?}");
         assert_eq!(screen_call(&mut c, "issuebill", vec![]).await.unwrap(), json!({"txid": "t"}));
         assert_eq!(calls.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_claim_that_cleared_a_bill_first_keeps_its_count_and_one_that_sent_nothing_gives_it_back() {
+        // Node v1.2.8 (TG-2), HousePayoutReady's answers as the node words them.
+        const CLEARED: &str = "Bill 7 was still in the failed house's loan book: this wallet moved its bond into the house's \
+            escrow first (claimbillescrow, abcd). Run the payout again after that confirms, so it counts the bond!";
+        const READY: &str = "Bill 7 is ready to clear from the failed house's loan book; clearbills=false, so nothing was \
+            sent. Clear it with claimbillescrow 7, then run the payout again after that confirms!";
+        let (mut c, _calls) = stub::serve(|m, p| match (m, p.get(3).and_then(|v| v.as_bool())) {
+            ("claimnote", Some(false)) => Err((-1, READY.into())),
+            ("claimnote", _) => Err((-1, CLEARED.into())),
+            _ => Ok(json!({"txid": "t"})),
+        });
+        let e = screen_call(&mut c, "claimnote", vec![json!(1), json!(5), json!(0.001)]).await.unwrap_err();
+        assert_eq!(e, (format!("RPC error -1: {CLEARED}"), false), "the op 11 went out with the claim's fee");
+        let e = screen_call(&mut c, "claimnote", vec![json!(1), json!(5), json!(0.001), json!(false)]).await.unwrap_err();
+        assert_eq!(e, (format!("RPC error -1: {READY}"), true), "nothing went out");
     }
 }
