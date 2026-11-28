@@ -582,6 +582,16 @@ fn too_old_in(n: &Network, c: Option<&Chain>, tag: &str) -> String {
     )
 }
 
+/// The release the network's chain needs when `installed` is older than it (v0.7.10: the update alert says the node
+/// was left on the old chain). None when the installed release runs the chain, or the network has no minimum.
+pub fn needs(n: &Network, installed: &str) -> Option<String> {
+    needs_in(n, chain(n).as_ref(), installed)
+}
+
+fn needs_in(n: &Network, c: Option<&Chain>, installed: &str) -> Option<String> {
+    below_min_in(n, c, installed).then(|| min_tag_in(n, c)).flatten()
+}
+
 /// The oldest node release this network's chain runs on: the chain read from its newest release, else the built-in.
 fn min_tag_in(n: &Network, c: Option<&Chain>) -> Option<String> {
     c.map(|c| c.min_tag.clone()).or(n.min_tag.map(String::from))
@@ -1017,6 +1027,10 @@ mod tests {
         assert_eq!(moves_forward(&EASYNET, Some(&now), &ch(0x0b, "v1.3.0")), Ok(true));
         // What follows from it: v1.2.3 is too old, and says which release the chain needs.
         assert!(below_min_in(&EASYNET, Some(&now), "v1.2.3") && !below_min_in(&EASYNET, Some(&now), "v1.2.4"));
+        // The update alert's words (v0.7.10): v1.2.3 is left behind and needs v1.2.4; v1.2.4 and later aren't.
+        assert_eq!(needs_in(&EASYNET, Some(&now), "v1.2.3").as_deref(), Some("v1.2.4"));
+        assert_eq!((needs_in(&EASYNET, Some(&now), "v1.2.4"), needs_in(&EASYNET, Some(&now), "v1.2.8")), (None, None));
+        assert_eq!(needs_in(&MAINNET, None, "v1.2.3"), None);
         let said = too_old_in(&EASYNET, Some(&now), "v1.2.3");
         assert!(said.starts_with("FreeBank on easynet started a new chain on v1.2.4, and your node is v1.2.3."), "{said}");
         // Only easynet reads chain files: elsewhere nothing is taken, and the built-in stays.

@@ -169,6 +169,8 @@ export interface UpdateInfo {
   error: string | null;
   /** Easynet: why the newest release's chain wasn't taken (the chain in use stays). */
   chain_error: string | null;
+  /** Easynet (v0.7.10): the chain needs this node release or newer, and the installed one is older. */
+  needs: string | null;
 }
 
 export interface Removed {

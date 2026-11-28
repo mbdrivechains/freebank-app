@@ -5,7 +5,7 @@
   import { nodeAlerts, type NodeAlert } from "../lib/alerts";
   import { appUpdate } from "../lib/appUpdate";
   import { network } from "../lib/network";
-  import { openUrl, quietFor, update, when } from "../lib/node";
+  import { checkForUpdate, openUrl, quietFor, update, when } from "../lib/node";
 
   const dispatch = createEventDispatcher<{ open: "node" | "about" }>();
   const RELEASES = "https://github.com/mbdrivechains/freebank-app/releases";
@@ -20,13 +20,34 @@
   function peers(n: number): string {
     return `${n} peer${n === 1 ? "" : "s"}`;
   }
+
+  // v0.7.10: read the update offer again when an alert first shows, so the box never says "No update is offered yet"
+  // from a stale read (the screens' own check can skip while the window is hidden).
+  let shown = false;
+  $: if ($nodeAlerts.length && !shown) {
+    shown = true;
+    checkForUpdate();
+  } else if (!$nodeAlerts.length) {
+    shown = false;
+  }
+
+  /** The FreeBank node is on a release the network's chain no longer runs on (easynet's new chains). */
+  function leftBehind(a: NodeAlert): boolean {
+    return a.node === "freebank" && !!$update?.needs;
+  }
 </script>
 
 {#if $nodeAlerts.length}
   <div class="card node-alerts" role="alert" data-testid="node-alerts">
     {#each $nodeAlerts as a}
       <p class="alert-title"><strong>{title(a)}</strong></p>
-      {#if a.kind === "quiet"}
+      {#if (a.kind === "quiet" || a.kind === "stalled") && leftBehind(a)}
+        <p data-testid="node-left-behind">
+          FreeBank on {$network.name} has moved to a new chain, which needs FreeBank {$update?.needs} or newer. This node runs
+          {$update?.installed}, so it stayed on the old chain, where no new blocks come. Updating the node moves it to the
+          new chain. Your wallets keep their keys and addresses, but coins and payments on the old chain don't carry over.
+        </p>
+      {:else if a.kind === "quiet"}
         <p data-testid="node-quiet">
           Its newest block, {(a.blocks ?? 0).toLocaleString()}, is from {a.tip_time ? when(a.tip_time) : "hours ago"}.
           {#if !a.peers}
@@ -49,7 +70,7 @@
     {#if $update?.available}
       <p>
         A newer FreeBank node is ready ({$update.latest}).
-        <button class="link" on:click={() => dispatch("open", "node")}>Update it in Settings › Node & connection</button>
+        <button class="link" on:click={() => dispatch("open", "node")}>Update the FreeBank node on the Node tab</button>
       </p>
     {:else if $appUpdate?.available}
       <p>

@@ -30,7 +30,15 @@
   let problem = "";
   let timer: ReturnType<typeof setTimeout> | null = null;
   let alive = true;
-  const dispatch = createEventDispatcher<{ height: number }>();
+  const dispatch = createEventDispatcher<{ height: number; focused: void }>();
+
+  /** "update" (v0.7.10): opened from the red box's link, so bring the Update button into view once it shows. */
+  export let focus = "";
+  let updateButton: HTMLButtonElement | null = null;
+  $: if (focus === "update" && updateButton) {
+    updateButton.scrollIntoView({ block: "center" });
+    dispatch("focused");
+  }
 
   async function load() {
     try {
@@ -410,7 +418,7 @@
       {#if external}
         <p class="hint">Your node was started by another program. Stop it there to update from here.</p>
       {/if}
-      <button class="wide" on:click={startUpdate} disabled={external || st.state === "busy"}>
+      <button class="wide" bind:this={updateButton} on:click={startUpdate} disabled={external || st.state === "busy"}>
         Update node to {$update.latest}
       </button>
       <p class="fine">

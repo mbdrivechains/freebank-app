@@ -137,6 +137,9 @@
     }
   }
   let settingsPart: SettingsPart = "wallet";
+  // The Node tab opened from the red box's update link (v0.7.10): it scrolls to the Update button.
+  let nodeFocus = "";
+  $: if (currentView !== "node") nodeFocus = "";
   $: settingsParts = (localNode
     ? [["wallet", "Wallet"], ["phone", "Phone"], ["node", "Node & connection"], ["security", "Security"], ["about", "About"], ["startover", "Start over"]]
     : [["node", "Connection"], ["phone", "Phone"], ["security", "Security"], ["about", "About"]]) as [SettingsPart, string][];
@@ -300,12 +303,23 @@
   // The node update offer (the footer, the Node tab), every five minutes (v0.7.8): on easynet the app reads the newest
   // release every ten minutes in the background, so a fresh chain's release is offered soon after it is out. Elsewhere
   // this reads the half-hour cache.
+  // v0.7.10: also when the window comes back into view. A Mac window behind others, or on another desktop, counts as
+  // hidden, so the five-minute tick skipped and the offer went stale until the Node tab was opened (seen 11-28).
   onMount(() => {
     if (isPWA) return;
     const t = setInterval(() => {
       if (connected && !document.hidden) checkForUpdate();
     }, 5 * 60_000);
-    return () => clearInterval(t);
+    const back = () => {
+      if (connected && !document.hidden) checkForUpdate();
+    };
+    document.addEventListener("visibilitychange", back);
+    window.addEventListener("focus", back);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", back);
+      window.removeEventListener("focus", back);
+    };
   });
 
   // The network by name, never the node's raw chain word (v0.2.6): a node before v0.2.19 calls beta "main"; v0.2.19
@@ -420,7 +434,7 @@
   {/if}
 
   {#if !isPWA && !gone}<AppUpdate notice />{#if connected}<AptOffer ask />{/if}{/if}
-  {#if !isPWA && !gone}<NodeAlerts on:open={(e) => { currentView = "settings"; settingsPart = e.detail; }} />{/if}
+  {#if !isPWA && !gone}<NodeAlerts on:open={(e) => { if (e.detail === "node") { currentView = "node"; nodeFocus = "update"; } else { currentView = "settings"; settingsPart = e.detail; } }} />{/if}
 
   {#if gone}
     <div class="card removed">
@@ -601,6 +615,8 @@
     {#key walletKey}
     {#if currentView === "node"}
       <NodeStatus
+        focus={nodeFocus}
+        on:focused={() => (nodeFocus = "")}
         on:height={(e) => {
           if (blockchainInfo) blockchainInfo = { ...blockchainInfo, blocks: e.detail };
         }}

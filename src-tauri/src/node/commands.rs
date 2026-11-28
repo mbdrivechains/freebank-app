@@ -216,6 +216,9 @@ pub struct UpdateInfo {
     pub error: Option<String>,
     /// Easynet: why the newest release's chain wasn't taken (the chain in use stays).
     pub chain_error: Option<String>,
+    /// Easynet (v0.7.10): the network's chain needs this release or newer, and the installed one is older, so the node
+    /// can't follow it (it stays on the old chain with no peers). The alert says so instead of "check you're online".
+    pub needs: Option<String>,
 }
 
 /// Is there a newer release than the one this app installed? Cached for 30 minutes unless `force`.
@@ -229,17 +232,18 @@ pub async fn update_check(mgr: State<'_, Mgr>, force: bool) -> Result<UpdateInfo
             available: false,
             error: None,
             chain_error: None,
+            needs: None,
         });
     }
     let latest = mgr.latest_release(force).await;
+    let net = crate::network::current();
     let available = match (&latest, &installed) {
-        (Ok(l), Some(i)) => {
-            let net = crate::network::current();
-            crate::network::order(net, l) > crate::network::order(net, i)
-        }
+        (Ok(l), Some(i)) => crate::network::order(net, l) > crate::network::order(net, i),
         _ => false,
     };
+    let needs = installed.as_deref().and_then(|i| crate::network::needs(net, i));
     Ok(UpdateInfo {
+        needs,
         installed,
         available,
         error: latest.as_ref().err().cloned(),
